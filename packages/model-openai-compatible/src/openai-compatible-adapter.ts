@@ -1,9 +1,12 @@
+import { readFileSync } from "node:fs"
 import type {
   ModelAdapter,
   AgentMessage,
   ToolDefinition,
   ToolResult,
   AgentAction,
+  ToolArtifact,
+  ArtifactRef,
 } from "@live2d-agent/agent-core"
 
 /**
@@ -151,9 +154,8 @@ export class OpenAiCompatibleAdapter implements ModelAdapter {
 
   private formatScreenshotImageMessage(result: ToolResult): AgentMessage | undefined {
     if (result.tool === "screenshot.capture" && result.ok) {
-      const data = result.data as { imageBase64?: unknown; mimeType?: unknown } | undefined
-      if (typeof data?.imageBase64 === "string") {
-        const mimeType = typeof data.mimeType === "string" ? data.mimeType : "image/png"
+      const artifact = this.findImageArtifact(result)
+      if (artifact) {
         return {
           id: `img_${result.actionId}`,
           role: "user",
@@ -162,7 +164,7 @@ export class OpenAiCompatibleAdapter implements ModelAdapter {
             {
               type: "image_url",
               image_url: {
-                url: `data:${mimeType};base64,${data.imageBase64}`,
+                url: artifact.dataUrl,
                 detail: "auto",
               },
             },
@@ -174,6 +176,76 @@ export class OpenAiCompatibleAdapter implements ModelAdapter {
     }
 
     return undefined
+  }
+
+  /**
+   * Find the first image artifact from a ToolResult.
+   * Tries result.artifacts first, then falls back to result.data.artifact,
+   * then falls back to legacy result.data.imageBase64.
+   * Returns { dataUrl, mimeType } or undefined.
+   */
+  private findImageArtifact(result: ToolResult): { dataUrl: string; mimeType: string } | undefined {
+    /* ---- Try structured artifacts array ---- */
+    if (result.artifacts && result.artifacts.length > 0) {
+      for (const ta of result.artifacts) {
+        if (ta.type === "screenshot" || ta.mimeType?.startsWith("image/")) {
+          const ref = this.extractRef(ta)
+          if (ref) {
+            const dataUrl = this.readArtifactAsDataUrl(ref)
+            if (dataUrl) return { dataUrl, mimeType: ref.mimeType }
+          }
+        }
+      }
+    }
+
+    /* ---- Try result.data.artifact (ref embedded in data) ---- */
+    const data = result.data as Record<string, unknown> | undefined
+    if (data?.artifact && typeof data.artifact === "object") {
+      const ref = data.artifact as ArtifactRef
+      const dataUrl = this.readArtifactAsDataUrl(ref)
+      if (dataUrl) return { dataUrl, mimeType: ref.mimeType }
+    }
+
+    /* ---- Legacy fallback: result.data.imageBase64 ---- */
+    if (typeof (data as { imageBase64?: unknown } | undefined)?.imageBase64 === "string") {
+      const legacyData = data as { imageBase64: string; mimeType?: string }
+      const mimeType = legacyData.mimeType ?? "image/png"
+      return { dataUrl: `data:${mimeType};base64,${legacyData.imageBase64}`, mimeType }
+    }
+
+    return undefined
+  }
+
+  /**
+   * Extract an ArtifactRef from a ToolArtifact (either from `artifact` field or via `path`).
+   */
+  private extractRef(ta: ToolArtifact): ArtifactRef | undefined {
+    if (ta.artifact) return ta.artifact
+    if (ta.path && ta.mimeType) {
+      return {
+        id: ta.id,
+        kind: "screenshot",
+        path: ta.path,
+        mimeType: ta.mimeType,
+        size: 0,
+        createdAt: Date.now(),
+      }
+    }
+    return undefined
+  }
+
+  /**
+   * Read an artifact file from disk and return a data URL.
+   * Returns undefined on any error (file not found, read error, etc.).
+   */
+  private readArtifactAsDataUrl(ref: ArtifactRef): string | undefined {
+    try {
+      const buffer = readFileSync(ref.path)
+      const base64 = buffer.toString("base64")
+      return `data:${ref.mimeType};base64,${base64}`
+    } catch {
+      return undefined
+    }
   }
 
   private formatObservationText(result: ToolResult): string {

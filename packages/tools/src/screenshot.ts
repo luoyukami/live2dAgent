@@ -21,5 +21,5 @@ export async function executeScreenshotTool(
   args: { displayId?: string },
 ): Promise<string> {
   const result = await context.captureScreenshot(args.displayId)
-  return `Screenshot captured (${result.mimeType}, ${result.imageBase64.length} base64 chars)`
+  return `Screenshot captured (${result.mimeType}, ${result.data.length} bytes)`
 }

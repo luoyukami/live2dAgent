@@ -18,6 +18,13 @@ export const IPC_CHANNELS = {
   FILE_WRITE: "tool:file-write",
   CLIPBOARD_READ: "tool:clipboard-read",
   CLIPBOARD_WRITE: "tool:clipboard-write",
+
+  /* ---- Settings channels (Phase 1) ---- */
+  SETTINGS_GET: "settings:get",
+  SETTINGS_UPDATE_PUBLIC: "settings:update-public",
+  SETTINGS_UPDATE_API_KEY: "settings:update-api-key",
+  SETTINGS_UPDATE_WORKSPACE: "settings:update-workspace",
+  SETTINGS_UPDATE_LIVE2D_MODEL_PATH: "settings:update-live2d-path",
 } as const
 
 /** Default workspace-relative paths for trace and screenshot storage */

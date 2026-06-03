@@ -4,10 +4,11 @@ import type {
   AgentMode,
   ToolArtifact,
   MultimodalContent,
+  ArtifactRef,
 } from "@live2d-agent/shared"
 
 /* ---- Re-export shared types that are part of the core domain ---- */
-export type { ToolName, PermissionLevel, AgentMode, ToolArtifact, MultimodalContent }
+export type { ToolName, PermissionLevel, AgentMode, ToolArtifact, MultimodalContent, ArtifactRef }
 
 /* ---- Agent Message ---- */
 export interface AgentMessage {

@@ -28,7 +28,7 @@ export interface RuntimeToolContext {
   /** Capture a screenshot (optionally targeting a specific display). */
   captureScreenshot: (
     displayId?: string,
-  ) => Promise<{ imageBase64: string; mimeType: string }>
+  ) => Promise<{ mimeType: string; data: Buffer }>
 
   /** Signal that the current task is complete. */
   finishTask: (

@@ -1,13 +1,38 @@
 import { useEffect, useMemo, useState } from "react"
 import type { AgentEvent, AgentMessage, AgentAction } from "@live2d-agent/agent-core"
 import { mapEventToState, type AvatarState } from "@live2d-agent/live2d"
+import type { PublicSettings } from "@live2d-agent/shared"
+import { Live2DView } from "./live2d/Live2DView"
 
-interface PublicSettings {
-  mode: "manual" | "confirm" | "auto"
-  workspaceDir: string
+interface SettingsForm {
+  mode: PublicSettings["mode"]
   openaiBaseUrl: string
   openaiModel: string
-  hasApiKey: boolean
+  apiKey: string
+  workspaceDir: string
+  live2dModelPath: string
+}
+
+const RISK_TEXT: Record<string, string> = {
+  safe: "安全操作",
+  workspace_read: "读取工作区文件",
+  workspace_write: "写入工作区文件，需要确认",
+  screen_read: "读取屏幕截图，可能包含隐私信息",
+  clipboard_read: "读取剪贴板，可能包含敏感信息",
+  clipboard_write: "修改剪贴板内容",
+  shell: "执行命令，可能修改文件或运行程序",
+  dangerous: "高风险操作，默认拒绝",
+}
+
+function defaultForm(): SettingsForm {
+  return {
+    mode: "confirm",
+    openaiBaseUrl: "",
+    openaiModel: "",
+    apiKey: "",
+    workspaceDir: "",
+    live2dModelPath: "",
+  }
 }
 
 export function App(): JSX.Element {
@@ -15,7 +40,10 @@ export function App(): JSX.Element {
   const [pending, setPending] = useState<AgentAction[]>([])
   const [status, setStatus] = useState<AvatarState>("idle")
   const [input, setInput] = useState("")
+  const [isSending, setIsSending] = useState(false)
   const [settings, setSettings] = useState<PublicSettings | null>(null)
+  const [showSettings, setShowSettings] = useState(false)
+  const [form, setForm] = useState<SettingsForm>(defaultForm)
 
   useEffect(() => {
     window.petAgent.getSettings().then(setSettings)
@@ -28,6 +56,31 @@ export function App(): JSX.Element {
     })
   }, [])
 
+  useEffect(() => {
+    if (settings) {
+      setForm((prev) => ({
+        ...prev,
+        mode: settings.mode,
+        openaiBaseUrl: settings.openaiBaseUrl,
+        openaiModel: settings.openaiModel,
+        workspaceDir: settings.workspaceDir,
+        live2dModelPath: settings.live2d?.modelPath ?? "",
+      }))
+    }
+  }, [settings])
+
+  /* Auto-revert to idle after transient states */
+  useEffect(() => {
+    if (status === "success") {
+      const timer = setTimeout(() => setStatus("idle"), 1500)
+      return () => clearTimeout(timer)
+    }
+    if (status === "error") {
+      const timer = setTimeout(() => setStatus("idle"), 2000)
+      return () => clearTimeout(timer)
+    }
+  }, [status])
+
   const assistantStateLabel = useMemo(() => ({
     idle: "空闲",
     thinking: "思考中",
@@ -39,16 +92,54 @@ export function App(): JSX.Element {
 
   async function submit(): Promise<void> {
     const text = input.trim()
-    if (!text) return
+    if (!text || isSending) return
     setInput("")
-    await window.petAgent.sendUserMessage(text)
+    setIsSending(true)
+    try {
+      await window.petAgent.sendUserMessage(text)
+    } finally {
+      setIsSending(false)
+    }
+  }
+
+  function clearVisibleMessages(): void {
+    setMessages([])
+  }
+
+  async function saveSettings(): Promise<void> {
+    try {
+      if (form.workspaceDir !== settings?.workspaceDir) {
+        await window.petAgent.updateWorkspaceDir(form.workspaceDir)
+      }
+      if (form.live2dModelPath !== (settings?.live2d?.modelPath ?? "")) {
+        await window.petAgent.updateLive2DModelPath(form.live2dModelPath)
+      }
+      if (form.apiKey.trim()) {
+        await window.petAgent.updateApiKey(form.apiKey.trim())
+      }
+
+      const publicPatch: Record<string, unknown> = {}
+      if (form.mode !== settings?.mode) publicPatch.mode = form.mode
+      if (form.openaiBaseUrl !== settings?.openaiBaseUrl) publicPatch.openaiBaseUrl = form.openaiBaseUrl
+      if (form.openaiModel !== settings?.openaiModel) publicPatch.openaiModel = form.openaiModel
+      if (Object.keys(publicPatch).length > 0) {
+        await window.petAgent.updatePublicSettings(publicPatch)
+      }
+
+      const updated = await window.petAgent.getSettings()
+      setSettings(updated)
+      setForm((prev) => ({ ...prev, apiKey: "" }))
+      setShowSettings(false)
+    } catch (err) {
+      alert("保存设置失败：" + (err as Error).message)
+    }
   }
 
   return (
     <main className="shell">
       <section className="avatar" data-state={status}>
         <div className="drag-region" />
-        <div className="avatar-orb">Live2D</div>
+        <Live2DView modelPath={settings?.live2d?.modelPath ?? ""} avatarState={status} />
         <span>{assistantStateLabel}</span>
       </section>
 
@@ -56,52 +147,237 @@ export function App(): JSX.Element {
         <header>
           <div>
             <strong>Pet Agent v0</strong>
-            <small>{settings?.hasApiKey ? settings.openaiModel : "请在 settings.json 或环境变量配置 API Key"}</small>
+            <small>
+              {settings?.hasApiKey
+                ? `${settings.openaiModel} · API Key 已配置`
+                : "API Key 未配置 · 请在设置中填写"}
+            </small>
           </div>
-          <select
-            value={settings?.mode ?? "confirm"}
-            onChange={async (event) => {
-              const mode = event.target.value as PublicSettings["mode"]
-              await window.petAgent.updateSettings({ mode })
-              setSettings(settings ? { ...settings, mode } : settings)
-            }}
-          >
-            <option value="manual">manual</option>
-            <option value="confirm">confirm</option>
-            <option value="auto">auto</option>
-          </select>
+          <div className="header-actions">
+            <select
+              value={settings?.mode ?? "confirm"}
+              onChange={async (event) => {
+                const mode = event.target.value as PublicSettings["mode"]
+                await window.petAgent.updatePublicSettings({ mode })
+                setSettings(settings ? { ...settings, mode } : settings)
+              }}
+            >
+              <option value="manual">manual</option>
+              <option value="confirm">confirm</option>
+              <option value="auto">auto</option>
+            </select>
+            <button className="icon-btn" onClick={() => setShowSettings((s) => !s)} title="设置">
+              ⚙
+            </button>
+            <button className="icon-btn" onClick={clearVisibleMessages} title="仅清空当前显示，不删除 trace">
+              清空
+            </button>
+          </div>
         </header>
 
+        {showSettings && (
+          <div className="settings-panel">
+            <div className="settings-header">
+              <b>设置</b>
+              <button className="icon-btn" onClick={() => setShowSettings(false)} title="关闭">
+                ✕
+              </button>
+            </div>
+
+            <div className="settings-body">
+              <div className="settings-group">
+                <label>运行模式</label>
+                <select
+                  value={form.mode}
+                  onChange={(e) => setForm((f) => ({ ...f, mode: e.target.value as PublicSettings["mode"] }))}
+                >
+                  <option value="manual">manual</option>
+                  <option value="confirm">confirm</option>
+                  <option value="auto">auto</option>
+                </select>
+              </div>
+
+              <div className="settings-group">
+                <label>API Key</label>
+                <div className="settings-row">
+                  <input
+                    type="password"
+                    value={form.apiKey}
+                    onChange={(e) => setForm((f) => ({ ...f, apiKey: e.target.value }))}
+                    placeholder="输入新的 API Key（留空表示不修改）"
+                  />
+                  <span className={`badge ${settings?.hasApiKey ? "ok" : "warn"}`}>
+                    {settings?.hasApiKey ? "已配置" : "未配置"}
+                  </span>
+                </div>
+              </div>
+
+              <div className="settings-group">
+                <label>Base URL</label>
+                <input
+                  value={form.openaiBaseUrl}
+                  onChange={(e) => setForm((f) => ({ ...f, openaiBaseUrl: e.target.value }))}
+                  placeholder="https://api.openai.com/v1"
+                />
+              </div>
+
+              <div className="settings-group">
+                <label>模型</label>
+                <input
+                  value={form.openaiModel}
+                  onChange={(e) => setForm((f) => ({ ...f, openaiModel: e.target.value }))}
+                  placeholder="gpt-4o-mini"
+                />
+              </div>
+
+              <div className="settings-group">
+                <label>Workspace 目录</label>
+                <input
+                  value={form.workspaceDir}
+                  onChange={(e) => setForm((f) => ({ ...f, workspaceDir: e.target.value }))}
+                  placeholder="Workspace 路径"
+                />
+              </div>
+
+              <div className="settings-group">
+                <label>Live2D 模型路径</label>
+                <input
+                  value={form.live2dModelPath}
+                  onChange={(e) => setForm((f) => ({ ...f, live2dModelPath: e.target.value }))}
+                  placeholder="model.json 或 .model3.json 路径"
+                />
+              </div>
+            </div>
+
+            <div className="settings-footer">
+              <button onClick={() => void saveSettings()}>保存</button>
+            </div>
+          </div>
+        )}
+
         <div className="messages">
-          {messages.map((message) => (
-            <article key={message.id} className={`bubble ${message.role}`}>
-              <b>{message.role}</b>
-              <p>{typeof message.content === "string" ? message.content : JSON.stringify(message.content)}</p>
-            </article>
-          ))}
+          {messages
+            .filter((message) => message.role !== "system")
+            .map((message) => <MessageBubble key={message.id} message={message} />)}
         </div>
 
         {pending.map((action) => (
-          <article className="approval" key={action.id}>
-            <b>请求权限：{action.tool}</b>
-            <code>{JSON.stringify(action.args, null, 2)}</code>
-            <div>
-              <button onClick={() => window.petAgent.approveAction(action.id)}>允许</button>
-              <button onClick={() => window.petAgent.denyAction(action.id, "User denied")}>拒绝</button>
-            </div>
-          </article>
+          <ApprovalBubble key={action.id} action={action} />
         ))}
 
         <footer>
-          <input
+          <textarea
             value={input}
             onChange={(event) => setInput(event.target.value)}
-            onKeyDown={(event) => { if (event.key === "Enter") void submit() }}
+            onKeyDown={(event) => {
+              if (event.key === "Enter" && !event.shiftKey) {
+                event.preventDefault()
+                void submit()
+              }
+            }}
             placeholder="输入消息..."
           />
-          <button onClick={() => void submit()}>发送</button>
+          <button onClick={() => void submit()} disabled={isSending}>{isSending ? "发送中" : "发送"}</button>
         </footer>
+        <small className="status-line">
+          {status === "thinking" ? "助手正在思考..." : status === "running_tool" ? "工具执行中..." : "Enter 发送，Shift+Enter 换行"}
+        </small>
       </section>
     </main>
   )
+}
+
+function MessageBubble({ message }: { message: AgentMessage }): JSX.Element {
+  const [expanded, setExpanded] = useState(message.role !== "tool")
+  const text = messageContentToText(message)
+  const isError = Boolean(message.extra?.error) || /^(API error|Network error|Invalid JSON|Model returned|Error executing)/i.test(text)
+
+  async function copy(): Promise<void> {
+    await navigator.clipboard.writeText(text)
+  }
+
+  return (
+    <article className={`bubble ${message.role} ${isError ? "error" : ""}`}>
+      <div className="message-head">
+        <b>{message.role}</b>
+        <div className="message-actions">
+          {message.role === "tool" && (
+            <button className="ghost-btn" onClick={() => setExpanded((value) => !value)}>
+              {expanded ? "折叠" : "展开"}
+            </button>
+          )}
+          <button className="ghost-btn" onClick={() => void copy()}>复制</button>
+        </div>
+      </div>
+      {expanded ? <p>{text}</p> : <p className="tool-summary">{summarize(text, 160)}</p>}
+    </article>
+  )
+}
+
+function ApprovalBubble({ action }: { action: AgentAction }): JSX.Element {
+  const risk = riskForTool(action.tool)
+  const args = asRecord(action.args)
+  const allowLabel = risk === "screen_read" ? "允许本会话" : "允许"
+
+  return (
+    <article className="approval">
+      <div className="approval-head">
+        <b>请求权限：{action.tool}</b>
+        <span className={`risk-badge ${risk}`}>{risk}</span>
+      </div>
+      <small>{RISK_TEXT[risk]}</small>
+      <div className="approval-summary">{renderActionSummary(action.tool, args)}</div>
+      <details>
+        <summary>查看完整参数</summary>
+        <code>{JSON.stringify(action.args, null, 2)}</code>
+      </details>
+      <div className="approval-actions">
+        <button onClick={() => window.petAgent.approveAction(action.id)}>{allowLabel}</button>
+        <button className="danger-btn" onClick={() => window.petAgent.denyAction(action.id, "User denied")}>拒绝</button>
+      </div>
+    </article>
+  )
+}
+
+function renderActionSummary(tool: string, args: Record<string, unknown>): JSX.Element {
+  if (tool === "shell.run") {
+    return <><span>命令：{String(args.command ?? "")}</span><span>工作目录：{String(args.cwd ?? "workspace")}</span></>
+  }
+  if (tool === "file.write") {
+    return <><span>目标路径：{String(args.path ?? "")}</span><span>内容摘要：{summarize(String(args.content ?? ""), 180)}</span></>
+  }
+  if (tool === "file.read") return <span>读取路径：{String(args.path ?? "")}</span>
+  if (tool === "clipboard.read") return <span>助手请求读取剪贴板，可能包含密码、令牌或隐私内容。</span>
+  if (tool === "clipboard.write") return <span>写入剪贴板：{summarize(String(args.text ?? ""), 180)}</span>
+  if (tool === "screenshot.capture") return <span>助手请求读取当前屏幕截图用于分析屏幕内容。</span>
+  return <span>{summarize(JSON.stringify(args), 220)}</span>
+}
+
+function messageContentToText(message: AgentMessage): string {
+  if (typeof message.content === "string") return message.content
+  return message.content.map((block) => {
+    if (block.type === "text") return block.text ?? ""
+    if (block.type === "image_url") return "[图片输入]"
+    return JSON.stringify(block)
+  }).filter(Boolean).join("\n")
+}
+
+function riskForTool(tool: string): string {
+  if (tool === "shell.run") return "shell"
+  if (tool === "file.write") return "workspace_write"
+  if (tool === "file.read") return "workspace_read"
+  if (tool === "clipboard.read") return "clipboard_read"
+  if (tool === "clipboard.write") return "clipboard_write"
+  if (tool === "screenshot.capture") return "screen_read"
+  if (tool === "task.finish") return "safe"
+  return "dangerous"
+}
+
+function asRecord(value: unknown): Record<string, unknown> {
+  return value && typeof value === "object" ? value as Record<string, unknown> : {}
+}
+
+function summarize(text: string, max = 240): string {
+  if (text.length <= max) return text
+  return `${text.slice(0, max)}…`
 }

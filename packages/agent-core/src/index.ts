@@ -12,6 +12,7 @@ export type {
   AgentMode,
   ToolArtifact,
   MultimodalContent,
+  ArtifactRef,
 } from "./types.js"
 
 /* ---- Core classes / interfaces ---- */

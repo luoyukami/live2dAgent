@@ -3,8 +3,19 @@ export type {
   AgentMode,
   PermissionLevel,
   ToolName,
+  ArtifactKind,
+  ArtifactRef,
   ToolArtifact,
   MultimodalContent,
+  Live2DSettings,
+  UiSettings,
+  AgentSettings,
+  AppSettings,
+  PublicSettings,
+  Live2DSettingsPatch,
+  UiSettingsPatch,
+  AgentSettingsPatch,
+  AppSettingsPublicPatch,
 } from "./schemas.js"
 export { DEFAULT_PERMISSION_POLICY } from "./schemas.js"
 export type {

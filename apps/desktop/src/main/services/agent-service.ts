@@ -2,9 +2,11 @@ import { clipboard, desktopCapturer } from "electron"
 import { spawn } from "node:child_process"
 import { existsSync, mkdirSync, readFileSync, realpathSync, writeFileSync } from "node:fs"
 import { dirname, isAbsolute, resolve, relative } from "node:path"
-import { AgentSession, EventBus, ToolRegistry, type AgentEvent, type AgentAction, type ToolResult, type ToolRuntime } from "@live2d-agent/agent-core"
+import { AgentSession, EventBus, ToolRegistry, type AgentEvent, type AgentAction, type ToolResult, type ToolRuntime, type ToolArtifact } from "@live2d-agent/agent-core"
 import { OpenAiCompatibleAdapter } from "@live2d-agent/model-openai-compatible"
 import { createDefaultTools, type RuntimeToolContext } from "@live2d-agent/tools"
+import type { ArtifactRef } from "@live2d-agent/shared"
+import type { ArtifactStore } from "./artifact-store.js"
 import type { PermissionService } from "./permission-service.js"
 import type { SettingsService } from "./settings-service.js"
 import type { TraceService } from "./trace-service.js"
@@ -13,6 +15,7 @@ export interface AgentServiceDeps {
   settings: SettingsService
   trace: TraceService
   permissions: PermissionService
+  artifacts: ArtifactStore
 }
 
 export class AgentService implements ToolRuntime {
@@ -114,7 +117,14 @@ export class AgentService implements ToolRuntime {
         const args = action.args
         const { displayId } = asRecord(args)
         const shot = await context.captureScreenshot(typeof displayId === "string" ? displayId : undefined)
-        return this.result(action, startedAt, true, "Screenshot captured", shot)
+        const ref = this.deps.artifacts.saveArtifact({
+          kind: "screenshot",
+          mimeType: shot.mimeType,
+          data: shot.data,
+          ext: ".png",
+        })
+        const artifact: ToolArtifact = { id: ref.id, type: "screenshot", mimeType: ref.mimeType, path: ref.path, artifact: ref }
+        return this.result(action, startedAt, true, "Screenshot captured", { mimeType: shot.mimeType, artifact: ref }, [artifact])
       }],
       ["task.finish", async (action) => {
         const startedAt = Date.now()
@@ -145,7 +155,8 @@ export class AgentService implements ToolRuntime {
         const sources = await desktopCapturer.getSources({ types: ["screen"], thumbnailSize: { width: 1920, height: 1080 } })
         const source = sources.find((item) => item.display_id === displayId) ?? sources[0]
         if (!source) throw new Error("No screen source available")
-        return { imageBase64: source.thumbnail.toPNG().toString("base64"), mimeType: "image/png" }
+        const pngBuffer = source.thumbnail.toPNG()
+        return { data: pngBuffer, mimeType: "image/png" }
       },
       finishTask: async () => undefined,
     }
@@ -181,7 +192,9 @@ export class AgentService implements ToolRuntime {
     return target
   }
 
-  private result(action: AgentAction, startedAt: number, ok: boolean, content: string, data?: unknown, code = "TOOL_ERROR"): ToolResult {
+  private result(action: AgentAction, startedAt: number, ok: boolean, content: string, data?: unknown, codeOrArtifacts?: string | ToolArtifact[]): ToolResult {
+    const isCode = typeof codeOrArtifacts === "string"
+    const artifacts = !ok || isCode ? undefined : (codeOrArtifacts as ToolArtifact[] | undefined)
     return {
       actionId: action.id,
       providerToolCallId: action.providerToolCallId,
@@ -189,7 +202,8 @@ export class AgentService implements ToolRuntime {
       ok,
       content,
       data,
-      error: ok ? undefined : { code, message: content, recoverable: true },
+      error: ok ? undefined : { code: isCode ? codeOrArtifacts : "TOOL_ERROR", message: content, recoverable: true },
+      artifacts,
       startedAt,
       endedAt: Date.now(),
     }
