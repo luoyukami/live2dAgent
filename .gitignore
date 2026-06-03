@@ -1,0 +1,14 @@
+node_modules/
+dist/
+out/
+*.log
+*.tsbuildinfo
+*.js.map
+*.d.ts.map
+.DS_Store
+workspace/
+traces/
+screenshots/
+.env
+.env.*
+!.env.example

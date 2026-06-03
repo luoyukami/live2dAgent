@@ -1,0 +1,30 @@
+{
+  "name": "@live2d-agent/desktop",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "main": "dist/main/main.js",
+  "scripts": {
+    "dev": "electron-vite dev",
+    "build": "electron-vite build",
+    "preview": "electron-vite preview",
+    "typecheck": "tsc --noEmit -p tsconfig.json"
+  },
+  "dependencies": {
+    "@live2d-agent/agent-core": "workspace:*",
+    "@live2d-agent/live2d": "workspace:*",
+    "@live2d-agent/model-openai-compatible": "workspace:*",
+    "@live2d-agent/shared": "workspace:*",
+    "@live2d-agent/tools": "workspace:*",
+    "@vitejs/plugin-react": "^4.3.1",
+    "electron": "^31.3.1",
+    "electron-vite": "^2.3.0",
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1",
+    "vite": "^5.3.5"
+  },
+  "devDependencies": {
+    "@types/react": "^18.3.3",
+    "@types/react-dom": "^18.3.0"
+  }
+}

@@ -1,0 +1,23 @@
+{
+  "extends": "../../tsconfig.base.json",
+  "compilerOptions": {
+    "composite": true,
+    "jsx": "react-jsx",
+    "lib": ["ES2022", "DOM", "DOM.Iterable"],
+    "types": ["node", "electron-vite/node"],
+    "outDir": "./dist-types",
+    "rootDir": ".",
+    "baseUrl": ".",
+    "paths": {
+      "@desktop/*": ["src/*"]
+    }
+  },
+  "include": ["src", "electron.vite.config.ts"],
+  "references": [
+    { "path": "../../packages/shared" },
+    { "path": "../../packages/agent-core" },
+    { "path": "../../packages/tools" },
+    { "path": "../../packages/model-openai-compatible" },
+    { "path": "../../packages/live2d" }
+  ]
+}

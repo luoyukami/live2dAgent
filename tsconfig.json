@@ -1,0 +1,11 @@
+{
+  "files": [],
+  "references": [
+    { "path": "packages/shared" },
+    { "path": "packages/agent-core" },
+    { "path": "packages/tools" },
+    { "path": "packages/model-openai-compatible" },
+    { "path": "packages/live2d" },
+    { "path": "apps/desktop" }
+  ]
+}
