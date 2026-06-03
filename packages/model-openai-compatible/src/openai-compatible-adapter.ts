@@ -104,7 +104,8 @@ export class OpenAiCompatibleAdapter implements ModelAdapter {
 
         actions.push({
           id: `act_${tc.id as string}`,
-          tool: (fn?.name as string) ?? "unknown",
+          providerToolCallId: tc.id as string,
+          tool: this.fromProviderToolName((fn?.name as string) ?? "unknown"),
           args: parsedArgs,
           source: "llm",
           createdAt: Date.now(),
@@ -128,26 +129,58 @@ export class OpenAiCompatibleAdapter implements ModelAdapter {
   /* ---- ModelAdapter.formatObservations ---- */
 
   formatObservations(results: ToolResult[]): AgentMessage[] {
-    return results.map((result) => ({
-      id: `obs_${result.actionId}`,
-      role: "tool",
-      content: this.formatObservationText(result),
-      toolCallId: result.actionId,
-      createdAt: result.endedAt,
-      extra: {
-        ok: result.ok,
-        ...(result.error ? { error: result.error } : {}),
-      },
-    }))
+    return results.flatMap((result) => {
+      const observation: AgentMessage = {
+        id: `obs_${result.actionId}`,
+        role: "tool",
+        content: this.formatObservationText(result),
+        toolCallId: result.providerToolCallId ?? result.actionId,
+        createdAt: result.endedAt,
+        extra: {
+          ok: result.ok,
+          ...(result.error ? { error: result.error } : {}),
+        },
+      }
+
+      const imageMessage = this.formatScreenshotImageMessage(result)
+      return imageMessage ? [observation, imageMessage] : [observation]
+    })
   }
 
   /* ---- private helpers ---- */
 
+  private formatScreenshotImageMessage(result: ToolResult): AgentMessage | undefined {
+    if (result.tool === "screenshot.capture" && result.ok) {
+      const data = result.data as { imageBase64?: unknown; mimeType?: unknown } | undefined
+      if (typeof data?.imageBase64 === "string") {
+        const mimeType = typeof data.mimeType === "string" ? data.mimeType : "image/png"
+        return {
+          id: `img_${result.actionId}`,
+          role: "user",
+          content: [
+            { type: "text", text: "Screenshot image for the preceding screenshot.capture result." },
+            {
+              type: "image_url",
+              image_url: {
+                url: `data:${mimeType};base64,${data.imageBase64}`,
+                detail: "auto",
+              },
+            },
+          ],
+          createdAt: result.endedAt,
+          extra: { type: "tool_artifact", actionId: result.actionId, tool: result.tool },
+        }
+      }
+    }
+
+    return undefined
+  }
+
   private formatObservationText(result: ToolResult): string {
     if (!result.ok) {
-      return `Error executing ${result.tool}: ${result.error?.message ?? result.content}`
+      return this.truncateObservation(`Error executing ${result.tool}: ${result.error?.message ?? result.content}`)
     }
-    return result.content
+    return this.truncateObservation(result.content)
   }
 
   private buildRequestBody(
@@ -163,7 +196,7 @@ export class OpenAiCompatibleAdapter implements ModelAdapter {
       body.tools = tools.map((t) => ({
         type: "function",
         function: {
-          name: t.name,
+          name: this.toProviderToolName(t.name),
           description: t.description,
           parameters: t.inputSchema,
         },
@@ -185,10 +218,10 @@ export class OpenAiCompatibleAdapter implements ModelAdapter {
 
     if (message.actions && message.role === "assistant") {
       msg.tool_calls = message.actions.map((a) => ({
-        id: a.id,
+        id: a.providerToolCallId ?? a.id,
         type: "function",
         function: {
-          name: a.tool,
+          name: this.toProviderToolName(a.tool),
           arguments: JSON.stringify(a.args),
         },
       }))
@@ -208,5 +241,29 @@ export class OpenAiCompatibleAdapter implements ModelAdapter {
       createdAt: Date.now(),
       extra: { rawResponse: null, error: { code: "MODEL_ERROR", message: text, recoverable: true }, ...extra },
     }
+  }
+
+  private toProviderToolName(name: string): string {
+    return name.replace(/[^a-zA-Z0-9_-]/g, "_")
+  }
+
+  private fromProviderToolName(name: string): string {
+    const known: Record<string, string> = {
+      shell_run: "shell.run",
+      file_read: "file.read",
+      file_write: "file.write",
+      clipboard_read: "clipboard.read",
+      clipboard_write: "clipboard.write",
+      screenshot_capture: "screenshot.capture",
+      task_finish: "task.finish",
+    }
+    return known[name] ?? name
+  }
+
+  private truncateObservation(content: string): string {
+    const maxChars = 12_000
+    const edgeChars = 6_000
+    if (content.length <= maxChars) return content
+    return `${content.slice(0, edgeChars)}\n\n[... truncated ${content.length - maxChars} chars ...]\n\n${content.slice(-edgeChars)}`
   }
 }

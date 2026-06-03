@@ -1,6 +1,8 @@
 # Live2D Agent
 
-桌面 Live2D Agent 小助手 v0 骨架，基于 Electron + React + TypeScript + pnpm workspace。
+桌面 Live2D Agent 小助手。它以透明悬浮窗口展示一个 Live2D/桌宠形象，并通过 OpenAI-compatible 模型提供对话和受控工具调用能力。
+
+> 当前项目处于 v0 骨架阶段，重点是打通安全架构、Agent Runtime、权限确认和桌面应用基础链路。
 
 ## 当前已包含
 
@@ -11,6 +13,15 @@
 - v0 工具定义与主进程执行能力：`shell.run`、`file.read`、`file.write`、`clipboard.read`、`clipboard.write`、`screenshot.capture`、`task.finish`
 - confirm/manual/auto 权限模式与 JSONL trace 写入
 - Live2D `AvatarDriver` 抽象与占位状态映射
+
+## 技术栈
+
+- Electron
+- React
+- TypeScript
+- Vite / electron-vite
+- pnpm workspace
+- OpenAI-compatible Chat Completions API
 
 ## 开发
 
@@ -27,7 +38,7 @@ corepack pnpm dev
 - `OPENAI_API_KEY`
 - `OPENAI_MODEL`
 
-注意：API Key 仅在 Main Process 使用，不会暴露给 Renderer。
+API Key 仅在 Main Process 使用，不会暴露给 Renderer。
 
 ## 验证
 
@@ -36,9 +47,8 @@ corepack pnpm typecheck
 corepack pnpm build
 ```
 
-## 待补充
+## 安全设计
 
-- 接入真实 Live2D 模型资源与 PixiJS/Cubism 驱动
-- 更完善的设置面板（API Key、workspace、base URL）
-- 单元测试/集成测试
-- 更细粒度的权限策略持久化与 trace 回放 UI
+- Renderer 不直接访问 Node/Electron 高权限 API。
+- 文件、命令行、截图、剪贴板等能力都经由 Main Process 执行。
+- 默认权限模式为 `confirm`，危险工具调用需要用户确认。

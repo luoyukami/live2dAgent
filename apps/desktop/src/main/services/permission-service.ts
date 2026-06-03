@@ -4,6 +4,7 @@ import type { SettingsService } from "./settings-service.js"
 
 interface PendingRequest {
   actions: AgentAction[]
+  requiresApproval: AgentAction[]
   resolve: (decision: { status: "approved" | "denied"; actions: AgentAction[]; reason?: string }) => void
 }
 
@@ -25,7 +26,6 @@ export class PermissionService implements PermissionController {
 
   async check(actions: AgentAction[]): Promise<{ status: "approved" | "denied"; actions: AgentAction[]; reason?: string }> {
     const mode = this.settings.get().mode
-    if (mode === "auto") return { status: "approved", actions }
     if (mode === "manual") return { status: "denied", actions, reason: "manual mode blocks tool execution" }
 
     const requiresApproval = actions.filter((action) => !this.canAutoApprove(action))
@@ -33,16 +33,18 @@ export class PermissionService implements PermissionController {
 
     this.pendingListener?.({ event: { type: "approval.pending", actions: requiresApproval } })
     return new Promise((resolve) => {
-      this.pending = { actions, resolve }
+      this.pending = { actions, requiresApproval, resolve }
     })
   }
 
   approve(actionId: string): void {
     if (!this.pending) return
-    const action = this.pending.actions.find((item) => item.id === actionId)
-    if (action) this.approvedOnce.add(action.tool)
+    const action = this.pending.requiresApproval.find((item) => item.id === actionId)
+    if (!action) return
+    this.approvedOnce.add(action.tool)
     this.pendingListener?.({ event: { type: "approval.approved", actionIds: [actionId] } })
-    this.pending.resolve({ status: "approved", actions: this.pending.actions })
+    const autoApproved = this.pending.actions.filter((item) => item.id !== action.id && this.canAutoApprove(item))
+    this.pending.resolve({ status: "approved", actions: [...autoApproved, action] })
     this.pending = undefined
   }
 

@@ -27,12 +27,12 @@ export function registerIpcHandlers(services: IpcServices): void {
   )
 
   ipcMain.handle(IPC_CHANNELS.SET_AGENT_MODE, async (_event, mode) => {
-    services.settings.update({ mode })
+    services.settings.updatePublicPatch({ mode })
   })
 
   ipcMain.handle("settings:get", async () => services.settings.getPublicSettings())
   ipcMain.handle("settings:update", async (_event, patch) => {
-    services.settings.update(patch)
+    services.settings.updatePublicPatch(patch)
     services.agent.reconfigure()
   })
 }

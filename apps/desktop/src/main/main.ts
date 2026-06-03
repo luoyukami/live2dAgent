@@ -17,7 +17,10 @@ async function bootstrap(): Promise<void> {
   windowManager = new WindowManager()
   await windowManager.create()
 
-  permissions.onPending((request) => windowManager?.sendAgentEvent(request.event))
+  permissions.onPending((request) => {
+    trace.append(request.event)
+    windowManager?.sendAgentEvent(request.event)
+  })
   agentService = new AgentService({ settings, trace, permissions })
   agentService.onEvent((event) => windowManager?.sendAgentEvent(event))
 

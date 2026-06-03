@@ -49,6 +49,7 @@ export interface TraceStore {
  */
 export class AgentSession {
   messages: AgentMessage[] = []
+  private readonly maxSteps = 20
 
   constructor(
     private model: ModelAdapter,
@@ -71,8 +72,8 @@ export class AgentSession {
       createdAt: Date.now(),
     })
 
-    while (true) {
-      this.events.emit({ type: "agent.thinking" })
+    for (let step = 1; step <= this.maxSteps; step += 1) {
+      this.emit({ type: "agent.thinking" })
 
       const assistantMessage = await this.model.query({
         messages: this.messages,
@@ -85,7 +86,7 @@ export class AgentSession {
 
       /* ---- No tool calls → idle ---- */
       if (actions.length === 0) {
-        this.events.emit({ type: "agent.idle" })
+        this.emit({ type: "agent.idle" })
         break
       }
 
@@ -93,27 +94,24 @@ export class AgentSession {
       const decision = await this.approval.check(actions)
 
       if (decision.status === "denied") {
-        this.addMessage({
-          id: this.generateId("msg"),
-          role: "user",
-          content: `User denied actions: ${decision.reason ?? "No reason given"}`,
-          createdAt: Date.now(),
-          extra: { type: "approval.denied", decision },
-        })
+        const results = actions.map((action) => this.deniedResult(action, decision.reason ?? "User denied action"))
+        for (const result of results) this.emit({ type: "tool.error", result })
+        for (const obs of this.model.formatObservations(results)) this.addMessage(obs)
         continue
       }
 
       /* ---- Emit tool-started events ---- */
       for (const action of decision.actions) {
-        this.events.emit({ type: "tool.started", action })
+        this.emit({ type: "tool.started", action })
       }
 
       /* ---- Execute ---- */
-      const results = await this.runtime.executeMany(decision.actions)
+      const executedResults = await this.runtime.executeMany(decision.actions)
+      const results = this.completeResults(actions, executedResults)
 
       /* ---- Emit tool-finished / tool-error events ---- */
       for (const result of results) {
-        this.events.emit(
+        this.emit(
           result.ok
             ? { type: "tool.finished", result }
             : { type: "tool.error", result },
@@ -128,8 +126,19 @@ export class AgentSession {
 
       /* ---- Check for task.finish ---- */
       if (actions.some((a) => a.tool === "task.finish")) {
-        this.events.emit({ type: "agent.idle" })
+        this.emit({ type: "agent.idle" })
         break
+      }
+
+      if (step === this.maxSteps) {
+        this.addMessage({
+          id: this.generateId("msg"),
+          role: "user",
+          content: `Step limit (${this.maxSteps}) exceeded. Ask the user whether to continue.`,
+          createdAt: Date.now(),
+          extra: { type: "step_limit.exceeded", maxSteps: this.maxSteps },
+        })
+        this.emit({ type: "agent.idle" })
       }
     }
   }
@@ -138,8 +147,31 @@ export class AgentSession {
 
   private addMessage(message: AgentMessage): void {
     this.messages.push(message)
-    this.trace.append({ type: "message.added", message })
-    this.events.emit({ type: "message.added", message })
+    this.emit({ type: "message.added", message })
+  }
+
+  private emit(event: AgentEvent): void {
+    this.trace.append(event)
+    this.events.emit(event)
+  }
+
+  private completeResults(actions: AgentAction[], executedResults: ToolResult[]): ToolResult[] {
+    const byActionId = new Map(executedResults.map((result) => [result.actionId, result]))
+    return actions.map((action) => byActionId.get(action.id) ?? this.deniedResult(action, "Action was not approved"))
+  }
+
+  private deniedResult(action: AgentAction, reason: string): ToolResult {
+    const now = Date.now()
+    return {
+      actionId: action.id,
+      providerToolCallId: action.providerToolCallId,
+      tool: action.tool,
+      ok: false,
+      content: reason,
+      error: { code: "ACTION_NOT_APPROVED", message: reason, recoverable: true },
+      startedAt: now,
+      endedAt: now,
+    }
   }
 
   private generateId(prefix: string): string {

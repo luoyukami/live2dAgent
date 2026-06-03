@@ -25,6 +25,8 @@ export interface AgentMessage {
 /* ---- Agent Action (tool invocation) ---- */
 export interface AgentAction {
   id: string
+  /** Provider-specific tool call id, e.g. OpenAI `call_xxx`. */
+  providerToolCallId?: string
   tool: ToolName
   args: unknown
   source: "llm" | "user" | "system"
@@ -34,6 +36,8 @@ export interface AgentAction {
 /* ---- Tool Execution Result ---- */
 export interface ToolResult {
   actionId: string
+  /** Provider-specific tool call id copied from the originating action. */
+  providerToolCallId?: string
   tool: ToolName
   ok: boolean
   content: string

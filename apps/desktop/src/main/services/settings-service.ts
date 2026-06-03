@@ -50,7 +50,27 @@ export class SettingsService {
     this.persist()
   }
 
+  updatePublicPatch(patch: unknown): void {
+    const safePatch = validatePublicSettingsPatch(patch)
+    this.update(safePatch)
+  }
+
   private persist(): void {
     writeFileSync(this.file, JSON.stringify(this.settings, null, 2), "utf8")
   }
+}
+
+function validatePublicSettingsPatch(patch: unknown): Partial<AppSettings> {
+  if (!patch || typeof patch !== "object") return {}
+  const input = patch as Record<string, unknown>
+  const output: Partial<AppSettings> = {}
+
+  if (input.mode !== undefined) {
+    if (input.mode !== "manual" && input.mode !== "confirm" && input.mode !== "auto") {
+      throw new Error("Invalid agent mode")
+    }
+    output.mode = input.mode
+  }
+
+  return output
 }

@@ -1,16 +1,13 @@
 import { clipboard, desktopCapturer } from "electron"
-import { exec } from "node:child_process"
-import { mkdirSync, readFileSync, writeFileSync } from "node:fs"
-import { dirname, resolve, relative } from "node:path"
-import { promisify } from "node:util"
+import { spawn } from "node:child_process"
+import { existsSync, mkdirSync, readFileSync, realpathSync, writeFileSync } from "node:fs"
+import { dirname, isAbsolute, resolve, relative } from "node:path"
 import { AgentSession, EventBus, ToolRegistry, type AgentEvent, type AgentAction, type ToolResult, type ToolRuntime } from "@live2d-agent/agent-core"
 import { OpenAiCompatibleAdapter } from "@live2d-agent/model-openai-compatible"
 import { createDefaultTools, type RuntimeToolContext } from "@live2d-agent/tools"
 import type { PermissionService } from "./permission-service.js"
 import type { SettingsService } from "./settings-service.js"
 import type { TraceService } from "./trace-service.js"
-
-const execAsync = promisify(exec)
 
 export interface AgentServiceDeps {
   settings: SettingsService
@@ -54,7 +51,11 @@ export class AgentService implements ToolRuntime {
   }
 
   async executeMany(actions: AgentAction[]): Promise<ToolResult[]> {
-    return Promise.all(actions.map((action) => this.execute(action)))
+    const results: ToolResult[] = []
+    for (const action of actions) {
+      results.push(await this.execute(action))
+    }
+    return results
   }
 
   private async execute(action: AgentAction): Promise<ToolResult> {
@@ -80,14 +81,14 @@ export class AgentService implements ToolRuntime {
         const args = action.args
         const { command, cwd } = asRecord(args)
         const output = await context.runShell(String(command ?? ""), typeof cwd === "string" ? cwd : undefined)
-        return this.result(action, startedAt, output.exitCode === 0, output.stdout || output.stderr, output)
+        return this.result(action, startedAt, output.exitCode === 0, formatShellOutput(output), output)
       }],
       ["file.read", async (action) => {
         const startedAt = Date.now()
         const args = action.args
         const { path } = asRecord(args)
         const content = await context.readFile(String(path ?? ""))
-        return this.result(action, startedAt, true, content, { path })
+        return this.result(action, startedAt, true, truncate(content), { path })
       }],
       ["file.write", async (action) => {
         const startedAt = Date.now()
@@ -129,13 +130,12 @@ export class AgentService implements ToolRuntime {
     return {
       runShell: async (command, cwd) => {
         const workspace = this.deps.settings.get().workspaceDir
-        const safeCwd = cwd ? this.resolveWorkspacePath(cwd) : workspace
-        const { stdout, stderr } = await execAsync(command, { cwd: safeCwd, timeout: 30_000, windowsHide: true })
-        return { stdout, stderr, exitCode: stderr ? 1 : 0 }
+        const safeCwd = cwd ? this.resolveExistingWorkspacePath(cwd) : realpathSync(workspace)
+        return runShellCommand(command, safeCwd)
       },
-      readFile: async (path) => readFileSync(this.resolveWorkspacePath(path), "utf8"),
+      readFile: async (path) => readFileSync(this.resolveExistingWorkspacePath(path), "utf8"),
       writeFile: async (path, content) => {
-        const target = this.resolveWorkspacePath(path)
+        const target = this.resolveNewWorkspacePath(path)
         mkdirSync(dirname(target), { recursive: true })
         writeFileSync(target, content, "utf8")
       },
@@ -154,13 +154,37 @@ export class AgentService implements ToolRuntime {
   private resolveWorkspacePath(path: string): string {
     const workspace = this.deps.settings.get().workspaceDir
     const target = resolve(workspace, path)
-    if (relative(workspace, target).startsWith("..")) throw new Error("Path escapes workspace")
+    if (isOutside(workspace, target)) throw new Error("Path escapes workspace")
+    return target
+  }
+
+  private resolveExistingWorkspacePath(path: string): string {
+    const workspace = realpathSync(this.deps.settings.get().workspaceDir)
+    const target = realpathSync(this.resolveWorkspacePath(path))
+    if (isOutside(workspace, target)) throw new Error("Path escapes workspace")
+    return target
+  }
+
+  private resolveNewWorkspacePath(path: string): string {
+    const target = this.resolveWorkspacePath(path)
+    const workspace = realpathSync(this.deps.settings.get().workspaceDir)
+    if (existsSync(target)) {
+      const realTarget = realpathSync(target)
+      if (isOutside(workspace, realTarget)) throw new Error("Path escapes workspace")
+      return target
+    }
+    const parent = dirname(target)
+    const existingAncestor = findExistingAncestor(parent, workspace)
+    const realAncestor = realpathSync(existingAncestor)
+    if (isOutside(workspace, realAncestor)) throw new Error("Path escapes workspace")
+    if (!existsSync(parent)) mkdirSync(parent, { recursive: true })
     return target
   }
 
   private result(action: AgentAction, startedAt: number, ok: boolean, content: string, data?: unknown, code = "TOOL_ERROR"): ToolResult {
     return {
       actionId: action.id,
+      providerToolCallId: action.providerToolCallId,
       tool: action.tool,
       ok,
       content,
@@ -174,4 +198,101 @@ export class AgentService implements ToolRuntime {
 
 function asRecord(value: unknown): Record<string, unknown> {
   return value && typeof value === "object" ? (value as Record<string, unknown>) : {}
+}
+
+function isOutside(parent: string, target: string): boolean {
+  const rel = relative(parent, target)
+  return rel !== "" && (rel.startsWith("..") || isAbsolute(rel))
+}
+
+function runShellCommand(command: string, cwd: string): Promise<{ stdout: string; stderr: string; exitCode: number }> {
+  return new Promise((resolve) => {
+    const child = spawn(command, { cwd, shell: true, windowsHide: true })
+    const stdout = createLimitedCollector()
+    const stderr = createLimitedCollector()
+    let settled = false
+
+    const timer = setTimeout(() => {
+      if (settled) return
+      settled = true
+      killProcessTree(child.pid)
+      resolve({ stdout: stdout.text(), stderr: `${stderr.text()}\nCommand timed out after 30000ms`, exitCode: 124 })
+    }, 30_000)
+
+    child.stdout?.on("data", (chunk: Buffer) => stdout.append(chunk))
+    child.stderr?.on("data", (chunk: Buffer) => stderr.append(chunk))
+    child.on("error", (error) => {
+      if (settled) return
+      settled = true
+      clearTimeout(timer)
+      resolve({ stdout: stdout.text(), stderr: truncate(error.message), exitCode: 1 })
+    })
+    child.on("close", (code) => {
+      if (settled) return
+      settled = true
+      clearTimeout(timer)
+      resolve({ stdout: stdout.text(), stderr: stderr.text(), exitCode: code ?? 1 })
+    })
+  })
+}
+
+function formatShellOutput(output: { stdout: string; stderr: string; exitCode: number }): string {
+  const parts: string[] = []
+  if (output.stdout) parts.push(`STDOUT:\n${output.stdout}`)
+  if (output.stderr) parts.push(`STDERR:\n${output.stderr}`)
+  parts.push(`Exit code: ${output.exitCode}`)
+  return parts.join("\n\n")
+}
+
+function truncate(content: string, maxChars = 12_000): string {
+  const edgeChars = Math.floor(maxChars / 2)
+  if (content.length <= maxChars) return content
+  return `${content.slice(0, edgeChars)}\n\n[... truncated ${content.length - maxChars} chars ...]\n\n${content.slice(-edgeChars)}`
+}
+
+function findExistingAncestor(path: string, workspace: string): string {
+  let current = path
+  while (!existsSync(current)) {
+    const parent = dirname(current)
+    if (parent === current || isOutside(workspace, parent)) throw new Error("Path escapes workspace")
+    current = parent
+  }
+  return current
+}
+
+function createLimitedCollector(maxBytes = 64 * 1024): { append(chunk: Buffer): void; text(): string } {
+  const chunks: Buffer[] = []
+  let bytes = 0
+  let truncatedBytes = 0
+
+  return {
+    append(chunk) {
+      if (bytes >= maxBytes) {
+        truncatedBytes += chunk.length
+        return
+      }
+      const remaining = maxBytes - bytes
+      const next = chunk.length > remaining ? chunk.subarray(0, remaining) : chunk
+      chunks.push(next)
+      bytes += next.length
+      truncatedBytes += chunk.length - next.length
+    },
+    text() {
+      const content = Buffer.concat(chunks).toString("utf8")
+      return truncatedBytes > 0 ? `${content}\n\n[... truncated ${truncatedBytes} bytes ...]` : content
+    },
+  }
+}
+
+function killProcessTree(pid: number | undefined): void {
+  if (!pid) return
+  if (process.platform === "win32") {
+    spawn("taskkill", ["/pid", String(pid), "/t", "/f"], { windowsHide: true })
+    return
+  }
+  try {
+    process.kill(pid, "SIGTERM")
+  } catch {
+    // Process may already have exited.
+  }
 }
