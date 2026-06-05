@@ -49,6 +49,19 @@ export class AgentService implements ToolRuntime {
   }
 
   async sendUserMessage(text: string): Promise<void> {
+    if (!this.deps.settings.get().openaiApiKey) {
+      this.events.emit({
+        type: "message.added",
+        message: {
+          id: `msg_sys_${Date.now()}`,
+          role: "assistant",
+          content: "API Key 未配置，请在设置中填写 API Key 后再使用。",
+          createdAt: Date.now(),
+          extra: { error: { code: "NO_API_KEY", message: "API Key not configured", recoverable: true } },
+        },
+      })
+      return
+    }
     if (!this.session) this.reconfigure()
     await this.session?.runUserMessage(text)
   }
@@ -154,7 +167,7 @@ export class AgentService implements ToolRuntime {
       captureScreenshot: async (displayId) => {
         const sources = await desktopCapturer.getSources({ types: ["screen"], thumbnailSize: { width: 1920, height: 1080 } })
         const source = sources.find((item) => item.display_id === displayId) ?? sources[0]
-        if (!source) throw new Error("No screen source available")
+        if (!source) throw new Error("截图失败：未找到可用的屏幕源，请检查是否有显示器连接")
         const pngBuffer = source.thumbnail.toPNG()
         return { data: pngBuffer, mimeType: "image/png" }
       },

@@ -1,5 +1,6 @@
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs"
-import { join, resolve } from "node:path"
+import { dirname, join, resolve } from "node:path"
+import { fileURLToPath } from "node:url"
 import type {
   AgentMode,
   AppSettings,
@@ -75,6 +76,42 @@ function isNumber(v: unknown): v is number {
 }
 
 /* ------------------------------------------------------------------ */
+/*  Local dev model detection                                         */
+/* ------------------------------------------------------------------ */
+
+/**
+ * Locate the local development Live2D model when `modelPath` is empty.
+ * Checks for `local/live2dcubismcore.min.js` and `local/玳瑁猫v1_vts/*.model3.json`.
+ * Returns an absolute path to the model JSON, or null if not found.
+ */
+function findLocalDevModelPath(): string | null {
+  const candidates: string[] = []
+
+  /* 1. process.cwd() — reliable during `pnpm dev` from repo root */
+  candidates.push(process.cwd())
+
+  /* 2. Derive from the bundle location (out/main/main.js -> repo root) */
+  try {
+    const modulePath = fileURLToPath(import.meta.url)
+    candidates.push(resolve(dirname(modulePath), "..", "..", ".."))
+  } catch {
+    /* ignore – import.meta.url may not be available */
+  }
+
+  for (const root of candidates) {
+    const localDir = join(root, "local")
+    const coreJs = join(localDir, "live2dcubismcore.min.js")
+    const modelDir = join(localDir, "玳瑁猫v1_vts")
+    const modelJson = join(modelDir, "玳瑁猫v1_vts.model3.json")
+    if (existsSync(coreJs) && existsSync(modelJson)) {
+      return modelJson
+    }
+  }
+
+  return null
+}
+
+/* ------------------------------------------------------------------ */
 /*  Service                                                           */
 /* ------------------------------------------------------------------ */
 
@@ -94,6 +131,15 @@ export class SettingsService {
     } else {
       this._settings = defaults
       this.persist()
+    }
+
+    /* ---- Dev fallback: use local model when modelPath is empty ---- */
+    if (!this._settings.live2d.modelPath) {
+      const localModel = findLocalDevModelPath()
+      if (localModel) {
+        this._settings.live2d.modelPath = localModel
+        this.persist()
+      }
     }
   }
 

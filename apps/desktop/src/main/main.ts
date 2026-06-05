@@ -1,4 +1,5 @@
-import { app } from "electron"
+import { app, net, protocol } from "electron"
+import { pathToFileURL } from "node:url"
 import { WindowManager } from "./window-manager.js"
 import { registerIpcHandlers } from "./ipc-handlers.js"
 import { AgentService } from "./services/agent-service.js"
@@ -10,7 +11,31 @@ import { TraceService } from "./services/trace-service.js"
 let windowManager: WindowManager | undefined
 let agentService: AgentService | undefined
 
+protocol.registerSchemesAsPrivileged([
+  {
+    scheme: "live2d-local",
+    privileges: {
+      standard: true,
+      secure: true,
+      supportFetchAPI: true,
+      corsEnabled: true,
+    },
+  },
+])
+
+function registerLive2DLocalProtocol(): void {
+  protocol.handle("live2d-local", (request) => {
+    const url = new URL(request.url)
+    let filePath = decodeURIComponent(url.pathname)
+    if (process.platform === "win32" && /^\/[a-zA-Z]:\//.test(filePath)) {
+      filePath = filePath.slice(1)
+    }
+    return net.fetch(pathToFileURL(filePath).toString())
+  })
+}
+
 async function bootstrap(): Promise<void> {
+  registerLive2DLocalProtocol()
   const userDataDir = app.getPath("userData")
   const settings = new SettingsService(userDataDir)
   const trace = new TraceService(userDataDir)

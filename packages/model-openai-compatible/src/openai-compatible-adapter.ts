@@ -55,8 +55,12 @@ export class OpenAiCompatibleAdapter implements ModelAdapter {
 
     if (!response.ok) {
       const errorText = await response.text().catch(() => "Unknown error")
+      const isImageUnsupported = /image|vision|multimodal|unsupported/i.test(errorText)
+      const userMessage = isImageUnsupported
+        ? "当前模型可能不支持图像输入，请切换到支持视觉的模型。"
+        : `API error ${response.status} ${response.statusText}: ${errorText}`
       return this.errorMessage(
-        `API error ${response.status} ${response.statusText}: ${errorText}`,
+        userMessage,
         { code: "API_ERROR", message: errorText, recoverable: true },
       )
     }

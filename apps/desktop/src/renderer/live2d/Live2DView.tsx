@@ -5,6 +5,7 @@ import type { AvatarState } from "@live2d-agent/live2d"
 declare global {
   interface Window {
     PIXI?: typeof PIXI
+    Live2DCubismCore?: unknown
   }
 }
 
@@ -13,22 +14,22 @@ declare global {
 /* ------------------------------------------------------------------ */
 
 /**
- * Convert a local filesystem path to a file:// URL.
+ * Convert a local filesystem path to a renderer-loadable URL.
  * - `http://` / `https://` / `file://` are passed through
- * - Windows absolute paths (`C:\path` or `C:/path`) get `file:///` prefix
- * - Unix absolute paths (`/path`) get `file://` prefix
+ * - Local absolute paths use the app's `live2d-local://` protocol so Vite dev
+ *   and packaged renderer pages can fetch model-relative textures and Core JS.
  */
-function toFileUrl(path: string): string {
+function toResourceUrl(path: string): string {
   if (/^https?:\/\//i.test(path) || path.startsWith("file://")) {
     return path
   }
   // Windows absolute path: C:\path\to\file or C:/path/to/file
   if (/^[a-zA-Z]:[/\\]/.test(path)) {
-    return "file:///" + path.replace(/\\/g, "/")
+    return "live2d-local:///" + path.replace(/\\/g, "/")
   }
   // Unix absolute path
   if (path.startsWith("/")) {
-    return "file://" + path
+    return "live2d-local://" + path
   }
   return path
 }
@@ -129,11 +130,40 @@ export function Live2DView({ modelPath, avatarState }: Live2DViewProps): JSX.Ele
 
   /* ---- Internal helpers ---- */
 
+  /**
+   * Dynamically load the Cubism Core JS from a path relative to the model.
+   * This must complete before pixi-live2d-display-lipsyncpatch is imported.
+   */
+  async function loadCubismCore(modelPath: string): Promise<void> {
+    if (window.Live2DCubismCore) return
+
+    return new Promise<void>((resolve, reject) => {
+      const modelUrl = toResourceUrl(modelPath)
+      const slashIdx = modelUrl.lastIndexOf("/")
+      const dirUrl = modelUrl.substring(0, slashIdx + 1)
+      let coreUrl: string
+      try {
+        coreUrl = new URL("../live2dcubismcore.min.js", dirUrl).href
+      } catch {
+        reject(new Error("Failed to resolve Cubism Core URL"))
+        return
+      }
+
+      const script = document.createElement("script")
+      script.src = coreUrl
+      script.onload = () => resolve()
+      script.onerror = () =>
+        reject(new Error(`Cubism Core 加载失败: ${coreUrl}`))
+      document.head.appendChild(script)
+    })
+  }
+
   async function loadModel(path: string): Promise<void> {
     try {
       window.PIXI = PIXI
+      await loadCubismCore(path)
       const { Live2DModel } = await import("pixi-live2d-display-lipsyncpatch")
-      const url = toFileUrl(path)
+      const url = toResourceUrl(path)
       const model = await Live2DModel.from(url)
 
       modelRef.current = model
@@ -142,7 +172,12 @@ export function Live2DView({ modelPath, avatarState }: Live2DViewProps): JSX.Ele
       centerModel(model)
       setLoadError(null)
     } catch (err) {
-      setLoadError("Live2D 加载失败，使用 fallback")
+      const msg = err instanceof Error ? err.message : String(err)
+      if (msg.includes("Cubism Core")) {
+        setLoadError(`Live2D 加载失败：无法加载 Cubism Core JS`)
+      } else {
+        setLoadError("Live2D 加载失败，使用 fallback 显示")
+      }
       console.error("[Live2DView] Failed to load model:", err)
     }
   }

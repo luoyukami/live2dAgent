@@ -44,6 +44,7 @@ export function App(): JSX.Element {
   const [settings, setSettings] = useState<PublicSettings | null>(null)
   const [showSettings, setShowSettings] = useState(false)
   const [form, setForm] = useState<SettingsForm>(defaultForm)
+  const [settingsError, setSettingsError] = useState<string | null>(null)
 
   useEffect(() => {
     window.petAgent.getSettings().then(setSettings)
@@ -108,6 +109,7 @@ export function App(): JSX.Element {
 
   async function saveSettings(): Promise<void> {
     try {
+      setSettingsError(null)
       if (form.workspaceDir !== settings?.workspaceDir) {
         await window.petAgent.updateWorkspaceDir(form.workspaceDir)
       }
@@ -131,7 +133,7 @@ export function App(): JSX.Element {
       setForm((prev) => ({ ...prev, apiKey: "" }))
       setShowSettings(false)
     } catch (err) {
-      alert("保存设置失败：" + (err as Error).message)
+      setSettingsError("保存设置失败：" + (err as Error).message)
     }
   }
 
@@ -166,7 +168,7 @@ export function App(): JSX.Element {
               <option value="confirm">confirm</option>
               <option value="auto">auto</option>
             </select>
-            <button className="icon-btn" onClick={() => setShowSettings((s) => !s)} title="设置">
+            <button className="icon-btn" onClick={() => { setShowSettings((s) => !s); setSettingsError(null) }} title="设置">
               ⚙
             </button>
             <button className="icon-btn" onClick={clearVisibleMessages} title="仅清空当前显示，不删除 trace">
@@ -249,6 +251,7 @@ export function App(): JSX.Element {
               </div>
             </div>
 
+            {settingsError && <div className="settings-error">{settingsError}</div>}
             <div className="settings-footer">
               <button onClick={() => void saveSettings()}>保存</button>
             </div>

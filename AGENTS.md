@@ -38,7 +38,18 @@ corepack pnpm build
 - 首次启动会在 Electron `userData` 目录生成 `settings.json`。
 - OpenAI-compatible 配置项：`OPENAI_BASE_URL`、`OPENAI_API_KEY`、`OPENAI_MODEL`。
 - `workspaceDir` 默认在 Electron `userData/workspace`，工具文件读写必须限制在 workspace 内。
-- trace 默认写入 Electron `userData/traces/*.jsonl`。
+- trace 默认写入 Electron `userData/traces/latest.jsonl` 与 `userData/traces/sessions/*.jsonl`。
+- artifact 默认写入 Electron `userData/artifacts/`，截图在 `artifacts/screenshots/` 下。
+
+## 本地开发 Live2D 资源
+
+- `local/` 为本地开发资源目录，已加入 `.gitignore`，不得提交其中模型、Core JS 或用户素材。
+- 开发期间默认使用：
+  - Cubism Core JS：`local/live2dcubismcore.min.js`
+  - Live2D 模型：`local/玳瑁猫v1_vts/玳瑁猫v1_vts.model3.json`
+- 若 `settings.json` 中 `live2d.modelPath` 为空，开发环境应优先回落到上述本地模型路径。
+- Renderer 只可通过受控逻辑加载 Live2D 展示资源，不得把 Live2D 层接入 Agent 决策或工具执行。
+- 更换本地模型时，只修改本地 `settings.json` 或 `local/` 内容，不要把资源路径硬编码到 Agent Core。
 
 ## 项目边界
 
