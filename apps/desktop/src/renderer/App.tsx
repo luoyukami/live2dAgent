@@ -1,8 +1,9 @@
-import { useEffect, useMemo, useState } from "react"
+import { useEffect, useMemo, useRef, useState } from "react"
 import type { AgentEvent, AgentMessage, AgentAction } from "@live2d-agent/agent-core"
 import { mapEventToState, type AvatarState } from "@live2d-agent/live2d"
-import type { PublicSettings } from "@live2d-agent/shared"
+import type { PublicSettings, DebugSnapshot } from "@live2d-agent/shared"
 import { Live2DView } from "./live2d/Live2DView"
+import { DebugPanel } from "./components/DebugPanel"
 
 interface SettingsForm {
   mode: PublicSettings["mode"]
@@ -46,6 +47,13 @@ export function App(): JSX.Element {
   const [form, setForm] = useState<SettingsForm>(defaultForm)
   const [settingsError, setSettingsError] = useState<string | null>(null)
 
+  /* ---- v0.2 Debug states ---- */
+  const [showDebug, setShowDebug] = useState(false)
+  const [snapshot, setSnapshot] = useState<DebugSnapshot | null>(null)
+  const [traceEvents, setTraceEvents] = useState<Array<{ ts: number; event: AgentEvent }>>([])
+  const [lastManualResult, setLastManualResult] = useState<unknown>(null)
+  const textareaRef = useRef<HTMLTextAreaElement>(null)
+
   useEffect(() => {
     window.petAgent.getSettings().then(setSettings)
     return window.petAgent.onAgentEvent((event: AgentEvent) => {
@@ -81,6 +89,24 @@ export function App(): JSX.Element {
       return () => clearTimeout(timer)
     }
   }, [status])
+
+  /* Keyboard shortcut: Ctrl/Cmd+Shift+D */
+  useEffect(() => {
+    function onKeyDown(e: KeyboardEvent): void {
+      if ((e.ctrlKey || e.metaKey) && e.shiftKey && e.key.toLowerCase() === "d") {
+        e.preventDefault()
+        setShowDebug((prev) => {
+          const next = !prev
+          if (next) {
+            void refreshDebug()
+          }
+          return next
+        })
+      }
+    }
+    window.addEventListener("keydown", onKeyDown)
+    return () => window.removeEventListener("keydown", onKeyDown)
+  }, [])
 
   const assistantStateLabel = useMemo(() => ({
     idle: "空闲",
@@ -149,6 +175,46 @@ export function App(): JSX.Element {
     }
   }
 
+  /* ---- Debug helpers ---- */
+  async function refreshDebug(): Promise<void> {
+    try {
+      const snap = await window.petAgent.getDebugSnapshot()
+      setSnapshot(snap)
+      setLastManualResult(snap.lastToolResult)
+    } catch {
+      // ignore
+    }
+    try {
+      const trace = await window.petAgent.getTraceEvents()
+      setTraceEvents(trace)
+    } catch {
+      // ignore
+    }
+  }
+
+  async function handleRunManualAction(tool: string, args: unknown): Promise<void> {
+    await window.petAgent.runManualAction(tool, args)
+    // give main process a moment to update snapshot/trace
+    await new Promise((r) => setTimeout(r, 400))
+    await refreshDebug()
+  }
+
+  function fillInput(text: string): void {
+    setInput(text)
+    setTimeout(() => textareaRef.current?.focus(), 0)
+  }
+
+  async function sendFromPreset(text: string): Promise<void> {
+    if (isSending) return
+    setInput("")
+    setIsSending(true)
+    try {
+      await window.petAgent.sendUserMessage(text)
+    } finally {
+      setIsSending(false)
+    }
+  }
+
   return (
     <main className="shell">
       <section className="avatar" data-state={status}>
@@ -180,7 +246,10 @@ export function App(): JSX.Element {
               <option value="confirm">confirm</option>
               <option value="auto">auto</option>
             </select>
-            <button className="icon-btn" onClick={() => { setShowSettings((s) => !s); setSettingsError(null) }} title="设置">
+            <button className="icon-btn" onClick={() => { setShowDebug((s) => { if (!s) void refreshDebug(); return !s }); setShowSettings(false) }} title="Debug (Ctrl+Shift+D)">
+              🐛
+            </button>
+            <button className="icon-btn" onClick={() => { setShowSettings((s) => !s); setSettingsError(null); setShowDebug(false) }} title="设置">
               ⚙
             </button>
             <button className="icon-btn" onClick={clearVisibleMessages} title="仅清空当前显示，不删除 trace">
@@ -273,6 +342,33 @@ export function App(): JSX.Element {
           </div>
         )}
 
+        {showDebug && (
+          <DebugPanel
+            snapshot={snapshot}
+            traceEvents={traceEvents}
+            onRefresh={refreshDebug}
+            onOpenTraceFolder={() => void window.petAgent.openTraceFolder()}
+            onOpenArtifactFolder={() => void window.petAgent.openArtifactFolder()}
+            onOpenPromptFolder={() => void window.petAgent.openPromptFolder()}
+            onReloadSettings={async () => {
+              try {
+                const s = await window.petAgent.reloadSettings()
+                setSettings(s)
+              } catch (err) {
+                alert("reloadSettings 失败: " + (err as Error).message)
+              }
+            }}
+            onReloadPrompt={() => void window.petAgent.reloadPrompt()}
+            onReloadLive2D={() => void window.petAgent.reloadLive2D()}
+            onClearMessages={clearVisibleMessages}
+            onRunManualAction={handleRunManualAction}
+            lastManualResult={lastManualResult}
+            onFillInput={fillInput}
+            onSendMessage={sendFromPreset}
+            onClose={() => setShowDebug(false)}
+          />
+        )}
+
         <div className="messages">
           {messages
             .filter((message) => message.role !== "system")
@@ -285,6 +381,7 @@ export function App(): JSX.Element {
 
         <footer>
           <textarea
+            ref={textareaRef}
             value={input}
             onChange={(event) => setInput(event.target.value)}
             onKeyDown={(event) => {

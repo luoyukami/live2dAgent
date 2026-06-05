@@ -176,6 +176,18 @@ export class SettingsService {
     }
   }
 
+  reload(): PublicSettings {
+    const defaults = createDefaultSettings(this.userDataDir)
+    if (existsSync(this.file)) {
+      const raw = JSON.parse(readFileSync(this.file, "utf8")) as Record<string, unknown>
+      this._settings = deepMergeDefaults(raw, defaults)
+    } else {
+      this._settings = defaults
+      this.persist()
+    }
+    return this.getPublicSettings()
+  }
+
   /** Full settings (internal use only — never expose apiKey to renderer) */
   get(): AppSettings {
     return { ...this._settings }

@@ -16,6 +16,9 @@ export interface OpenAiCompatibleAdapterConfig {
   apiKey: string
   model: string
   artifactReader?: ArtifactReader
+  systemPromptProvider?: () => string | undefined
+  onModelRequest?: (request: unknown) => void
+  onModelResponse?: (response: unknown) => void
 }
 
 export interface ArtifactReader {
@@ -41,6 +44,7 @@ export class OpenAiCompatibleAdapter implements ModelAdapter {
     tools: ToolDefinition[]
   }): Promise<AgentMessage> {
     const body = this.buildRequestBody(input.messages, input.tools)
+    this.config.onModelRequest?.(this.redactRequest(body))
 
     let response: Response
     try {
@@ -59,6 +63,7 @@ export class OpenAiCompatibleAdapter implements ModelAdapter {
 
     if (!response.ok) {
       const errorText = await response.text().catch(() => "Unknown error")
+      this.config.onModelResponse?.({ status: response.status, statusText: response.statusText, error: errorText })
       const isImageUnsupported = /image|vision|multimodal|unsupported/i.test(errorText)
       const userMessage = isImageUnsupported
         ? "当前模型可能不支持图像输入，请切换到支持视觉的模型。"
@@ -72,6 +77,7 @@ export class OpenAiCompatibleAdapter implements ModelAdapter {
     let json: Record<string, unknown>
     try {
       json = (await response.json()) as Record<string, unknown>
+      this.config.onModelResponse?.(json)
     } catch {
       return this.errorMessage("Invalid JSON response from model API", {
         recoverable: true,
@@ -270,7 +276,7 @@ export class OpenAiCompatibleAdapter implements ModelAdapter {
   ): Record<string, unknown> {
     const body: Record<string, unknown> = {
       model: this.config.model,
-      messages: messages.map((m) => this.formatMessage(m)),
+      messages: this.withSystemPrompt(messages).map((m) => this.formatMessage(m)),
     }
 
     if (tools.length > 0) {
@@ -285,6 +291,24 @@ export class OpenAiCompatibleAdapter implements ModelAdapter {
     }
 
     return body
+  }
+
+  private withSystemPrompt(messages: AgentMessage[]): AgentMessage[] {
+    const systemPrompt = this.config.systemPromptProvider?.()?.trim()
+    if (!systemPrompt) return messages
+    return [
+      {
+        id: "system_dev_prompt",
+        role: "system",
+        content: systemPrompt,
+        createdAt: Date.now(),
+      },
+      ...messages.filter((message) => message.role !== "system"),
+    ]
+  }
+
+  private redactRequest(body: Record<string, unknown>): Record<string, unknown> {
+    return JSON.parse(JSON.stringify(body)) as Record<string, unknown>
   }
 
   private formatMessage(message: AgentMessage): Record<string, unknown> {

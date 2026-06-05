@@ -73,6 +73,7 @@ export type AgentEvent =
   | { type: "tool.finished"; result: ToolResult }
   | { type: "tool.error"; result: ToolResult }
   | { type: "agent.error"; error: string }
+  | { type: "settings.updated"; settings?: unknown }
 
 /* ---- Callback & subscription types ---- */
 export type AgentEventCallback = (event: AgentEvent) => void

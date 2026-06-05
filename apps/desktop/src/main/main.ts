@@ -7,6 +7,7 @@ import { registerIpcHandlers } from "./ipc-handlers.js"
 import { AgentService } from "./services/agent-service.js"
 import { ArtifactStore } from "./services/artifact-store.js"
 import { PermissionService } from "./services/permission-service.js"
+import { PromptService } from "./services/prompt-service.js"
 import { SettingsService } from "./services/settings-service.js"
 import { TraceService } from "./services/trace-service.js"
 
@@ -73,6 +74,7 @@ async function bootstrap(): Promise<void> {
   const trace = new TraceService(userDataDir)
   const permissions = new PermissionService(settings)
   const artifacts = new ArtifactStore(userDataDir)
+  const prompts = new PromptService(userDataDir)
 
   windowManager = new WindowManager()
   await windowManager.create()
@@ -81,10 +83,10 @@ async function bootstrap(): Promise<void> {
     trace.append(request.event)
     windowManager?.sendAgentEvent(request.event)
   })
-  agentService = new AgentService({ settings, trace, permissions, artifacts })
+  agentService = new AgentService({ settings, trace, permissions, artifacts, prompts })
   agentService.onEvent((event) => windowManager?.sendAgentEvent(event))
 
-  registerIpcHandlers({ agent: agentService, permissions, settings })
+  registerIpcHandlers({ agent: agentService, permissions, settings, trace, artifacts, prompts })
 }
 
 app.whenReady().then(bootstrap)

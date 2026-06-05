@@ -58,6 +58,8 @@ button:disabled { opacity: .55; cursor: not-allowed; }
 .message-actions { display: flex; gap: 6px; }
 .ghost-btn { padding: 3px 7px; border-radius: 8px; background: rgba(255,255,255,.12); color: #e2e8f0; font-size: 11px; }
 .ghost-btn:hover { background: rgba(255,255,255,.2); }
+.ghost-btn.active { background: rgba(56, 189, 248, .35); color: #e0f2fe; }
+.ghost-btn.danger { background: rgba(248, 113, 113, .22); color: #fecaca; }
 .tool-summary { color: #94a3b8; }
 .approval { border: 1px solid rgba(251, 191, 36, .55); background: rgba(120, 53, 15, .45); border-radius: 16px; padding: 10px; display: grid; gap: 8px; }
 .approval code { display: block; max-height: 88px; overflow: auto; white-space: pre-wrap; color: #fde68a; }
@@ -86,5 +88,48 @@ button:disabled { opacity: .55; cursor: not-allowed; }
 .badge.warn { background: rgba(254, 202, 202, .2); color: #fca5a5; }
 .settings-footer { display: flex; justify-content: flex-end; }
 .settings-error { font-size: 12px; color: #fca5a5; background: rgba(127, 29, 29, .5); padding: 6px 10px; border-radius: 8px; border: 1px solid rgba(248, 113, 113, .4); }
+
+/* Debug panel */
+.debug-panel { position: absolute; inset: 0; z-index: 11; display: grid; grid-template-rows: auto 1fr; gap: 10px; padding: 14px; border-radius: 22px; background: rgba(15, 23, 42, .92); backdrop-filter: blur(24px); border: 1px solid rgba(255,255,255,.18); }
+.debug-header { display: flex; align-items: center; justify-content: space-between; gap: 10px; flex-wrap: wrap; }
+.debug-header b { font-size: 15px; }
+.debug-tabs { display: flex; align-items: center; gap: 6px; }
+.debug-actions { display: flex; align-items: center; gap: 6px; }
+.debug-body { min-height: 0; overflow: auto; display: flex; flex-direction: column; gap: 12px; padding-right: 2px; }
+.debug-overview { display: flex; flex-direction: column; gap: 14px; }
+.debug-section h4 { margin: 0 0 8px; font-size: 13px; color: #94a3b8; text-transform: uppercase; letter-spacing: .04em; }
+.debug-kv { display: grid; grid-template-columns: 1fr 1fr; gap: 6px 12px; font-size: 12px; }
+.debug-kv > div { display: flex; justify-content: space-between; gap: 8px; padding: 6px 8px; border-radius: 8px; background: rgba(255,255,255,.06); }
+.debug-kv > div span:first-child { color: #94a3b8; }
+.debug-kv > div span:last-child { color: #e2e8f0; word-break: break-all; text-align: right; }
+.debug-events { display: flex; flex-direction: column; gap: 4px; }
+.debug-event-row { display: flex; align-items: center; gap: 8px; padding: 5px 8px; border-radius: 8px; background: rgba(255,255,255,.06); font-size: 12px; cursor: default; }
+.debug-actions-row { display: flex; flex-wrap: wrap; gap: 6px; }
+.trace-json { background: rgba(2, 6, 23, .7); border: 1px solid rgba(255,255,255,.10); border-radius: 10px; padding: 10px; font-size: 11px; color: #e2e8f0; overflow: auto; max-height: 240px; white-space: pre-wrap; word-break: break-word; margin: 6px 0 0; }
+.prompt-preview { max-height: 200px; }
+
+/* Trace viewer */
+.trace-viewer { display: flex; flex-direction: column; gap: 10px; }
+.trace-toolbar { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.trace-filter { flex: 1; min-width: 180px; }
+.trace-list { display: flex; flex-direction: column; gap: 6px; }
+.trace-item { background: rgba(255,255,255,.06); border-radius: 10px; overflow: hidden; }
+.trace-row { display: flex; align-items: center; gap: 8px; padding: 8px 10px; cursor: pointer; font-size: 12px; }
+.trace-row:hover { background: rgba(255,255,255,.08); }
+.trace-ts { color: #94a3b8; font-variant-numeric: tabular-nums; min-width: 64px; }
+.trace-type { flex: 1; color: #e2e8f0; }
+
+/* Manual injector */
+.manual-injector { display: flex; flex-direction: column; gap: 12px; }
+.manual-form { display: flex; flex-direction: column; gap: 10px; }
+.manual-form button { align-self: flex-start; }
+.manual-result { background: rgba(255,255,255,.06); border-radius: 12px; padding: 10px; }
+
+/* Scenario presets */
+.presets-panel { display: flex; flex-direction: column; gap: 10px; }
+.presets-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(200px, 1fr)); gap: 10px; }
+.preset-card { display: flex; flex-direction: column; gap: 8px; padding: 10px; border-radius: 12px; background: rgba(255,255,255,.08); border: 1px solid rgba(255,255,255,.10); }
+.preset-label { font-size: 13px; font-weight: 700; color: #e2e8f0; }
+.preset-actions { display: flex; gap: 6px; }
 
 @keyframes float { 0%, 100% { transform: translateY(0) scale(1); } 50% { transform: translateY(-10px) scale(1.02); } }

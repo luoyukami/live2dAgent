@@ -16,6 +16,7 @@ export type {
   UiSettingsPatch,
   AgentSettingsPatch,
   AppSettingsPublicPatch,
+  DebugSnapshot,
 } from "./schemas.js"
 export { DEFAULT_PERMISSION_POLICY } from "./schemas.js"
 export type {

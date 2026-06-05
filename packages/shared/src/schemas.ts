@@ -122,3 +122,34 @@ export interface AppSettingsPublicPatch {
   ui?: UiSettingsPatch
   agent?: AgentSettingsPatch
 }
+
+/* ------------------------------------------------------------------ */
+/*  Debug Snapshot (used by renderer debug panel)                     */
+/* ------------------------------------------------------------------ */
+
+export interface DebugSnapshot {
+  settings: PublicSettings
+  session: {
+    tracePath: string
+    stepCount?: number
+    avatarState?: string
+  }
+  recentEvents: Array<{ ts: number; event: unknown }>
+  lastModelRequest?: unknown
+  lastModelResponse?: unknown
+  lastToolCall?: unknown
+  lastPermissionDecision?: unknown
+  lastToolResult?: unknown
+  systemPromptPreview?: string
+  promptError?: string
+
+  /** Convenience aliases used by the renderer Debug Panel. */
+  model: string
+  baseURL: string
+  workspace: string
+  mode: AgentMode
+  maxSteps: number
+  avatarState: string
+  tracePath: string
+  lastPermission?: unknown
+}

@@ -13,6 +13,7 @@ export class PermissionService implements PermissionController {
   private toolDefinitions = new Map<string, ToolDefinition>()
   private approvedOnce = new Set<string>()
   private pendingListener?: (payload: { event: AgentEvent }) => void
+  private lastDecision?: unknown
 
   constructor(private readonly settings: SettingsService) {}
 
@@ -26,15 +27,30 @@ export class PermissionService implements PermissionController {
 
   async check(actions: AgentAction[]): Promise<{ status: "approved" | "denied"; actions: AgentAction[]; reason?: string }> {
     const mode = this.settings.get().mode
-    if (mode === "manual") return { status: "denied", actions, reason: "manual mode blocks tool execution" }
+    if (mode === "manual") {
+      const decision = { status: "denied" as const, actions, reason: "manual mode blocks tool execution" }
+      this.lastDecision = decision
+      return decision
+    }
 
     const requiresApproval = actions.filter((action) => !this.canAutoApprove(action))
-    if (requiresApproval.length === 0) return { status: "approved", actions }
+    if (requiresApproval.length === 0) {
+      const decision = { status: "approved" as const, actions }
+      this.lastDecision = decision
+      return decision
+    }
 
     this.pendingListener?.({ event: { type: "approval.pending", actions: requiresApproval } })
     return new Promise((resolve) => {
-      this.pending = { actions, requiresApproval, resolve }
+      this.pending = { actions, requiresApproval, resolve: (decision) => {
+        this.lastDecision = decision
+        resolve(decision)
+      } }
     })
+  }
+
+  getLastDecision(): unknown {
+    return this.lastDecision
   }
 
   approve(actionId: string): void {

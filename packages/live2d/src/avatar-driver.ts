@@ -68,6 +68,7 @@ export function mapEventToState(event: AgentEvent): AvatarState | null {
     case "message.added":
     case "approval.approved":
     case "approval.denied":
+    case "settings.updated":
       return null
   }
 }

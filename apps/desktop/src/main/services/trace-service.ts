@@ -1,6 +1,11 @@
-import { mkdirSync, appendFileSync, writeFileSync } from "node:fs"
+import { mkdirSync, appendFileSync, writeFileSync, readFileSync, existsSync } from "node:fs"
 import { join } from "node:path"
 import type { AgentEvent, TraceStore } from "@live2d-agent/agent-core"
+
+export interface TraceEntry {
+  ts: number
+  event: AgentEvent
+}
 
 /**
  * Writes trace events to:
@@ -13,9 +18,12 @@ import type { AgentEvent, TraceStore } from "@live2d-agent/agent-core"
 export class TraceService implements TraceStore {
   private readonly sessionFile: string
   private readonly latestFile: string
+  private readonly tracesDir: string
+  private readonly events: TraceEntry[] = []
 
   constructor(userDataDir: string) {
-    const sessionsDir = join(userDataDir, "traces", "sessions")
+    this.tracesDir = join(userDataDir, "traces")
+    const sessionsDir = join(this.tracesDir, "sessions")
     mkdirSync(sessionsDir, { recursive: true })
     this.sessionFile = join(sessionsDir, `${new Date().toISOString().replace(/[:.]/g, "-")}.jsonl`)
     this.latestFile = join(userDataDir, "traces", "latest.jsonl")
@@ -25,9 +33,39 @@ export class TraceService implements TraceStore {
 
   append(event: AgentEvent): void {
     const sanitised = this.sanitiseEvent(event)
-    const line = `${JSON.stringify({ ts: Date.now(), event: sanitised })}\n`
+    const entry = { ts: Date.now(), event: sanitised }
+    this.events.push(entry)
+    if (this.events.length > 500) this.events.splice(0, this.events.length - 500)
+    const line = `${JSON.stringify(entry)}\n`
     appendFileSync(this.sessionFile, line, "utf8")
     appendFileSync(this.latestFile, line, "utf8")
+  }
+
+  getSessionFile(): string {
+    return this.sessionFile
+  }
+
+  getTracesDir(): string {
+    return this.tracesDir
+  }
+
+  getRecentEvents(limit = 100): TraceEntry[] {
+    return this.events.slice(-limit)
+  }
+
+  readCurrentEvents(): TraceEntry[] {
+    if (this.events.length > 0) return [...this.events]
+    if (!existsSync(this.latestFile)) return []
+    return readFileSync(this.latestFile, "utf8")
+      .split(/\r?\n/)
+      .filter(Boolean)
+      .flatMap((line) => {
+        try {
+          return [JSON.parse(line) as TraceEntry]
+        } catch {
+          return []
+        }
+      })
   }
 
   /* ---------------------------------------------------------------- */

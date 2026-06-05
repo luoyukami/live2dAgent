@@ -59,6 +59,10 @@ export class ArtifactStore {
     return readFileSync(target)
   }
 
+  getBaseDir(): string {
+    return this.baseDir
+  }
+
   private kindToDir(kind: ArtifactKind): string {
     switch (kind) {
       case "screenshot":

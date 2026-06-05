@@ -25,6 +25,17 @@ export const IPC_CHANNELS = {
   SETTINGS_UPDATE_API_KEY: "settings:update-api-key",
   SETTINGS_UPDATE_WORKSPACE: "settings:update-workspace",
   SETTINGS_UPDATE_LIVE2D_MODEL_PATH: "settings:update-live2d-path",
+
+  /* ---- Debug / Trace / Manual Action (Phase 2) ---- */
+  DEBUG_GET_SNAPSHOT: "debug:get-snapshot",
+  TRACE_GET_EVENTS: "trace:get-events",
+  TRACE_OPEN_FOLDER: "trace:open-folder",
+  ARTIFACT_OPEN_FOLDER: "artifact:open-folder",
+  PROMPT_OPEN_FOLDER: "prompt:open-folder",
+  SETTINGS_RELOAD: "settings:reload",
+  PROMPT_RELOAD: "prompt:reload",
+  LIVE2D_RELOAD: "live2d:reload",
+  MANUAL_ACTION_RUN: "manual-action:run",
 } as const
 
 /** Default workspace-relative paths for trace and screenshot storage */

@@ -8,6 +8,7 @@ import { createDefaultTools, type RuntimeToolContext } from "@live2d-agent/tools
 import type { ArtifactRef } from "@live2d-agent/shared"
 import type { ArtifactStore } from "./artifact-store.js"
 import type { PermissionService } from "./permission-service.js"
+import type { PromptService } from "./prompt-service.js"
 import type { SettingsService } from "./settings-service.js"
 import type { TraceService } from "./trace-service.js"
 
@@ -16,14 +17,22 @@ export interface AgentServiceDeps {
   trace: TraceService
   permissions: PermissionService
   artifacts: ArtifactStore
+  prompts: PromptService
 }
 
 export class AgentService implements ToolRuntime {
   private session?: AgentSession
   private events = new EventBus()
   private executors = new Map<string, (action: AgentAction) => Promise<ToolResult>>()
+  private lastModelRequest?: unknown
+  private lastModelResponse?: unknown
+  private lastToolCall?: unknown
+  private lastToolResult?: unknown
+  private stepCount = 0
+  private avatarState = "idle"
 
   constructor(private readonly deps: AgentServiceDeps) {
+    this.events.subscribe((event) => this.captureEvent(event))
     this.reconfigure()
   }
 
@@ -33,7 +42,7 @@ export class AgentService implements ToolRuntime {
 
   reconfigure(): void {
     const settings = this.deps.settings.get()
-    const definitions = createDefaultTools()
+    const definitions = this.deps.prompts.applyToolOverrides(createDefaultTools())
     const registry = new ToolRegistry()
     registry.register(...definitions)
     this.deps.permissions.setToolDefinitions(definitions)
@@ -42,6 +51,9 @@ export class AgentService implements ToolRuntime {
       baseUrl: settings.openaiBaseUrl.replace(/\/$/, ""),
       apiKey: settings.openaiApiKey ?? "",
       model: settings.openaiModel,
+      systemPromptProvider: () => this.deps.prompts.getSystemPrompt(),
+      onModelRequest: (request) => { this.lastModelRequest = request },
+      onModelResponse: (response) => { this.lastModelResponse = response },
       artifactReader: {
         readArtifact: (ref) => this.deps.artifacts.readArtifact(ref),
       },
@@ -77,6 +89,47 @@ export class AgentService implements ToolRuntime {
       results.push(await this.execute(action))
     }
     return results
+  }
+
+  async runManualAction(tool: string, args: unknown): Promise<void> {
+    const action: AgentAction = {
+      id: `manual_${Date.now()}_${Math.random().toString(36).slice(2, 9)}`,
+      tool,
+      args,
+      source: "user",
+      createdAt: Date.now(),
+    }
+
+    const decision = await this.deps.permissions.check([action])
+    if (decision.status === "denied") {
+      const result = this.result(action, Date.now(), false, decision.reason ?? "Manual action denied", undefined, "ACTION_NOT_APPROVED")
+      this.emit({ type: "tool.error", result })
+      return
+    }
+
+    for (const approved of decision.actions) this.emit({ type: "tool.started", action: approved })
+    const results = await this.executeMany(decision.actions)
+    for (const result of results) {
+      this.emit(result.ok ? { type: "tool.finished", result } : { type: "tool.error", result })
+    }
+  }
+
+  getDebugState(): {
+    lastModelRequest?: unknown
+    lastModelResponse?: unknown
+    lastToolCall?: unknown
+    lastToolResult?: unknown
+    stepCount: number
+    avatarState: string
+  } {
+    return {
+      lastModelRequest: this.lastModelRequest,
+      lastModelResponse: this.lastModelResponse,
+      lastToolCall: this.lastToolCall,
+      lastToolResult: this.lastToolResult,
+      stepCount: this.stepCount,
+      avatarState: this.avatarState,
+    }
   }
 
   private async execute(action: AgentAction): Promise<ToolResult> {
@@ -230,6 +283,25 @@ export class AgentService implements ToolRuntime {
   private emit(event: AgentEvent): void {
     this.deps.trace.append(event)
     this.events.emit(event)
+  }
+
+  private captureEvent(event: AgentEvent): void {
+    if (event.type === "agent.thinking") this.stepCount += 1
+    this.avatarState = event.type === "agent.thinking"
+      ? "thinking"
+      : event.type === "approval.pending"
+        ? "waiting_approval"
+        : event.type === "tool.started"
+          ? "running_tool"
+          : event.type === "tool.finished"
+            ? "success"
+            : event.type === "tool.error" || event.type === "agent.error"
+              ? "error"
+              : event.type === "agent.idle"
+                ? "idle"
+                : this.avatarState
+    if (event.type === "tool.started") this.lastToolCall = event.action
+    if (event.type === "tool.finished" || event.type === "tool.error") this.lastToolResult = event.result
   }
 }
 

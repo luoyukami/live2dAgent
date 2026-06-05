@@ -1,7 +1,7 @@
 import { contextBridge, ipcRenderer } from "electron"
 import { IPC_CHANNELS } from "@live2d-agent/shared"
 import type { AgentEvent } from "@live2d-agent/agent-core"
-import type { PublicSettings, AppSettingsPublicPatch } from "@live2d-agent/shared"
+import type { PublicSettings, AppSettingsPublicPatch, DebugSnapshot } from "@live2d-agent/shared"
 
 const api = {
   /* ---- Agent ---- */
@@ -30,6 +30,26 @@ const api = {
       ipcRenderer.removeListener(IPC_CHANNELS.ON_AGENT_EVENT, wrapped)
     }
   },
+
+  /* ---- Debug / Trace / Manual Action (Phase 2) ---- */
+  getDebugSnapshot: (): Promise<DebugSnapshot> =>
+    ipcRenderer.invoke(IPC_CHANNELS.DEBUG_GET_SNAPSHOT),
+  getTraceEvents: (): Promise<Array<{ ts: number; event: AgentEvent }>> =>
+    ipcRenderer.invoke(IPC_CHANNELS.TRACE_GET_EVENTS),
+  openTraceFolder: (): Promise<void> =>
+    ipcRenderer.invoke(IPC_CHANNELS.TRACE_OPEN_FOLDER),
+  openArtifactFolder: (): Promise<void> =>
+    ipcRenderer.invoke(IPC_CHANNELS.ARTIFACT_OPEN_FOLDER),
+  openPromptFolder: (): Promise<void> =>
+    ipcRenderer.invoke(IPC_CHANNELS.PROMPT_OPEN_FOLDER),
+  reloadSettings: (): Promise<PublicSettings> =>
+    ipcRenderer.invoke(IPC_CHANNELS.SETTINGS_RELOAD),
+  reloadPrompt: (): Promise<void> =>
+    ipcRenderer.invoke(IPC_CHANNELS.PROMPT_RELOAD),
+  reloadLive2D: (): Promise<void> =>
+    ipcRenderer.invoke(IPC_CHANNELS.LIVE2D_RELOAD),
+  runManualAction: (tool: string, args: unknown): Promise<void> =>
+    ipcRenderer.invoke(IPC_CHANNELS.MANUAL_ACTION_RUN, tool, args),
 }
 
 contextBridge.exposeInMainWorld("petAgent", api)
