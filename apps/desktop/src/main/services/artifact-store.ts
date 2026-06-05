@@ -1,5 +1,5 @@
-import { mkdirSync, writeFileSync, readFileSync } from "node:fs"
-import { join } from "node:path"
+import { mkdirSync, writeFileSync, readFileSync, realpathSync } from "node:fs"
+import { isAbsolute, join, relative } from "node:path"
 import type { ArtifactKind, ArtifactRef } from "@live2d-agent/shared"
 
 /**
@@ -51,7 +51,12 @@ export class ArtifactStore {
    * Read an artifact's contents from disk by its reference.
    */
   readArtifact(ref: ArtifactRef): Buffer {
-    return readFileSync(ref.path)
+    const root = realpathSync(this.baseDir)
+    const target = realpathSync(ref.path)
+    if (!isInside(root, target)) {
+      throw new Error("Artifact path is outside artifact store")
+    }
+    return readFileSync(target)
   }
 
   private kindToDir(kind: ArtifactKind): string {
@@ -64,4 +69,9 @@ export class ArtifactStore {
         return "file-content"
     }
   }
+}
+
+function isInside(parent: string, target: string): boolean {
+  const rel = relative(parent, target)
+  return rel === "" || (!rel.startsWith("..") && !isAbsolute(rel))
 }

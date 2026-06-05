@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs"
+import { existsSync, mkdirSync, readFileSync, realpathSync, writeFileSync } from "node:fs"
 import { dirname, join, resolve } from "node:path"
 import { fileURLToPath } from "node:url"
 import type {
@@ -72,7 +72,40 @@ function isAgentMode(v: unknown): v is AgentMode {
 }
 
 function isNumber(v: unknown): v is number {
-  return typeof v === "number" && !Number.isNaN(v)
+  return typeof v === "number" && Number.isFinite(v)
+}
+
+function numberInRange(value: unknown, field: string, min: number, max: number): number | undefined {
+  if (value === undefined) return undefined
+  if (!isNumber(value) || value < min || value > max) {
+    throw new Error(`${field} must be a number between ${min} and ${max}`)
+  }
+  return value
+}
+
+function integerInRange(value: unknown, field: string, min: number, max: number): number | undefined {
+  const n = numberInRange(value, field, min, max)
+  if (n === undefined) return undefined
+  if (!Number.isInteger(n)) throw new Error(`${field} must be an integer between ${min} and ${max}`)
+  return n
+}
+
+function rejectRemoteLive2DModelPath(modelPath: string): void {
+  if (/^https?:\/\//i.test(modelPath.trim())) {
+    throw new Error("live2d.modelPath only supports local paths in v0.1")
+  }
+}
+
+function localModelPathFromSetting(modelPath: string): string | null {
+  if (!modelPath || /^https?:\/\//i.test(modelPath)) return null
+  if (modelPath.startsWith("file://")) {
+    try {
+      return fileURLToPath(modelPath)
+    } catch {
+      return null
+    }
+  }
+  return modelPath
 }
 
 /* ------------------------------------------------------------------ */
@@ -205,8 +238,35 @@ export class SettingsService {
     if (typeof modelPath !== "string") {
       throw new Error("live2d.modelPath must be a string")
     }
+    rejectRemoteLive2DModelPath(modelPath)
     this._settings.live2d.modelPath = modelPath
     this.persist()
+  }
+
+  /** Directories that the live2d-local:// protocol may serve. */
+  getAllowedLive2DRoots(): string[] {
+    const roots = new Set<string>()
+
+    const modelPath = localModelPathFromSetting(this._settings.live2d.modelPath)
+    if (modelPath) {
+      const modelDir = dirname(resolve(modelPath))
+      if (existsSync(modelDir)) roots.add(modelDir)
+    }
+
+    const devModel = findLocalDevModelPath()
+    if (devModel) roots.add(resolve(dirname(devModel), ".."))
+
+    const packagedModelsDir = join(this.userDataDir, "models", "live2d")
+    mkdirSync(packagedModelsDir, { recursive: true })
+    roots.add(packagedModelsDir)
+
+    return Array.from(roots).flatMap((root) => {
+      try {
+        return [realpathSync(root)]
+      } catch {
+        return []
+      }
+    })
   }
 
   private persist(): void {
@@ -247,9 +307,12 @@ function validatePublicSettingsPatch(patch: unknown): AppSettingsPublicPatch {
   if (input.live2d !== undefined && typeof input.live2d === "object") {
     const l2d = input.live2d as Record<string, unknown>
     const patch: Live2DSettingsPatch = {}
-    if (l2d.scale !== undefined && isNumber(l2d.scale)) patch.scale = l2d.scale
-    if (l2d.x !== undefined && isNumber(l2d.x)) patch.x = l2d.x
-    if (l2d.y !== undefined && isNumber(l2d.y)) patch.y = l2d.y
+    const scale = numberInRange(l2d.scale, "live2d.scale", 0.1, 5)
+    const x = numberInRange(l2d.x, "live2d.x", -5000, 5000)
+    const y = numberInRange(l2d.y, "live2d.y", -5000, 5000)
+    if (scale !== undefined) patch.scale = scale
+    if (x !== undefined) patch.x = x
+    if (y !== undefined) patch.y = y
     // modelPath is NOT allowed through public patch (sensitive local path)
     if (Object.keys(patch).length > 0) output.live2d = patch
   }
@@ -258,14 +321,16 @@ function validatePublicSettingsPatch(patch: unknown): AppSettingsPublicPatch {
     const ui = input.ui as Record<string, unknown>
     const patch: Partial<UiSettings> = {}
     if (ui.alwaysOnTop !== undefined && typeof ui.alwaysOnTop === "boolean") patch.alwaysOnTop = ui.alwaysOnTop
-    if (ui.opacity !== undefined && isNumber(ui.opacity)) patch.opacity = ui.opacity
+    const opacity = numberInRange(ui.opacity, "ui.opacity", 0.2, 1)
+    if (opacity !== undefined) patch.opacity = opacity
     if (Object.keys(patch).length > 0) output.ui = patch
   }
 
   if (input.agent !== undefined && typeof input.agent === "object") {
     const ag = input.agent as Record<string, unknown>
     const patch: Partial<AgentSettings> = {}
-    if (ag.maxSteps !== undefined && isNumber(ag.maxSteps)) patch.maxSteps = ag.maxSteps
+    const maxSteps = integerInRange(ag.maxSteps, "agent.maxSteps", 1, 100)
+    if (maxSteps !== undefined) patch.maxSteps = maxSteps
     if (Object.keys(patch).length > 0) output.agent = patch
   }
 

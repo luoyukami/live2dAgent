@@ -9,19 +9,25 @@ declare global {
   }
 }
 
+let cubismCorePromise: Promise<void> | null = null
+let cubismCoreScript: HTMLScriptElement | null = null
+
 /* ------------------------------------------------------------------ */
 /*  Helpers                                                            */
 /* ------------------------------------------------------------------ */
 
 /**
  * Convert a local filesystem path to a renderer-loadable URL.
- * - `http://` / `https://` / `file://` are passed through
  * - Local absolute paths use the app's `live2d-local://` protocol so Vite dev
  *   and packaged renderer pages can fetch model-relative textures and Core JS.
  */
 function toResourceUrl(path: string): string {
-  if (/^https?:\/\//i.test(path) || path.startsWith("file://")) {
-    return path
+  if (/^https?:\/\//i.test(path)) {
+    throw new Error("v0.1 仅支持加载本地 Live2D 模型路径")
+  }
+  if (path.startsWith("file://")) {
+    const url = new URL(path)
+    return toResourceUrl(decodeURIComponent(url.pathname))
   }
   // Windows absolute path: C:\path\to\file or C:/path/to/file
   if (/^[a-zA-Z]:[/\\]/.test(path)) {
@@ -136,8 +142,9 @@ export function Live2DView({ modelPath, avatarState }: Live2DViewProps): JSX.Ele
    */
   async function loadCubismCore(modelPath: string): Promise<void> {
     if (window.Live2DCubismCore) return
+    if (cubismCorePromise) return cubismCorePromise
 
-    return new Promise<void>((resolve, reject) => {
+    cubismCorePromise = new Promise<void>((resolve, reject) => {
       const modelUrl = toResourceUrl(modelPath)
       const slashIdx = modelUrl.lastIndexOf("/")
       const dirUrl = modelUrl.substring(0, slashIdx + 1)
@@ -152,10 +159,17 @@ export function Live2DView({ modelPath, avatarState }: Live2DViewProps): JSX.Ele
       const script = document.createElement("script")
       script.src = coreUrl
       script.onload = () => resolve()
-      script.onerror = () =>
+      script.onerror = () => {
+        script.remove()
+        if (cubismCoreScript === script) cubismCoreScript = null
+        cubismCorePromise = null
         reject(new Error(`Cubism Core 加载失败: ${coreUrl}`))
+      }
+      cubismCoreScript = script
       document.head.appendChild(script)
     })
+
+    return cubismCorePromise
   }
 
   async function loadModel(path: string): Promise<void> {

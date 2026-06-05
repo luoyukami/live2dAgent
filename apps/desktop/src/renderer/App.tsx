@@ -137,6 +137,18 @@ export function App(): JSX.Element {
     }
   }
 
+  async function clearApiKey(): Promise<void> {
+    try {
+      setSettingsError(null)
+      await window.petAgent.updateApiKey("")
+      const updated = await window.petAgent.getSettings()
+      setSettings(updated)
+      setForm((prev) => ({ ...prev, apiKey: "" }))
+    } catch (err) {
+      setSettingsError("清除 API Key 失败：" + (err as Error).message)
+    }
+  }
+
   return (
     <main className="shell">
       <section className="avatar" data-state={status}>
@@ -211,6 +223,9 @@ export function App(): JSX.Element {
                   <span className={`badge ${settings?.hasApiKey ? "ok" : "warn"}`}>
                     {settings?.hasApiKey ? "已配置" : "未配置"}
                   </span>
+                  <button className="ghost-btn" onClick={() => void clearApiKey()} disabled={!settings?.hasApiKey}>
+                    清除
+                  </button>
                 </div>
               </div>
 
@@ -336,7 +351,7 @@ function ApprovalBubble({ action }: { action: AgentAction }): JSX.Element {
       </details>
       <div className="approval-actions">
         <button onClick={() => window.petAgent.approveAction(action.id)}>{allowLabel}</button>
-        <button className="danger-btn" onClick={() => window.petAgent.denyAction(action.id, "User denied")}>拒绝</button>
+        <button className="danger-btn" onClick={() => window.petAgent.denyAction(action.id, "User denied this tool-call round")}>拒绝本轮工具调用</button>
       </div>
     </article>
   )

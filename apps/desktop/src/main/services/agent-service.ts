@@ -42,15 +42,20 @@ export class AgentService implements ToolRuntime {
       baseUrl: settings.openaiBaseUrl.replace(/\/$/, ""),
       apiKey: settings.openaiApiKey ?? "",
       model: settings.openaiModel,
+      artifactReader: {
+        readArtifact: (ref) => this.deps.artifacts.readArtifact(ref),
+      },
     })
 
     this.executors = this.createExecutors()
-    this.session = new AgentSession(model, registry, this, this.deps.permissions, this.deps.trace, this.events)
+    this.session = new AgentSession(model, registry, this, this.deps.permissions, this.deps.trace, this.events, {
+      maxSteps: settings.agent.maxSteps,
+    })
   }
 
   async sendUserMessage(text: string): Promise<void> {
     if (!this.deps.settings.get().openaiApiKey) {
-      this.events.emit({
+      this.emit({
         type: "message.added",
         message: {
           id: `msg_sys_${Date.now()}`,
@@ -220,6 +225,11 @@ export class AgentService implements ToolRuntime {
       startedAt,
       endedAt: Date.now(),
     }
+  }
+
+  private emit(event: AgentEvent): void {
+    this.deps.trace.append(event)
+    this.events.emit(event)
   }
 }
 

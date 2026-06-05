@@ -34,6 +34,10 @@ export interface TraceStore {
   append(event: AgentEvent): void
 }
 
+export interface AgentSessionOptions {
+  maxSteps?: number
+}
+
 /* ------------------------------------------------------------------ */
 /*  AgentSession — the core agent loop                                 */
 /* ------------------------------------------------------------------ */
@@ -49,7 +53,7 @@ export interface TraceStore {
  */
 export class AgentSession {
   messages: AgentMessage[] = []
-  private readonly maxSteps = 20
+  private readonly maxSteps: number
 
   constructor(
     private model: ModelAdapter,
@@ -58,7 +62,10 @@ export class AgentSession {
     private approval: PermissionController,
     private trace: TraceStore,
     private events: EventBus,
-  ) {}
+    options: AgentSessionOptions = {},
+  ) {
+    this.maxSteps = options.maxSteps ?? 20
+  }
 
   /**
    * Process a new user message through the full agent loop.
@@ -83,18 +90,19 @@ export class AgentSession {
       this.addMessage(assistantMessage)
 
       const actions = assistantMessage.actions ?? []
+      const actionsToHandle = this.actionsToHandle(actions)
 
       /* ---- No tool calls → idle ---- */
-      if (actions.length === 0) {
+      if (actionsToHandle.length === 0) {
         this.emit({ type: "agent.idle" })
         break
       }
 
       /* ---- Permission check ---- */
-      const decision = await this.approval.check(actions)
+      const decision = await this.approval.check(actionsToHandle)
 
       if (decision.status === "denied") {
-        const results = actions.map((action) => this.deniedResult(action, decision.reason ?? "User denied action"))
+        const results = actionsToHandle.map((action) => this.deniedResult(action, decision.reason ?? "User denied this tool-call round"))
         for (const result of results) this.emit({ type: "tool.error", result })
         for (const obs of this.model.formatObservations(results)) this.addMessage(obs)
         continue
@@ -107,7 +115,7 @@ export class AgentSession {
 
       /* ---- Execute ---- */
       const executedResults = await this.runtime.executeMany(decision.actions)
-      const results = this.completeResults(actions, executedResults)
+      const results = this.completeResults(actionsToHandle, executedResults)
 
       /* ---- Emit tool-finished / tool-error events ---- */
       for (const result of results) {
@@ -125,7 +133,7 @@ export class AgentSession {
       }
 
       /* ---- Check for task.finish ---- */
-      if (actions.some((a) => a.tool === "task.finish")) {
+      if (actionsToHandle.some((a) => a.tool === "task.finish")) {
         this.emit({ type: "agent.idle" })
         break
       }
@@ -158,6 +166,11 @@ export class AgentSession {
   private completeResults(actions: AgentAction[], executedResults: ToolResult[]): ToolResult[] {
     const byActionId = new Map(executedResults.map((result) => [result.actionId, result]))
     return actions.map((action) => byActionId.get(action.id) ?? this.deniedResult(action, "Action was not approved"))
+  }
+
+  private actionsToHandle(actions: AgentAction[]): AgentAction[] {
+    const finishAction = actions.find((action) => action.tool === "task.finish")
+    return finishAction ? [finishAction] : actions
   }
 
   private deniedResult(action: AgentAction, reason: string): ToolResult {

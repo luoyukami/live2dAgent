@@ -1,4 +1,3 @@
-import { readFileSync } from "node:fs"
 import type {
   ModelAdapter,
   AgentMessage,
@@ -16,6 +15,11 @@ export interface OpenAiCompatibleAdapterConfig {
   baseUrl: string
   apiKey: string
   model: string
+  artifactReader?: ArtifactReader
+}
+
+export interface ArtifactReader {
+  readArtifact(ref: ArtifactRef): Uint8Array
 }
 
 /**
@@ -244,8 +248,9 @@ export class OpenAiCompatibleAdapter implements ModelAdapter {
    */
   private readArtifactAsDataUrl(ref: ArtifactRef): string | undefined {
     try {
-      const buffer = readFileSync(ref.path)
-      const base64 = buffer.toString("base64")
+      if (!this.config.artifactReader) return undefined
+      const buffer = this.config.artifactReader.readArtifact(ref)
+      const base64 = Buffer.from(buffer).toString("base64")
       return `data:${ref.mimeType};base64,${base64}`
     } catch {
       return undefined

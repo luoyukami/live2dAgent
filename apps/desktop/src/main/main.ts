@@ -1,4 +1,6 @@
 import { app, net, protocol } from "electron"
+import { existsSync, realpathSync } from "node:fs"
+import { isAbsolute, relative } from "node:path"
 import { pathToFileURL } from "node:url"
 import { WindowManager } from "./window-manager.js"
 import { registerIpcHandlers } from "./ipc-handlers.js"
@@ -23,21 +25,51 @@ protocol.registerSchemesAsPrivileged([
   },
 ])
 
-function registerLive2DLocalProtocol(): void {
+function registerLive2DLocalProtocol(settings: SettingsService): void {
   protocol.handle("live2d-local", (request) => {
-    const url = new URL(request.url)
+    const filePath = decodeLive2DLocalPath(request.url)
+    if (!filePath || !existsSync(filePath)) {
+      return new Response("Not found", { status: 404 })
+    }
+
+    let realTarget: string
+    try {
+      realTarget = realpathSync(filePath)
+    } catch {
+      return new Response("Not found", { status: 404 })
+    }
+
+    const allowedRoots = settings.getAllowedLive2DRoots()
+    if (!allowedRoots.some((root) => isInside(root, realTarget))) {
+      return new Response("Forbidden", { status: 403 })
+    }
+
+    return net.fetch(pathToFileURL(realTarget).toString())
+  })
+}
+
+function decodeLive2DLocalPath(rawUrl: string): string | null {
+  try {
+    const url = new URL(rawUrl)
     let filePath = decodeURIComponent(url.pathname)
     if (process.platform === "win32" && /^\/[a-zA-Z]:\//.test(filePath)) {
       filePath = filePath.slice(1)
     }
-    return net.fetch(pathToFileURL(filePath).toString())
-  })
+    return filePath
+  } catch {
+    return null
+  }
+}
+
+function isInside(root: string, target: string): boolean {
+  const rel = relative(root, target)
+  return rel === "" || (!rel.startsWith("..") && !isAbsolute(rel))
 }
 
 async function bootstrap(): Promise<void> {
-  registerLive2DLocalProtocol()
   const userDataDir = app.getPath("userData")
   const settings = new SettingsService(userDataDir)
+  registerLive2DLocalProtocol(settings)
   const trace = new TraceService(userDataDir)
   const permissions = new PermissionService(settings)
   const artifacts = new ArtifactStore(userDataDir)
