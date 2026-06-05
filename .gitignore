@@ -14,3 +14,4 @@ screenshots/
 .env
 .env.*
 !.env.example
+local/
