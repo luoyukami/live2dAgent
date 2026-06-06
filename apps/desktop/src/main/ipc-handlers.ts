@@ -92,7 +92,11 @@ export function registerIpcHandlers(services: IpcServices): void {
       lastToolCall: debug.lastToolCall,
       lastPermissionDecision: services.permissions.getLastDecision(),
       lastToolResult: debug.lastToolResult,
-      systemPromptPreview: services.prompts.getPreview(),
+      // `systemPromptPreview` shows the prompt that will actually be sent
+      // to the model, so the debug panel reflects what the LLM sees. The raw
+      // user-editable prompt is exposed separately.
+      systemPromptPreview: truncatePreview(debug.composedSystemPrompt),
+      rawSystemPromptPreview: truncatePreview(debug.rawSystemPrompt),
       promptError: services.prompts.getError(),
       emotion: debug.emotion,
 
@@ -130,4 +134,13 @@ export function registerIpcHandlers(services: IpcServices): void {
   ipcMain.handle(IPC_CHANNELS.MANUAL_ACTION_RUN, async (_event, tool: string, args: unknown) => {
     await services.agent.runManualAction(tool, args)
   })
+}
+
+/* ------------------------------------------------------------------ */
+/*  Helpers                                                            */
+/* ------------------------------------------------------------------ */
+
+function truncatePreview(value: string, max = 2400): string {
+  if (value.length <= max) return value
+  return `${value.slice(0, max)}\n…[truncated ${value.length - max} chars]`
 }

@@ -151,6 +151,8 @@ export class AgentService implements ToolRuntime {
     stepCount: number
     avatarState: string
     emotion: DebugEmotionInfo
+    composedSystemPrompt: string
+    rawSystemPrompt: string
   } {
     const settings = this.deps.settings.get()
     const composedPrompt = this.composeActiveSystemPrompt()
@@ -171,6 +173,8 @@ export class AgentService implements ToolRuntime {
         lastParseWarning: this.emotionState.lastParseWarning,
         promptInjected: isEmotionPromptInjected(composedPrompt),
       },
+      composedSystemPrompt: composedPrompt,
+      rawSystemPrompt: this.deps.prompts.getSystemPrompt(),
     }
   }
 

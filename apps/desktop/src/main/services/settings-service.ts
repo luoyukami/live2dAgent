@@ -10,6 +10,7 @@ import {
   type Emotion,
   type EmotionSettings,
   type EmotionSettingsPatch,
+  type Live2DEmotionProfile,
   type Live2DSettings,
   type Live2DSettingsPatch,
   type UiSettings,
@@ -160,11 +161,20 @@ function unquoteYamlScalar(value: string): string {
 /* ------------------------------------------------------------------ */
 
 function deepMergeDefaults(parsed: Record<string, unknown>, defaults: AppSettings): AppSettings {
+  const parsedLive2d = (parsed.live2d ?? {}) as Partial<Live2DSettings>
   return {
     ...defaults,
     ...parsed,
     // Nested objects: merge each level with defaults so missing keys don't drop defaults
-    live2d: { ...defaults.live2d, ...((parsed.live2d ?? {}) as Partial<Live2DSettings>) },
+    live2d: {
+      ...defaults.live2d,
+      ...parsedLive2d,
+      // emotionProfile is a nested optional map; only assign it if the parsed
+      // payload actually contains a usable object. Otherwise leave undefined.
+      ...(isValidEmotionProfile(parsedLive2d.emotionProfile)
+        ? { emotionProfile: parsedLive2d.emotionProfile }
+        : {}),
+    },
     ui: { ...defaults.ui, ...((parsed.ui ?? {}) as Partial<UiSettings>) },
     agent: { ...defaults.agent, ...((parsed.agent ?? {}) as Partial<AgentSettings>) },
     permissions: { ...defaults.permissions, ...((parsed.permissions ?? {}) as Partial<PermissionSettings>) },
@@ -198,6 +208,52 @@ function pickBoolean(value: unknown, fallback: boolean): boolean {
 
 function pickEmotion(value: unknown, fallback: Emotion): Emotion {
   return isEmotion(value) ? value : fallback
+}
+
+/**
+ * Validates a user-supplied emotion profile. Returns the sanitized profile,
+ * or `undefined` if the input is not a usable object. The sanitizer silently
+ * drops malformed binding entries (motion must be string, motionIndex must
+ * be a non-negative integer, expression must be string, priority must be
+ * a number). This keeps hand-edited settings.json from breaking the app.
+ */
+function isValidEmotionProfile(value: unknown): value is Live2DEmotionProfile {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return false
+  const obj = value as Record<string, unknown>
+  for (const [key, binding] of Object.entries(obj)) {
+    if (!isEmotion(key)) return false
+    if (binding === null) continue
+    if (typeof binding !== "object") return false
+    const b = binding as Record<string, unknown>
+    if (b.motion !== undefined && typeof b.motion !== "string") return false
+    if (b.expression !== undefined && typeof b.expression !== "string") return false
+    if (b.motionIndex !== undefined && (!Number.isInteger(b.motionIndex) || (b.motionIndex as number) < 0)) return false
+    if (b.priority !== undefined && typeof b.priority !== "number") return false
+  }
+  return true
+}
+
+/**
+ * Apply an emotion patch on top of the current settings, enforcing the
+ * "master switch ⇒ prompt injection" invariant. Unlike `mergeEmotionSettings`,
+ * this function knows which fields were *explicitly* provided in the patch.
+ *
+ * Rules:
+ *  - Master switch ON  + patch did NOT specify injectPrompt  ⇒ injectPrompt = true
+ *  - Master switch OFF                                         ⇒ injectPrompt = false
+ *  - Master switch ON  + patch explicitly set injectPrompt     ⇒ honour the value
+ */
+function applyEmotionPatch(
+  current: EmotionSettings,
+  patch: Partial<EmotionSettings>,
+): EmotionSettings {
+  const merged: EmotionSettings = { ...current, ...patch }
+  if (!merged.enabled) {
+    merged.injectPrompt = false
+  } else if (patch.injectPrompt === undefined) {
+    merged.injectPrompt = true
+  }
+  return merged
 }
 
 /* ------------------------------------------------------------------ */
@@ -333,7 +389,12 @@ export class SettingsService {
     if (validated.openaiBaseUrl !== undefined) this._settings.openaiBaseUrl = validated.openaiBaseUrl
     if (validated.openaiModel !== undefined) this._settings.openaiModel = validated.openaiModel
     if (validated.live2d !== undefined) {
-      this._settings.live2d = { ...this._settings.live2d, ...validated.live2d }
+      // emotionProfile is a full replacement when present in the patch.
+      const next: Live2DSettings = { ...this._settings.live2d, ...validated.live2d }
+      if (validated.live2d.emotionProfile === undefined) {
+        next.emotionProfile = this._settings.live2d.emotionProfile
+      }
+      this._settings.live2d = next
     }
     if (validated.ui !== undefined) {
       this._settings.ui = { ...this._settings.ui, ...validated.ui }
@@ -345,14 +406,7 @@ export class SettingsService {
       this._settings.permissions = { ...this._settings.permissions, ...validated.permissions }
     }
     if (validated.emotion !== undefined) {
-      this._settings.emotion = mergeEmotionSettings(
-        { ...this._settings.emotion, ...validated.emotion },
-        DEFAULT_EMOTION_SETTINGS,
-      )
-      // Master switch off ⇒ force prompt injection off, no matter what was sent.
-      if (!this._settings.emotion.enabled) {
-        this._settings.emotion.injectPrompt = false
-      }
+      this._settings.emotion = applyEmotionPatch(this._settings.emotion, validated.emotion)
     }
     this.persist()
   }
@@ -470,6 +524,11 @@ function validatePublicSettingsPatch(patch: unknown): AppSettingsPublicPatch {
     if (scale !== undefined) patch.scale = scale
     if (x !== undefined) patch.x = x
     if (y !== undefined) patch.y = y
+    if (isValidEmotionProfile(l2d.emotionProfile)) {
+      // The user can override the default profile; the validator above has
+      // already ensured every entry is well-formed.
+      patch.emotionProfile = l2d.emotionProfile
+    }
     // modelPath is NOT allowed through public patch (sensitive local path)
     if (Object.keys(patch).length > 0) output.live2d = patch
   }

@@ -14,6 +14,8 @@ export type {
   PermissionSettings,
   Emotion,
   EmotionSettings,
+  Live2DEmotionBinding,
+  Live2DEmotionProfile,
   AppSettings,
   PublicSettings,
   Live2DSettingsPatch,
@@ -24,7 +26,14 @@ export type {
   DebugSnapshot,
   DebugEmotionInfo,
 } from "./schemas.js"
-export { DEFAULT_PERMISSION_POLICY, DEFAULT_EMOTION_SETTINGS, EMOTION_VALUES, isEmotion } from "./schemas.js"
+export {
+  DEFAULT_PERMISSION_POLICY,
+  DEFAULT_EMOTION_SETTINGS,
+  DEFAULT_LIVE2D_EMOTION_PROFILE,
+  EMOTION_VALUES,
+  isEmotion,
+  resolveEmotionBinding,
+} from "./schemas.js"
 export type {
   IpcSendUserMessageRequest,
   IpcApproveActionRequest,

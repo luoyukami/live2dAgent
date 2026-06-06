@@ -1,11 +1,12 @@
 import { useEffect, useRef, useState } from "react"
 import * as PIXI from "pixi.js"
+import type { AvatarState } from "@live2d-agent/live2d"
 import {
   DEFAULT_LIVE2D_EMOTION_PROFILE,
   resolveEmotionBinding,
-  type AvatarState,
-} from "@live2d-agent/live2d"
-import type { Emotion } from "@live2d-agent/shared"
+  type Emotion,
+  type Live2DEmotionProfile,
+} from "@live2d-agent/shared"
 
 declare global {
   interface Window {
@@ -60,13 +61,20 @@ export interface Live2DViewProps {
    * the Live2D layer should not switch to a fallback expression.
    */
   emotion?: Emotion | null
+  /**
+   * Optional per-emotion profile. When omitted, `DEFAULT_LIVE2D_EMOTION_PROFILE`
+   * is used. Users can hand-write this in `settings.json` under
+   * `live2d.emotionProfile` to point each emotion at the actual motion /
+   * expression names that their model ships with.
+   */
+  emotionProfile?: Live2DEmotionProfile
 }
 
 /* ------------------------------------------------------------------ */
 /*  Component                                                          */
 /* ------------------------------------------------------------------ */
 
-export function Live2DView({ modelPath, avatarState, emotion }: Live2DViewProps): JSX.Element {
+export function Live2DView({ modelPath, avatarState, emotion, emotionProfile }: Live2DViewProps): JSX.Element {
   const containerRef = useRef<HTMLDivElement>(null)
   const appRef = useRef<PIXI.Application | null>(null)
   const modelRef = useRef<InstanceType<any> | null>(null)
@@ -102,9 +110,6 @@ export function Live2DView({ modelPath, avatarState, emotion }: Live2DViewProps)
 
     destroyModel()
     setLoadError(null)
-    // Bump epoch so the emotion effect replays the current emotion on the new
-    // model (per docs §13.3 — switch model, keep last emotion, re-map).
-    setModelEpoch((value) => value + 1)
 
     if (!modelPath) {
       setLoadError("可在设置中配置 Live2D 模型路径")
@@ -155,12 +160,13 @@ export function Live2DView({ modelPath, avatarState, emotion }: Live2DViewProps)
     if (!model) return
     if (emotion === undefined || emotion === null) return
 
-    const binding = resolveEmotionBinding(DEFAULT_LIVE2D_EMOTION_PROFILE, emotion)
+    const profile = emotionProfile ?? DEFAULT_LIVE2D_EMOTION_PROFILE
+    const binding = resolveEmotionBinding(profile, emotion)
     // Missing binding (not even neutral) ⇒ leave the current pose alone.
     if (!binding) return
     if (binding.motion) playMotion(model, binding.motion, binding.motionIndex)
     if (binding.expression) trySetExpression(model, binding.expression)
-  }, [emotion, modelEpoch])
+  }, [emotion, modelEpoch, emotionProfile])
 
   /* ---- Internal helpers ---- */
 
@@ -213,6 +219,10 @@ export function Live2DView({ modelPath, avatarState, emotion }: Live2DViewProps)
 
       centerModel(model)
       setLoadError(null)
+      // Bump the epoch *after* the model is fully loaded so the emotion
+      // effect's `if (!model) return` guard always sees a live model ref.
+      // This re-applies the current emotion to the freshly loaded model.
+      setModelEpoch((value) => value + 1)
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err)
       if (msg.includes("Cubism Core")) {

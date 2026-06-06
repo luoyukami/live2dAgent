@@ -3,9 +3,9 @@ import assert from "node:assert/strict"
 import {
   DEFAULT_LIVE2D_EMOTION_PROFILE,
   resolveEmotionBinding,
+  type Emotion,
   type Live2DEmotionProfile,
-} from "./emotion-profile.js"
-import type { Emotion } from "@live2d-agent/shared"
+} from "@live2d-agent/shared"
 
 test("emotion=happy returns the happy binding", () => {
   const profile: Live2DEmotionProfile = {

@@ -168,7 +168,14 @@ export function DebugPanel({
                 {snapshot?.promptError ? (
                   <div className="settings-error">{snapshot.promptError}</div>
                 ) : null}
-                <pre className="trace-json prompt-preview">{snapshot?.systemPromptPreview ?? "—"}</pre>
+                <details open>
+                  <summary>实际发送给模型（已注入情绪块）</summary>
+                  <pre className="trace-json prompt-preview">{snapshot?.systemPromptPreview ?? "—"}</pre>
+                </details>
+                <details>
+                  <summary>用户编辑的原始 system.md</summary>
+                  <pre className="trace-json prompt-preview">{snapshot?.rawSystemPromptPreview ?? "—"}</pre>
+                </details>
               </div>
             </section>
 

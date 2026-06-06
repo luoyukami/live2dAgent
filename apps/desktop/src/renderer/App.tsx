@@ -282,6 +282,7 @@ export function App(): JSX.Element {
           modelPath={settings?.live2d?.modelPath ?? ""}
           avatarState={status}
           emotion={currentEmotion}
+          emotionProfile={settings?.live2d?.emotionProfile}
         />
         <span>{assistantStateLabel}</span>
       </section>
@@ -413,15 +414,22 @@ export function App(): JSX.Element {
                   <input
                     type="checkbox"
                     checked={form.emotion.enabled}
-                    onChange={(e) => setForm((f) => ({
-                      ...f,
-                      emotion: {
-                        ...f.emotion,
-                        enabled: e.target.checked,
-                        // Master switch off ⇒ force prompt injection off in the form too.
-                        injectPrompt: e.target.checked ? f.emotion.injectPrompt : false,
-                      },
-                    }))}
+                    onChange={(e) => {
+                      const nextEnabled = e.target.checked
+                      setForm((f) => ({
+                        ...f,
+                        emotion: {
+                          ...f.emotion,
+                          enabled: nextEnabled,
+                          // Master switch ON ⇒ default prompt injection back ON.
+                          // Master switch OFF ⇒ force prompt injection OFF.
+                          // We never "remember" the old (forced-off) value, otherwise
+                          // toggling the master switch off then on would leave injection
+                          // silently off.
+                          injectPrompt: nextEnabled ? true : false,
+                        },
+                      }))
+                    }}
                   />
                   <span>启用情绪标签</span>
                 </label>

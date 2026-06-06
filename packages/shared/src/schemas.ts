@@ -2,10 +2,21 @@
 /*  Basic shared types — no external schema library (no zod)          */
 /* ------------------------------------------------------------------ */
 
-import type { Emotion, EmotionSettings } from "./emotion.js"
+import type { Emotion, EmotionSettings, Live2DEmotionProfile } from "./emotion.js"
 
-export type { Emotion, EmotionSettings } from "./emotion.js"
-export { DEFAULT_EMOTION_SETTINGS, EMOTION_VALUES, isEmotion } from "./emotion.js"
+export type {
+  Emotion,
+  EmotionSettings,
+  Live2DEmotionBinding,
+  Live2DEmotionProfile,
+} from "./emotion.js"
+export {
+  DEFAULT_EMOTION_SETTINGS,
+  DEFAULT_LIVE2D_EMOTION_PROFILE,
+  EMOTION_VALUES,
+  isEmotion,
+  resolveEmotionBinding,
+} from "./emotion.js"
 
 /** Agent mode controls permission enforcement strategy */
 export type AgentMode = "manual" | "confirm" | "auto"
@@ -84,6 +95,13 @@ export interface Live2DSettings {
   scale: number
   x: number
   y: number
+  /**
+   * Optional per-emotion binding profile. When set, this profile is used
+   * INSTEAD of `DEFAULT_LIVE2D_EMOTION_PROFILE`. A user can hand-write a
+   * `live2d.emotionProfile` block in `settings.json` to point each emotion
+   * at the actual motion / expression names that their model ships with.
+   */
+  emotionProfile?: Live2DEmotionProfile
 }
 
 /** Window UI settings */
@@ -120,7 +138,13 @@ export interface AppSettings {
 export type PublicSettings = Omit<AppSettings, "openaiApiKey"> & { hasApiKey: boolean }
 
 /** Partial patch for Live2D settings (allowed in public patch) */
-export type Live2DSettingsPatch = Partial<Live2DSettings>
+export type Live2DSettingsPatch = Partial<{
+  scale: number
+  x: number
+  y: number
+  /** Full replacement for the emotion profile. Omit to leave unchanged. */
+  emotionProfile: Live2DEmotionProfile
+}>
 
 /** Partial patch for UI settings (allowed in public patch) */
 export type UiSettingsPatch = Partial<UiSettings>
@@ -177,7 +201,14 @@ export interface DebugSnapshot {
   lastToolCall?: unknown
   lastPermissionDecision?: unknown
   lastToolResult?: unknown
+  /**
+   * The prompt that will actually be sent to the model — i.e. the raw
+   * user-editable prompt with the emotion block appended (when enabled).
+   * This is what the chat header and debug panel should display.
+   */
   systemPromptPreview?: string
+  /** Optional preview of the raw user-editable system prompt (no emotion block). */
+  rawSystemPromptPreview?: string
   promptError?: string
   emotion?: DebugEmotionInfo
 

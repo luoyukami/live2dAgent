@@ -228,6 +228,13 @@ export class AgentSession {
    */
   private applyEmotionToAssistantMessage(message: AgentMessage): AgentMessage {
     if (message.role !== "assistant") return message
+    if (!assistantMessageHasVisibleText(message)) {
+      // Tool-only (or otherwise empty) assistant messages must NOT generate
+      // an emotion metadata. They are not visible to the user as text replies
+      // and tagging them would silently overwrite the last emotion every time
+      // the model reaches for a tool.
+      return message
+    }
 
     const result = this.parseAssistantContent(message.content)
     if (!result) {
@@ -336,11 +343,15 @@ export class AgentSession {
   /**
    * Emit an `emotion.set` event for the parsed assistant message.
    * - When the system is disabled, we DO NOT emit (per docs §12.3).
+   * - When the assistant message carries no visible text (e.g. tool-only
+   *   `content: ""` with `actions`), we DO NOT emit either — the emotion
+   *   pipeline should never be triggered by non-visible assistant turns.
    * - The event always carries the assistant message id so the renderer can
    *   correlate it back to the bubble in the chat.
    */
   private maybeEmitEmotion(message: AgentMessage): void {
     if (message.role !== "assistant") return
+    if (!assistantMessageHasVisibleText(message)) return
     const meta = message.metadata
     if (!meta || meta.emotion === undefined || meta.emotionSource === undefined) return
     if (meta.emotionSource === "disabled") return
@@ -351,4 +362,23 @@ export class AgentSession {
       messageId: message.id,
     })
   }
+}
+
+/* ------------------------------------------------------------------ */
+/*  Helpers                                                            */
+/* ------------------------------------------------------------------ */
+
+/**
+ * True iff the assistant message carries visible text. We use a permissive
+ * definition: any non-empty text in `content` (string or text block) counts.
+ * Tool-only messages (`content: ""` + `actions`) and tool-only multimodal
+ * variants return false.
+ */
+function assistantMessageHasVisibleText(message: AgentMessage): boolean {
+  if (typeof message.content === "string") {
+    return message.content.trim().length > 0
+  }
+  return message.content.some(
+    (block) => block.type === "text" && typeof block.text === "string" && block.text.trim().length > 0,
+  )
 }
