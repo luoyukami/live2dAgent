@@ -74,6 +74,7 @@ export function App(): JSX.Element {
   const [isSending, setIsSending] = useState(false)
   const [settings, setSettings] = useState<PublicSettings | null>(null)
   const [showSettings, setShowSettings] = useState(false)
+  const [activeSettingsSection, setActiveSettingsSection] = useState<"general" | "emotion" | "voice">("general")
   const [form, setForm] = useState<SettingsForm>(defaultForm)
   const [settingsError, setSettingsError] = useState<string | null>(null)
   const [currentEmotion, setCurrentEmotion] = useState<Emotion | null>(null)
@@ -95,6 +96,33 @@ export function App(): JSX.Element {
       void handleRecordingFinished(blob)
     },
   })
+
+  /* ---- Live2D stage height with resize handle ---- */
+  const [live2dHeight, setLive2dHeight] = useState(320)
+  const resizeState = useRef<{ dragging: boolean; startY: number; startHeight: number } | null>(null)
+
+  useEffect(() => {
+    function onMove(e: PointerEvent) {
+      if (!resizeState.current?.dragging) return
+      const delta = e.clientY - resizeState.current.startY
+      const next = Math.max(160, Math.min(window.innerHeight - 220, resizeState.current.startHeight + delta))
+      setLive2dHeight(next)
+    }
+    function onUp() {
+      if (resizeState.current) resizeState.current.dragging = false
+    }
+    window.addEventListener("pointermove", onMove)
+    window.addEventListener("pointerup", onUp)
+    return () => {
+      window.removeEventListener("pointermove", onMove)
+      window.removeEventListener("pointerup", onUp)
+    }
+  }, [])
+
+  function handleResizeStart(e: React.PointerEvent<HTMLDivElement>): void {
+    ;(e.target as HTMLElement).setPointerCapture(e.pointerId)
+    resizeState.current = { dragging: true, startY: e.clientY, startHeight: live2dHeight }
+  }
 
   useEffect(() => {
     window.petAgent.getSettings().then(setSettings)
@@ -467,23 +495,33 @@ export function App(): JSX.Element {
 
   const voiceEnabled = settings?.voice?.enabled ?? true
 
+  const settingsTabs = [
+    { key: "general" as const, label: "基础" },
+    { key: "emotion" as const, label: "情绪" },
+    { key: "voice" as const, label: "语音" },
+  ]
+
   return (
     <main className="shell">
-      <section className="avatar" data-state={status}>
+      <section className="stage" style={{ height: live2dHeight }} data-state={status}>
         <div className="drag-region" />
-        <Live2DView
-          key={live2dReloadKey}
-          modelPath={settings?.live2d?.modelPath ?? ""}
-          avatarState={status}
-          emotion={currentEmotion}
-          emotionProfile={settings?.live2d?.emotionProfile}
-        />
-        <span>{assistantStateLabel}</span>
+        <div className="stage-content">
+          <Live2DView
+            key={live2dReloadKey}
+            modelPath={settings?.live2d?.modelPath ?? ""}
+            avatarState={status}
+            emotion={currentEmotion}
+            emotionProfile={settings?.live2d?.emotionProfile}
+          />
+          <span className="stage-status">{assistantStateLabel}</span>
+        </div>
       </section>
 
-      <section className="panel">
+      <div className="resize-handle" onPointerDown={handleResizeStart} />
+
+      <section className="chat">
         <header>
-          <div>
+          <div className="header-title">
             <strong>Pet Agent v0</strong>
             <small>
               {settings?.hasApiKey
@@ -517,7 +555,7 @@ export function App(): JSX.Element {
         </header>
 
         {showSettings && (
-          <div className="settings-panel">
+          <div className="settings-overlay">
             <div className="settings-header">
               <b>设置</b>
               <button className="icon-btn" onClick={() => setShowSettings(false)} title="关闭">
@@ -525,220 +563,254 @@ export function App(): JSX.Element {
               </button>
             </div>
 
-            <div className="settings-body">
-              <div className="settings-group">
-                <label>运行模式</label>
-                <select
-                  value={form.mode}
-                  onChange={(e) => setForm((f) => ({ ...f, mode: e.target.value as PublicSettings["mode"] }))}
+            <div className="settings-tabs">
+              {settingsTabs.map((t) => (
+                <button
+                  key={t.key}
+                  className={`settings-tab ${activeSettingsSection === t.key ? "active" : ""}`}
+                  onClick={() => setActiveSettingsSection(t.key)}
                 >
-                  <option value="manual">manual</option>
-                  <option value="confirm">confirm</option>
-                  <option value="auto">auto</option>
-                </select>
-              </div>
-
-              <div className="settings-group">
-                <label>工具权限</label>
-                <select
-                  value={form.permissionMode}
-                  onChange={(e) => setForm((f) => ({ ...f, permissionMode: e.target.value as PublicSettings["permissions"]["mode"] }))}
-                >
-                  <option value="permissive">默许模式</option>
-                  <option value="ask">询问模式</option>
-                </select>
-              </div>
-
-              <div className="settings-group">
-                <label>API Key</label>
-                <div className="settings-row">
-                  <input
-                    type="password"
-                    value={form.apiKey}
-                    onChange={(e) => setForm((f) => ({ ...f, apiKey: e.target.value }))}
-                    placeholder="输入新的 API Key（留空表示不修改）"
-                  />
-                  <span className={`badge ${settings?.hasApiKey ? "ok" : "warn"}`}>
-                    {settings?.hasApiKey ? "已配置" : "未配置"}
-                  </span>
-                  <button className="ghost-btn" onClick={() => void clearApiKey()} disabled={!settings?.hasApiKey}>
-                    清除
-                  </button>
-                </div>
-              </div>
-
-              <div className="settings-group">
-                <label>Base URL</label>
-                <input
-                  value={form.openaiBaseUrl}
-                  onChange={(e) => setForm((f) => ({ ...f, openaiBaseUrl: e.target.value }))}
-                  placeholder="https://api.openai.com/v1"
-                />
-              </div>
-
-              <div className="settings-group">
-                <label>模型</label>
-                <input
-                  value={form.openaiModel}
-                  onChange={(e) => setForm((f) => ({ ...f, openaiModel: e.target.value }))}
-                  placeholder="gpt-4o-mini"
-                />
-              </div>
-
-              <div className="settings-group">
-                <label>Workspace 目录</label>
-                <input
-                  value={form.workspaceDir}
-                  onChange={(e) => setForm((f) => ({ ...f, workspaceDir: e.target.value }))}
-                  placeholder="Workspace 路径"
-                />
-              </div>
-
-              <div className="settings-group">
-                <label>Live2D 模型路径</label>
-                <input
-                  value={form.live2dModelPath}
-                  onChange={(e) => setForm((f) => ({ ...f, live2dModelPath: e.target.value }))}
-                  placeholder="model.json 或 .model3.json 路径"
-                />
-              </div>
-
-              <div className="settings-group">
-                <label className="checkbox-label">
-                  <input
-                    type="checkbox"
-                    checked={form.emotion.enabled}
-                    onChange={(e) => {
-                      const nextEnabled = e.target.checked
-                      setForm((f) => ({
-                        ...f,
-                        emotion: {
-                          ...f.emotion,
-                          enabled: nextEnabled,
-                          injectPrompt: nextEnabled ? true : false,
-                        },
-                      }))
-                    }}
-                  />
-                  <span>启用情绪标签</span>
-                </label>
-                <small className="settings-hint">
-                  开启后，助手会在回复末尾生成一个本地可解析的情绪标签，用于驱动 Live2D 等表现层。关闭后不会注入相关提示词，可减少 token 消耗。
-                </small>
-              </div>
-
-              <div className="settings-group">
-                <label className="checkbox-label">
-                  <input
-                    type="checkbox"
-                    checked={form.emotion.injectPrompt}
-                    disabled={!form.emotion.enabled}
-                    onChange={(e) => setForm((f) => ({ ...f, emotion: { ...f.emotion, injectPrompt: e.target.checked } }))}
-                  />
-                  <span>注入情绪提示词（高级）</span>
-                </label>
-                <small className="settings-hint">
-                  控制是否在 system prompt 中追加 Assistant Emotion Tag 说明。关闭主开关时此项自动关闭。
-                </small>
-              </div>
-
-              <div className="settings-group">
-                <label>默认情绪</label>
-                <select
-                  value={form.emotion.defaultEmotion}
-                  onChange={(e) => setForm((f) => ({ ...f, emotion: { ...f.emotion, defaultEmotion: e.target.value as Emotion } }))}
-                >
-                  {EMOTION_VALUES.map((value) => (
-                    <option key={value} value={value}>{value}</option>
-                  ))}
-                </select>
-                <small className="settings-hint">解析失败或情绪系统关闭时使用的回落情绪。</small>
-              </div>
-
-              <div className="settings-group">
-                <label className="checkbox-label">
-                  <input
-                    type="checkbox"
-                    checked={form.emotion.stripTagWhenDisabled}
-                    onChange={(e) => setForm((f) => ({ ...f, emotion: { ...f.emotion, stripTagWhenDisabled: e.target.checked } }))}
-                  />
-                  <span>关闭时仍剥离尾部情绪标签</span>
-                </label>
-                <small className="settings-hint">关闭情绪系统后，如果模型仍输出尾部标签，是否从用户可见正文中移除。</small>
-              </div>
-
-              {/* ---- Voice input (v0) ---- */}
-              <div className="settings-section-divider" />
-              <div className="settings-group">
-                <label className="checkbox-label">
-                  <input
-                    type="checkbox"
-                    checked={form.voice.enabled}
-                    onChange={(e) => {
-                      const nextEnabled = e.target.checked
-                      setForm((f) => ({
-                        ...f,
-                        voice: {
-                          ...f.voice,
-                          enabled: nextEnabled,
-                        },
-                      }))
-                    }}
-                  />
-                  <span>启用语音输入</span>
-                </label>
-                <small className="settings-hint">{HOTKEY_HINT}</small>
-              </div>
-
-              <div className="settings-group">
-                <label className="checkbox-label">
-                  <input
-                    type="checkbox"
-                    checked={form.voice.audioInputEnabled}
-                    disabled={!form.voice.enabled}
-                    onChange={(e) => setForm((f) => ({ ...f, voice: { ...f.voice, audioInputEnabled: e.target.checked } }))}
-                  />
-                  <span>将音频发送给模型</span>
-                </label>
-                <small className="settings-hint">
-                  关闭后录音仍会保存为附件，但模型不会收到 `input_audio` 多模态输入。适用于仅用作回放或留痕。
-                </small>
-              </div>
-
-              <div className="settings-group">
-                <label>首选音频格式</label>
-                <div className="settings-static-value">wav</div>
-                <small className="settings-hint">当前仅支持 wav。mp3 转码将在后续版本启用（设置项保留以便将来扩展）。</small>
-              </div>
-
-              <div className="settings-group">
-                <label>单次录音最大时长 (ms)</label>
-                <input
-                  type="number"
-                  min={1000}
-                  max={300000}
-                  step={1000}
-                  value={form.voice.maxDurationMs}
-                  onChange={(e) => {
-                    const n = Number(e.target.value)
-                    if (Number.isFinite(n)) setForm((f) => ({ ...f, voice: { ...f.voice, maxDurationMs: n } }))
-                  }}
-                />
-                <small className="settings-hint">超过该时长录音自动停止。建议 10–60 秒。</small>
-              </div>
-
-              <div className="settings-group">
-                <label>快捷键 (Electron accelerator)</label>
-                <input
-                  value={form.voice.pushToTalkHotkey}
-                  onChange={(e) => setForm((f) => ({ ...f, voice: { ...f.voice, pushToTalkHotkey: e.target.value } }))}
-                  placeholder="CommandOrControl+Alt+V"
-                />
-                <small className="settings-hint">{HOTKEY_HINT}</small>
-              </div>
+                  {t.label}
+                </button>
+              ))}
             </div>
 
-            {settingsError && <div className="settings-error">{settingsError}</div>}
+            <div className="settings-body">
+              {activeSettingsSection === "general" && (
+                <>
+                  <div className="settings-card">
+                    <h3 className="settings-card-title">连接与模型</h3>
+                    <div className="settings-group">
+                      <label>API Key</label>
+                      <div className="settings-row">
+                        <input
+                          type="password"
+                          value={form.apiKey}
+                          onChange={(e) => setForm((f) => ({ ...f, apiKey: e.target.value }))}
+                          placeholder="输入新的 API Key（留空表示不修改）"
+                        />
+                        <span className={`badge ${settings?.hasApiKey ? "ok" : "warn"}`}>
+                          {settings?.hasApiKey ? "已配置" : "未配置"}
+                        </span>
+                        <button className="ghost-btn" onClick={() => void clearApiKey()} disabled={!settings?.hasApiKey}>
+                          清除
+                        </button>
+                      </div>
+                    </div>
+
+                    <div className="settings-group">
+                      <label>Base URL</label>
+                      <input
+                        value={form.openaiBaseUrl}
+                        onChange={(e) => setForm((f) => ({ ...f, openaiBaseUrl: e.target.value }))}
+                        placeholder="https://api.openai.com/v1"
+                      />
+                    </div>
+
+                    <div className="settings-group">
+                      <label>模型</label>
+                      <input
+                        value={form.openaiModel}
+                        onChange={(e) => setForm((f) => ({ ...f, openaiModel: e.target.value }))}
+                        placeholder="gpt-4o-mini"
+                      />
+                    </div>
+                  </div>
+
+                  <div className="settings-card">
+                    <h3 className="settings-card-title">运行与权限</h3>
+                    <div className="settings-group">
+                      <label>运行模式</label>
+                      <select
+                        value={form.mode}
+                        onChange={(e) => setForm((f) => ({ ...f, mode: e.target.value as PublicSettings["mode"] }))}
+                      >
+                        <option value="manual">manual</option>
+                        <option value="confirm">confirm</option>
+                        <option value="auto">auto</option>
+                      </select>
+                    </div>
+
+                    <div className="settings-group">
+                      <label>工具权限</label>
+                      <select
+                        value={form.permissionMode}
+                        onChange={(e) => setForm((f) => ({ ...f, permissionMode: e.target.value as PublicSettings["permissions"]["mode"] }))}
+                      >
+                        <option value="permissive">默许模式</option>
+                        <option value="ask">询问模式</option>
+                      </select>
+                    </div>
+                  </div>
+
+                  <div className="settings-card">
+                    <h3 className="settings-card-title">工作区与展示</h3>
+                    <div className="settings-group">
+                      <label>Workspace 目录</label>
+                      <input
+                        value={form.workspaceDir}
+                        onChange={(e) => setForm((f) => ({ ...f, workspaceDir: e.target.value }))}
+                        placeholder="Workspace 路径"
+                      />
+                    </div>
+
+                    <div className="settings-group">
+                      <label>Live2D 模型路径</label>
+                      <input
+                        value={form.live2dModelPath}
+                        onChange={(e) => setForm((f) => ({ ...f, live2dModelPath: e.target.value }))}
+                        placeholder="model.json 或 .model3.json 路径"
+                      />
+                    </div>
+                  </div>
+                </>
+              )}
+
+              {activeSettingsSection === "emotion" && (
+                <div className="settings-card">
+                  <h3 className="settings-card-title">情绪标签</h3>
+                  <div className="settings-group">
+                    <label className="checkbox-label">
+                      <input
+                        type="checkbox"
+                        checked={form.emotion.enabled}
+                        onChange={(e) => {
+                          const nextEnabled = e.target.checked
+                          setForm((f) => ({
+                            ...f,
+                            emotion: {
+                              ...f.emotion,
+                              enabled: nextEnabled,
+                              injectPrompt: nextEnabled ? true : false,
+                            },
+                          }))
+                        }}
+                      />
+                      <span>启用情绪标签</span>
+                    </label>
+                    <small className="settings-hint">
+                      开启后，助手会在回复末尾生成一个本地可解析的情绪标签，用于驱动 Live2D 等表现层。关闭后不会注入相关提示词，可减少 token 消耗。
+                    </small>
+                  </div>
+
+                  <div className="settings-group">
+                    <label className="checkbox-label">
+                      <input
+                        type="checkbox"
+                        checked={form.emotion.injectPrompt}
+                        disabled={!form.emotion.enabled}
+                        onChange={(e) => setForm((f) => ({ ...f, emotion: { ...f.emotion, injectPrompt: e.target.checked } }))}
+                      />
+                      <span>注入情绪提示词（高级）</span>
+                    </label>
+                    <small className="settings-hint">
+                      控制是否在 system prompt 中追加 Assistant Emotion Tag 说明。关闭主开关时此项自动关闭。
+                    </small>
+                  </div>
+
+                  <div className="settings-group">
+                    <label>默认情绪</label>
+                    <select
+                      value={form.emotion.defaultEmotion}
+                      onChange={(e) => setForm((f) => ({ ...f, emotion: { ...f.emotion, defaultEmotion: e.target.value as Emotion } }))}
+                    >
+                      {EMOTION_VALUES.map((value) => (
+                        <option key={value} value={value}>{value}</option>
+                      ))}
+                    </select>
+                    <small className="settings-hint">解析失败或情绪系统关闭时使用的回落情绪。</small>
+                  </div>
+
+                  <div className="settings-group">
+                    <label className="checkbox-label">
+                      <input
+                        type="checkbox"
+                        checked={form.emotion.stripTagWhenDisabled}
+                        onChange={(e) => setForm((f) => ({ ...f, emotion: { ...f.emotion, stripTagWhenDisabled: e.target.checked } }))}
+                      />
+                      <span>关闭时仍剥离尾部情绪标签</span>
+                    </label>
+                    <small className="settings-hint">关闭情绪系统后，如果模型仍输出尾部标签，是否从用户可见正文中移除。</small>
+                  </div>
+                </div>
+              )}
+
+              {activeSettingsSection === "voice" && (
+                <div className="settings-card">
+                  <h3 className="settings-card-title">语音输入</h3>
+                  <div className="settings-group">
+                    <label className="checkbox-label">
+                      <input
+                        type="checkbox"
+                        checked={form.voice.enabled}
+                        onChange={(e) => {
+                          const nextEnabled = e.target.checked
+                          setForm((f) => ({
+                            ...f,
+                            voice: {
+                              ...f.voice,
+                              enabled: nextEnabled,
+                            },
+                          }))
+                        }}
+                      />
+                      <span>启用语音输入</span>
+                    </label>
+                    <small className="settings-hint">{HOTKEY_HINT}</small>
+                  </div>
+
+                  <div className="settings-group">
+                    <label className="checkbox-label">
+                      <input
+                        type="checkbox"
+                        checked={form.voice.audioInputEnabled}
+                        disabled={!form.voice.enabled}
+                        onChange={(e) => setForm((f) => ({ ...f, voice: { ...f.voice, audioInputEnabled: e.target.checked } }))}
+                      />
+                      <span>将音频发送给模型</span>
+                    </label>
+                    <small className="settings-hint">
+                      关闭后录音仍会保存为附件，但模型不会收到 `input_audio` 多模态输入。适用于仅用作回放或留痕。
+                    </small>
+                  </div>
+
+                  <div className="settings-group">
+                    <label>首选音频格式</label>
+                    <div className="settings-static-value">wav</div>
+                    <small className="settings-hint">当前仅支持 wav。mp3 转码将在后续版本启用（设置项保留以便将来扩展）。</small>
+                  </div>
+
+                  <div className="settings-group">
+                    <label>单次录音最大时长 (ms)</label>
+                    <input
+                      type="number"
+                      min={1000}
+                      max={300000}
+                      step={1000}
+                      value={form.voice.maxDurationMs}
+                      onChange={(e) => {
+                        const n = Number(e.target.value)
+                        if (Number.isFinite(n)) setForm((f) => ({ ...f, voice: { ...f.voice, maxDurationMs: n } }))
+                      }}
+                    />
+                    <small className="settings-hint">超过该时长录音自动停止。建议 10–60 秒。</small>
+                  </div>
+
+                  <div className="settings-group">
+                    <label>快捷键 (Electron accelerator)</label>
+                    <input
+                      value={form.voice.pushToTalkHotkey}
+                      onChange={(e) => setForm((f) => ({ ...f, voice: { ...f.voice, pushToTalkHotkey: e.target.value } }))}
+                      placeholder="CommandOrControl+Alt+V"
+                    />
+                    <small className="settings-hint">{HOTKEY_HINT}</small>
+                  </div>
+                </div>
+              )}
+
+              {settingsError && <div className="settings-error">{settingsError}</div>}
+            </div>
+
             <div className="settings-footer">
               <button onClick={() => void saveSettings()}>保存</button>
             </div>

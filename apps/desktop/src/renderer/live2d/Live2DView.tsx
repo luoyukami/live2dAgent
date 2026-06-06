@@ -244,7 +244,7 @@ export function Live2DView({ modelPath, avatarState, emotion, emotionProfile }: 
     const mw = model.width || 1
     const mh = model.height || 1
 
-    const scale = Math.min(cw / mw, ch / mh) * 0.8
+    const scale = Math.min(cw / mw, ch / mh) * 0.95
     model.scale.set(scale)
     model.position.set(app.screen.width / 2, app.screen.height / 2)
 
@@ -252,6 +252,18 @@ export function Live2DView({ modelPath, avatarState, emotion, emotionProfile }: 
       model.anchor.set(0.5, 0.5)
     }
   }
+
+  /* Re-center model when container resizes (e.g. drag handle or window resize) */
+  useEffect(() => {
+    const container = containerRef.current
+    if (!container) return
+    const ro = new ResizeObserver(() => {
+      const model = modelRef.current
+      if (model) centerModel(model)
+    })
+    ro.observe(container)
+    return () => ro.disconnect()
+  }, [])
 
   function destroyModel(): void {
     if (modelRef.current) {
