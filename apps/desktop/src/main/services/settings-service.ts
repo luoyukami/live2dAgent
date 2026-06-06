@@ -11,6 +11,7 @@ import {
   type EmotionSettings,
   type EmotionSettingsPatch,
   type Live2DEmotionProfile,
+  type Live2DEmotionBinding,
   type Live2DSettings,
   type Live2DSettingsPatch,
   type UiSettings,
@@ -162,18 +163,20 @@ function unquoteYamlScalar(value: string): string {
 
 function deepMergeDefaults(parsed: Record<string, unknown>, defaults: AppSettings): AppSettings {
   const parsedLive2d = (parsed.live2d ?? {}) as Partial<Live2DSettings>
+  // Strip `emotionProfile` from the raw parsed payload BEFORE spreading it
+  // into the live2d object. The sanitizer below decides whether a cleaned
+  // version of the profile should be added back. Spreading the raw value
+  // first would let a malformed profile leak into the merged result.
+  const { emotionProfile: _drop, ...safeParsedLive2d } = parsedLive2d
+  const sanitizedProfile = sanitizeEmotionProfile(parsedLive2d.emotionProfile)
   return {
     ...defaults,
     ...parsed,
     // Nested objects: merge each level with defaults so missing keys don't drop defaults
     live2d: {
       ...defaults.live2d,
-      ...parsedLive2d,
-      // emotionProfile is a nested optional map; only assign it if the parsed
-      // payload actually contains a usable object. Otherwise leave undefined.
-      ...(isValidEmotionProfile(parsedLive2d.emotionProfile)
-        ? { emotionProfile: parsedLive2d.emotionProfile }
-        : {}),
+      ...safeParsedLive2d,
+      ...(sanitizedProfile !== undefined ? { emotionProfile: sanitizedProfile } : {}),
     },
     ui: { ...defaults.ui, ...((parsed.ui ?? {}) as Partial<UiSettings>) },
     agent: { ...defaults.agent, ...((parsed.agent ?? {}) as Partial<AgentSettings>) },
@@ -211,11 +214,11 @@ function pickEmotion(value: unknown, fallback: Emotion): Emotion {
 }
 
 /**
- * Validates a user-supplied emotion profile. Returns the sanitized profile,
- * or `undefined` if the input is not a usable object. The sanitizer silently
- * drops malformed binding entries (motion must be string, motionIndex must
- * be a non-negative integer, expression must be string, priority must be
- * a number). This keeps hand-edited settings.json from breaking the app.
+ * Strict type guard: `true` only when EVERY key and binding is well-formed.
+ * Use this when you need to know that the input can be assigned to
+ * `Live2DEmotionProfile` as-is without modification.
+ *
+ * For "trust the user, just clean it up" behaviour, use `sanitizeEmotionProfile`.
  */
 function isValidEmotionProfile(value: unknown): value is Live2DEmotionProfile {
   if (!value || typeof value !== "object" || Array.isArray(value)) return false
@@ -231,6 +234,52 @@ function isValidEmotionProfile(value: unknown): value is Live2DEmotionProfile {
     if (b.priority !== undefined && typeof b.priority !== "number") return false
   }
   return true
+}
+
+/**
+ * Per-key sanitizer for an `emotionProfile` payload.
+ *
+ * Behaviour:
+ *  - Non-object input (including arrays, primitives, null) → returns `undefined`.
+ *  - Unknown emotion keys are silently dropped.
+ *  - Each binding is rebuilt from scratch, copying only fields whose type is
+ *    valid (`motion` / `expression` must be strings, `motionIndex` must be a
+ *    non-negative integer, `priority` must be a finite number). Anything else
+ *    is dropped.
+ *  - An entry with `null` value is treated as an explicit clear and dropped.
+ *  - Returns `undefined` (NOT an empty object) when the input had no usable
+ *    entries. This lets the patch path treat "user sent a fully-malformed
+ *    profile" and "user sent no profile at all" identically, so the existing
+ *    valid profile is never wiped by a bad payload.
+ *
+ * This keeps hand-edited `settings.json` from breaking the app: one bad
+ * field on an entry no longer wipes out the entry, and a fully-bad entry
+ * no longer wipes out the whole profile.
+ */
+function sanitizeEmotionProfile(value: unknown): Live2DEmotionProfile | undefined {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return undefined
+  const obj = value as Record<string, unknown>
+  const result: Live2DEmotionProfile = {}
+  for (const [key, raw] of Object.entries(obj)) {
+    if (!isEmotion(key)) continue
+    if (raw === null || raw === undefined) continue
+    if (typeof raw !== "object") continue
+    const b = raw as Record<string, unknown>
+    const cleaned: Live2DEmotionBinding = {}
+    if (typeof b.motion === "string") cleaned.motion = b.motion
+    if (typeof b.expression === "string") cleaned.expression = b.expression
+    if (Number.isInteger(b.motionIndex) && (b.motionIndex as number) >= 0) {
+      cleaned.motionIndex = b.motionIndex as number
+    }
+    if (typeof b.priority === "number" && Number.isFinite(b.priority)) {
+      cleaned.priority = b.priority
+    }
+    // Drop the entry entirely when no field survived sanitization. This
+    // prevents empty `{}` bindings from leaking into the renderer.
+    if (Object.keys(cleaned).length === 0) continue
+    result[key] = cleaned
+  }
+  return Object.keys(result).length > 0 ? result : undefined
 }
 
 /**
@@ -524,10 +573,15 @@ function validatePublicSettingsPatch(patch: unknown): AppSettingsPublicPatch {
     if (scale !== undefined) patch.scale = scale
     if (x !== undefined) patch.x = x
     if (y !== undefined) patch.y = y
-    if (isValidEmotionProfile(l2d.emotionProfile)) {
-      // The user can override the default profile; the validator above has
-      // already ensured every entry is well-formed.
-      patch.emotionProfile = l2d.emotionProfile
+    if (l2d.emotionProfile !== undefined) {
+      // Sanitize per-key so hand-edited payloads with one bad entry don't
+      // get rejected wholesale. A non-object input is treated as "no
+      // profile" and the key is dropped from the patch (the existing
+      // profile is preserved by updatePublicPatch).
+      const sanitized = sanitizeEmotionProfile(l2d.emotionProfile)
+      if (sanitized !== undefined) {
+        patch.emotionProfile = sanitized
+      }
     }
     // modelPath is NOT allowed through public patch (sensitive local path)
     if (Object.keys(patch).length > 0) output.live2d = patch
