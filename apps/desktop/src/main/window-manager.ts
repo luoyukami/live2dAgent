@@ -24,7 +24,7 @@ export class WindowManager {
       skipTaskbar: false,
       hasShadow: false,
       webPreferences: {
-        preload: join(__dirname, "../preload/index.mjs"),
+        preload: join(__dirname, "../preload/index.js"),
         nodeIntegration: false,
         contextIsolation: true,
         sandbox: true,

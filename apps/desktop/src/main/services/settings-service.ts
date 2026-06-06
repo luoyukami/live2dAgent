@@ -122,10 +122,12 @@ function findLocalDevModelPath(): string | null {
 
   /* 1. process.cwd() — reliable during `pnpm dev` from repo root */
   candidates.push(process.cwd())
+  candidates.push(resolve(process.cwd(), "..", ".."))
 
   /* 2. Derive from the bundle location (out/main/main.js -> repo root) */
   try {
     const modulePath = fileURLToPath(import.meta.url)
+    candidates.push(resolve(dirname(modulePath), "..", "..", "..", ".."))
     candidates.push(resolve(dirname(modulePath), "..", "..", ".."))
   } catch {
     /* ignore – import.meta.url may not be available */
@@ -166,14 +168,7 @@ export class SettingsService {
       this.persist()
     }
 
-    /* ---- Dev fallback: use local model when modelPath is empty ---- */
-    if (!this._settings.live2d.modelPath) {
-      const localModel = findLocalDevModelPath()
-      if (localModel) {
-        this._settings.live2d.modelPath = localModel
-        this.persist()
-      }
-    }
+    this.applyLocalDevModelFallback()
   }
 
   reload(): PublicSettings {
@@ -185,6 +180,7 @@ export class SettingsService {
       this._settings = defaults
       this.persist()
     }
+    this.applyLocalDevModelFallback()
     return this.getPublicSettings()
   }
 
@@ -283,6 +279,14 @@ export class SettingsService {
 
   private persist(): void {
     writeFileSync(this.file, JSON.stringify(this._settings, null, 2), "utf8")
+  }
+
+  private applyLocalDevModelFallback(): void {
+    if (this._settings.live2d.modelPath) return
+    const localModel = findLocalDevModelPath()
+    if (!localModel) return
+    this._settings.live2d.modelPath = localModel
+    this.persist()
   }
 }
 

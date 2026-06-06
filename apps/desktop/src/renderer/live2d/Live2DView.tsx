@@ -176,7 +176,7 @@ export function Live2DView({ modelPath, avatarState }: Live2DViewProps): JSX.Ele
     try {
       window.PIXI = PIXI
       await loadCubismCore(path)
-      const { Live2DModel } = await import("pixi-live2d-display-lipsyncpatch")
+      const { Live2DModel } = await import("pixi-live2d-display-lipsyncpatch/cubism4")
       const url = toResourceUrl(path)
       const model = await Live2DModel.from(url)
 

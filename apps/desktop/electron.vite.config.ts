@@ -21,6 +21,14 @@ export default defineConfig({
     },
   },
   preload: {
+    build: {
+      rollupOptions: {
+        output: {
+          format: "cjs",
+          entryFileNames: "index.js",
+        },
+      },
+    },
     resolve: {
       alias: aliases,
     },
