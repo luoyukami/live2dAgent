@@ -308,7 +308,29 @@ export class OpenAiCompatibleAdapter implements ModelAdapter {
   }
 
   private redactRequest(body: Record<string, unknown>): Record<string, unknown> {
-    return JSON.parse(JSON.stringify(body)) as Record<string, unknown>
+    return this.sanitiseDebugValue(body) as Record<string, unknown>
+  }
+
+  private sanitiseDebugValue(value: unknown): unknown {
+    if (Array.isArray(value)) return value.map((item) => this.sanitiseDebugValue(item))
+    if (value && typeof value === "object") {
+      const output: Record<string, unknown> = {}
+      for (const [key, child] of Object.entries(value)) {
+        if (key === "url" && typeof child === "string" && child.startsWith("data:") && child.includes(";base64,")) {
+          output[key] = "[omitted data url]"
+        } else if (key === "imageBase64") {
+          output[key] = "[omitted base64 data]"
+        } else {
+          output[key] = this.sanitiseDebugValue(child)
+        }
+      }
+      return output
+    }
+    if (typeof value === "string") {
+      if (value.startsWith("data:") && value.includes(";base64,")) return "[omitted data url]"
+      if (value.length > 500 && /^[A-Za-z0-9+/]*={0,2}$/.test(value)) return "[omitted base64 data]"
+    }
+    return value
   }
 
   private formatMessage(message: AgentMessage): Record<string, unknown> {

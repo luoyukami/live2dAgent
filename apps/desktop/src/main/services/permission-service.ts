@@ -28,6 +28,9 @@ export class PermissionService implements PermissionController {
   async check(actions: AgentAction[]): Promise<{ status: "approved" | "denied"; actions: AgentAction[]; reason?: string }> {
     const mode = this.settings.get().mode
     if (mode === "manual") {
+      if (actions.every((action) => action.source === "user")) {
+        return this.requestApproval(actions, actions)
+      }
       const decision = { status: "denied" as const, actions, reason: "manual mode blocks tool execution" }
       this.lastDecision = decision
       return decision
@@ -40,6 +43,17 @@ export class PermissionService implements PermissionController {
       return decision
     }
 
+    return this.requestApproval(actions, requiresApproval)
+  }
+
+  getLastDecision(): unknown {
+    return this.lastDecision
+  }
+
+  private requestApproval(
+    actions: AgentAction[],
+    requiresApproval: AgentAction[],
+  ): Promise<{ status: "approved" | "denied"; actions: AgentAction[]; reason?: string }> {
     this.pendingListener?.({ event: { type: "approval.pending", actions: requiresApproval } })
     return new Promise((resolve) => {
       this.pending = { actions, requiresApproval, resolve: (decision) => {
@@ -47,10 +61,6 @@ export class PermissionService implements PermissionController {
         resolve(decision)
       } }
     })
-  }
-
-  getLastDecision(): unknown {
-    return this.lastDecision
   }
 
   approve(actionId: string): void {

@@ -52,6 +52,7 @@ export function App(): JSX.Element {
   const [snapshot, setSnapshot] = useState<DebugSnapshot | null>(null)
   const [traceEvents, setTraceEvents] = useState<Array<{ ts: number; event: AgentEvent }>>([])
   const [lastManualResult, setLastManualResult] = useState<unknown>(null)
+  const [live2dReloadKey, setLive2dReloadKey] = useState(0)
   const textareaRef = useRef<HTMLTextAreaElement>(null)
 
   useEffect(() => {
@@ -219,7 +220,7 @@ export function App(): JSX.Element {
     <main className="shell">
       <section className="avatar" data-state={status}>
         <div className="drag-region" />
-        <Live2DView modelPath={settings?.live2d?.modelPath ?? ""} avatarState={status} />
+        <Live2DView key={live2dReloadKey} modelPath={settings?.live2d?.modelPath ?? ""} avatarState={status} />
         <span>{assistantStateLabel}</span>
       </section>
 
@@ -359,7 +360,10 @@ export function App(): JSX.Element {
               }
             }}
             onReloadPrompt={() => void window.petAgent.reloadPrompt()}
-            onReloadLive2D={() => void window.petAgent.reloadLive2D()}
+            onReloadLive2D={async () => {
+              await window.petAgent.reloadLive2D()
+              setLive2dReloadKey((key) => key + 1)
+            }}
             onClearMessages={clearVisibleMessages}
             onRunManualAction={handleRunManualAction}
             lastManualResult={lastManualResult}
