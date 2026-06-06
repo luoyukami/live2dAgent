@@ -139,6 +139,7 @@ export function registerIpcHandlers(services: IpcServices): void {
       voice: debug.voice,
 
       model: settings.openaiModel,
+      reasoningEffort: settings.reasoningEffort,
       baseURL: settings.openaiBaseUrl,
       workspace: settings.workspaceDir,
       mode: settings.mode,

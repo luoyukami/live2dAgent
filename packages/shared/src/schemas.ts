@@ -21,6 +21,9 @@ export {
 /** Agent mode controls permission enforcement strategy */
 export type AgentMode = "manual" | "confirm" | "auto"
 
+/** Model reasoning/thinking intensity. `none` disables the request hint. */
+export type ReasoningEffort = "none" | "low" | "medium" | "high"
+
 /** Tool permission mode controls how aggressively tools are auto-approved. */
 export type ToolPermissionMode = "ask" | "permissive"
 
@@ -184,6 +187,7 @@ export interface AppSettings {
   workspaceDir: string
   openaiBaseUrl: string
   openaiModel: string
+  reasoningEffort: ReasoningEffort
   openaiApiKey?: string
   live2d: Live2DSettings
   ui: UiSettings
@@ -222,6 +226,7 @@ export interface AppSettingsPublicPatch {
   mode?: AgentMode
   openaiBaseUrl?: string
   openaiModel?: string
+  reasoningEffort?: ReasoningEffort
   live2d?: Live2DSettingsPatch
   ui?: UiSettingsPatch
   agent?: AgentSettingsPatch
@@ -277,6 +282,7 @@ export interface DebugSnapshot {
 
   /** Convenience aliases used by the renderer Debug Panel. */
   model: string
+  reasoningEffort: ReasoningEffort
   baseURL: string
   workspace: string
   mode: AgentMode

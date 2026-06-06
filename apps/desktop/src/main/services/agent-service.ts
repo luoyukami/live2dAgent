@@ -74,6 +74,7 @@ export class AgentService implements ToolRuntime {
       baseUrl: settings.openaiBaseUrl.replace(/\/$/, ""),
       apiKey: settings.openaiApiKey ?? "",
       model: settings.openaiModel,
+      reasoningEffort: settings.reasoningEffort,
       systemPromptProvider: () => this.composeActiveSystemPrompt(),
       onModelRequest: (request) => { this.lastModelRequest = request },
       onModelResponse: (response) => { this.lastModelResponse = response },

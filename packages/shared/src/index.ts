@@ -1,6 +1,7 @@
 export { IPC_CHANNELS, DEFAULT_PATHS } from "./constants.js"
 export type {
   AgentMode,
+  ReasoningEffort,
   ToolPermissionMode,
   PermissionLevel,
   ToolName,

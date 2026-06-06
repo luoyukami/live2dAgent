@@ -60,6 +60,7 @@ export function DebugPanel({
     if (!snapshot) return
     const payload = {
       model: snapshot.model,
+      reasoningEffort: snapshot.reasoningEffort,
       baseURL: snapshot.baseURL,
       workspace: snapshot.workspace,
       mode: snapshot.mode,
@@ -103,6 +104,7 @@ export function DebugPanel({
               <h4>运行环境</h4>
               <div className="debug-kv">
                 <div><span>模型</span><span>{snapshot?.model ?? "—"}</span></div>
+                <div><span>Reasoning Effort</span><span>{snapshot?.reasoningEffort ?? "—"}</span></div>
                 <div><span>Base URL</span><span>{snapshot?.baseURL ?? "—"}</span></div>
                 <div><span>Workspace</span><span>{snapshot?.workspace ?? "—"}</span></div>
                 <div><span>Mode</span><span>{snapshot?.mode ?? "—"}</span></div>

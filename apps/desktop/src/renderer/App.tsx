@@ -6,6 +6,7 @@ import {
   type Emotion,
   type EmotionSettings,
   type PublicSettings,
+  type ReasoningEffort,
   type DebugSnapshot,
   type VoiceInputSettings,
 } from "@live2d-agent/shared"
@@ -19,6 +20,7 @@ interface SettingsForm {
   mode: PublicSettings["mode"]
   openaiBaseUrl: string
   openaiModel: string
+  reasoningEffort: ReasoningEffort
   apiKey: string
   workspaceDir: string
   live2dModelPath: string
@@ -46,6 +48,7 @@ function defaultForm(): SettingsForm {
     mode: "confirm",
     openaiBaseUrl: "",
     openaiModel: "",
+    reasoningEffort: "low",
     apiKey: "",
     workspaceDir: "",
     live2dModelPath: "",
@@ -145,6 +148,7 @@ export function App(): JSX.Element {
         mode: settings.mode,
         openaiBaseUrl: settings.openaiBaseUrl,
         openaiModel: settings.openaiModel,
+        reasoningEffort: settings.reasoningEffort ?? "low",
         workspaceDir: settings.workspaceDir,
         live2dModelPath: settings.live2d?.modelPath ?? "",
         permissionMode: settings.permissions?.mode ?? "permissive",
@@ -390,6 +394,7 @@ export function App(): JSX.Element {
       if (form.mode !== settings?.mode) publicPatch.mode = form.mode
       if (form.openaiBaseUrl !== settings?.openaiBaseUrl) publicPatch.openaiBaseUrl = form.openaiBaseUrl
       if (form.openaiModel !== settings?.openaiModel) publicPatch.openaiModel = form.openaiModel
+      if (form.reasoningEffort !== (settings?.reasoningEffort ?? "low")) publicPatch.reasoningEffort = form.reasoningEffort
       if (form.permissionMode !== settings?.permissions?.mode) publicPatch.permissions = { mode: form.permissionMode }
 
       // Master switch off ⇒ force the prompt-injection switch off too, so the
@@ -614,6 +619,20 @@ export function App(): JSX.Element {
                         onChange={(e) => setForm((f) => ({ ...f, openaiModel: e.target.value }))}
                         placeholder="gpt-4o-mini"
                       />
+                    </div>
+
+                    <div className="settings-group">
+                      <label>思考强度</label>
+                      <select
+                        value={form.reasoningEffort}
+                        onChange={(e) => setForm((f) => ({ ...f, reasoningEffort: e.target.value as ReasoningEffort }))}
+                      >
+                        <option value="none">none（不发送）</option>
+                        <option value="low">low（默认，更快）</option>
+                        <option value="medium">medium</option>
+                        <option value="high">high</option>
+                      </select>
+                      <small className="settings-hint">用于 OpenAI-compatible 请求的 reasoning_effort；none 表示不发送该参数。</small>
                     </div>
                   </div>
 

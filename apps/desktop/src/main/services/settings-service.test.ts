@@ -108,6 +108,23 @@ test("deepMergeDefaults: invalid emotionProfile bindings are dropped, valid ones
   }
 })
 
+test("reasoningEffort defaults to low and validates public patches", () => {
+  const { service, dir } = makeServiceWith({})
+  try {
+    assert.equal(service.getPublicSettings().reasoningEffort, "low")
+
+    service.updatePublicPatch({ reasoningEffort: "high" })
+    assert.equal(service.getPublicSettings().reasoningEffort, "high")
+
+    assert.throws(
+      () => service.updatePublicPatch({ reasoningEffort: "ultra" as never }),
+      /Invalid reasoning effort/,
+    )
+  } finally {
+    cleanup(dir)
+  }
+})
+
 test("deepMergeDefaults: a non-object emotionProfile does not poison the merged live2d object", () => {
   const dir = makeTempUserDataDir()
   try {

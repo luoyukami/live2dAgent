@@ -19,6 +19,7 @@ import {
   type AgentSettings,
   type PermissionSettings,
   type PublicSettings,
+  type ReasoningEffort,
   type VoiceInputSettings,
   type VoiceInputSettingsPatch,
 } from "@live2d-agent/shared"
@@ -58,6 +59,7 @@ export function createDefaultSettings(userDataDir: string): AppSettings {
     workspaceDir,
     openaiBaseUrl: process.env.OPENAI_BASE_URL ?? localDevSettings.openaiBaseUrl ?? "https://api.openai.com/v1",
     openaiModel: process.env.OPENAI_MODEL ?? localDevSettings.openaiModel ?? "gpt-4o-mini",
+    reasoningEffort: readEnvReasoningEffort() ?? localDevSettings.reasoningEffort ?? "low",
     openaiApiKey: process.env.OPENAI_API_KEY ?? localDevSettings.openaiApiKey,
     live2d: { ...DEFAULT_LIVE2D_SETTINGS },
     ui: { ...DEFAULT_UI_SETTINGS },
@@ -72,7 +74,7 @@ export function createDefaultSettings(userDataDir: string): AppSettings {
 /*  Local development config                                           */
 /* ------------------------------------------------------------------ */
 
-type LocalDevSettings = Partial<Pick<AppSettings, "mode" | "openaiBaseUrl" | "openaiModel" | "openaiApiKey">> & {
+type LocalDevSettings = Partial<Pick<AppSettings, "mode" | "openaiBaseUrl" | "openaiModel" | "openaiApiKey" | "reasoningEffort">> & {
   permissions?: Partial<PermissionSettings>
 }
 
@@ -82,6 +84,10 @@ function isDevEnvironment(): boolean {
 
 function readEnvAgentMode(): AgentMode | undefined {
   return isAgentMode(process.env.AGENT_MODE) ? process.env.AGENT_MODE : undefined
+}
+
+function readEnvReasoningEffort(): ReasoningEffort | undefined {
+  return isReasoningEffort(process.env.REASONING_EFFORT) ? process.env.REASONING_EFFORT : undefined
 }
 
 function readLocalDevSettings(): LocalDevSettings {
@@ -148,6 +154,7 @@ function parseLocalDevSettings(yaml: string): LocalDevSettings {
   if (isAgentMode(parsed.mode)) settings.mode = parsed.mode
   if (parsed.openaiBaseUrl) settings.openaiBaseUrl = parsed.openaiBaseUrl
   if (parsed.openaiModel) settings.openaiModel = parsed.openaiModel
+  if (isReasoningEffort(parsed.reasoningEffort)) settings.reasoningEffort = parsed.reasoningEffort
   if (parsed.openaiApiKey) settings.openaiApiKey = parsed.openaiApiKey
   if (isPermissionMode(parsed.permissionMode)) settings.permissions = { mode: parsed.permissionMode }
   return settings
@@ -176,6 +183,7 @@ function deepMergeDefaults(parsed: Record<string, unknown>, defaults: AppSetting
   return {
     ...defaults,
     ...parsed,
+    reasoningEffort: isReasoningEffort(parsed.reasoningEffort) ? parsed.reasoningEffort : defaults.reasoningEffort,
     // Nested objects: merge each level with defaults so missing keys don't drop defaults
     live2d: {
       ...defaults.live2d,
@@ -329,6 +337,10 @@ function isPermissionMode(v: unknown): v is PermissionSettings["mode"] {
   return v === "ask" || v === "permissive"
 }
 
+function isReasoningEffort(v: unknown): v is ReasoningEffort {
+  return v === "none" || v === "low" || v === "medium" || v === "high"
+}
+
 function numberInRange(value: unknown, field: string, min: number, max: number): number | undefined {
   if (value === undefined) return undefined
   if (!isNumber(value) || value < min || value > max) {
@@ -445,6 +457,7 @@ export class SettingsService {
     if (validated.mode !== undefined) this._settings.mode = validated.mode
     if (validated.openaiBaseUrl !== undefined) this._settings.openaiBaseUrl = validated.openaiBaseUrl
     if (validated.openaiModel !== undefined) this._settings.openaiModel = validated.openaiModel
+    if (validated.reasoningEffort !== undefined) this._settings.reasoningEffort = validated.reasoningEffort
     if (validated.live2d !== undefined) {
       // emotionProfile is a full replacement when present in the patch.
       const next: Live2DSettings = { ...this._settings.live2d, ...validated.live2d }
@@ -573,6 +586,13 @@ function validatePublicSettingsPatch(patch: unknown): AppSettingsPublicPatch {
       throw new Error("openaiModel must be a non-empty string")
     }
     output.openaiModel = input.openaiModel
+  }
+
+  if (input.reasoningEffort !== undefined) {
+    if (!isReasoningEffort(input.reasoningEffort)) {
+      throw new Error(`Invalid reasoning effort: ${String(input.reasoningEffort)}`)
+    }
+    output.reasoningEffort = input.reasoningEffort
   }
 
   if (input.live2d !== undefined && typeof input.live2d === "object") {

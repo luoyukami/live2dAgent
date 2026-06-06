@@ -16,6 +16,8 @@ export interface OpenAiCompatibleAdapterConfig {
   baseUrl: string
   apiKey: string
   model: string
+  /** OpenAI-compatible reasoning effort hint. `none` omits the field. */
+  reasoningEffort?: "none" | "low" | "medium" | "high"
   artifactReader?: ArtifactReader
   systemPromptProvider?: () => string | undefined
   onModelRequest?: (request: unknown) => void
@@ -325,6 +327,10 @@ export class OpenAiCompatibleAdapter implements ModelAdapter {
     const body: Record<string, unknown> = {
       model: this.config.model,
       messages: this.withSystemPrompt(messages).map((m) => this.formatMessage(m)),
+    }
+
+    if (this.config.reasoningEffort && this.config.reasoningEffort !== "none") {
+      body.reasoning_effort = this.config.reasoningEffort
     }
 
     if (tools.length > 0) {

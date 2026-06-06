@@ -65,6 +65,26 @@ const BASE_CONFIG = {
   model: "gpt-4o-audio",
 }
 
+test("reasoning effort is included when configured and omitted for none", () => {
+  const low = new OpenAiCompatibleAdapter({
+    ...BASE_CONFIG,
+    reasoningEffort: "low",
+  })
+  assert.equal(
+    low.buildRequestBodyForTest([makeUserMessage("Hello")], []).reasoning_effort,
+    "low",
+  )
+
+  const none = new OpenAiCompatibleAdapter({
+    ...BASE_CONFIG,
+    reasoningEffort: "none",
+  })
+  assert.equal(
+    none.buildRequestBodyForTest([makeUserMessage("Hello")], []).reasoning_effort,
+    undefined,
+  )
+})
+
 /* ------------------------------------------------------------------ */
 /*  1. Audio attachment → input_audio content part                     */
 /* ------------------------------------------------------------------ */
