@@ -13,6 +13,7 @@
   },
   "files": ["src"],
   "dependencies": {
-    "@live2d-agent/agent-core": "workspace:^"
+    "@live2d-agent/agent-core": "workspace:^",
+    "@live2d-agent/shared": "workspace:^"
   }
 }

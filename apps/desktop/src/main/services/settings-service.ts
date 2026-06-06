@@ -1,16 +1,21 @@
 import { existsSync, mkdirSync, readFileSync, realpathSync, writeFileSync } from "node:fs"
 import { dirname, join, resolve } from "node:path"
 import { fileURLToPath } from "node:url"
-import type {
-  AgentMode,
-  AppSettings,
-  AppSettingsPublicPatch,
-  Live2DSettings,
-  Live2DSettingsPatch,
-  UiSettings,
-  AgentSettings,
-  PermissionSettings,
-  PublicSettings,
+import {
+  DEFAULT_EMOTION_SETTINGS,
+  isEmotion,
+  type AgentMode,
+  type AppSettings,
+  type AppSettingsPublicPatch,
+  type Emotion,
+  type EmotionSettings,
+  type EmotionSettingsPatch,
+  type Live2DSettings,
+  type Live2DSettingsPatch,
+  type UiSettings,
+  type AgentSettings,
+  type PermissionSettings,
+  type PublicSettings,
 } from "@live2d-agent/shared"
 
 /* ------------------------------------------------------------------ */
@@ -53,6 +58,7 @@ export function createDefaultSettings(userDataDir: string): AppSettings {
     ui: { ...DEFAULT_UI_SETTINGS },
     agent: { ...DEFAULT_AGENT_SETTINGS },
     permissions: { ...DEFAULT_PERMISSION_SETTINGS, ...(localDevSettings.permissions ?? {}) },
+    emotion: { ...DEFAULT_EMOTION_SETTINGS },
   }
 }
 
@@ -162,7 +168,36 @@ function deepMergeDefaults(parsed: Record<string, unknown>, defaults: AppSetting
     ui: { ...defaults.ui, ...((parsed.ui ?? {}) as Partial<UiSettings>) },
     agent: { ...defaults.agent, ...((parsed.agent ?? {}) as Partial<AgentSettings>) },
     permissions: { ...defaults.permissions, ...((parsed.permissions ?? {}) as Partial<PermissionSettings>) },
+    emotion: mergeEmotionSettings(
+      (parsed.emotion ?? {}) as Partial<EmotionSettings>,
+      defaults.emotion,
+    ),
   }
+}
+
+/**
+ * Merge persisted emotion settings with defaults, enforcing the invariant
+ * that disabling the master switch forces the prompt injection off too.
+ */
+function mergeEmotionSettings(
+  parsed: Partial<EmotionSettings>,
+  defaults: EmotionSettings,
+): EmotionSettings {
+  const enabled = pickBoolean(parsed.enabled, defaults.enabled)
+  return {
+    enabled,
+    injectPrompt: enabled ? pickBoolean(parsed.injectPrompt, defaults.injectPrompt) : false,
+    defaultEmotion: pickEmotion(parsed.defaultEmotion, defaults.defaultEmotion),
+    stripTagWhenDisabled: pickBoolean(parsed.stripTagWhenDisabled, defaults.stripTagWhenDisabled),
+  }
+}
+
+function pickBoolean(value: unknown, fallback: boolean): boolean {
+  return typeof value === "boolean" ? value : fallback
+}
+
+function pickEmotion(value: unknown, fallback: Emotion): Emotion {
+  return isEmotion(value) ? value : fallback
 }
 
 /* ------------------------------------------------------------------ */
@@ -309,6 +344,16 @@ export class SettingsService {
     if (validated.permissions !== undefined) {
       this._settings.permissions = { ...this._settings.permissions, ...validated.permissions }
     }
+    if (validated.emotion !== undefined) {
+      this._settings.emotion = mergeEmotionSettings(
+        { ...this._settings.emotion, ...validated.emotion },
+        DEFAULT_EMOTION_SETTINGS,
+      )
+      // Master switch off ⇒ force prompt injection off, no matter what was sent.
+      if (!this._settings.emotion.enabled) {
+        this._settings.emotion.injectPrompt = false
+      }
+    }
     this.persist()
   }
 
@@ -454,6 +499,24 @@ function validatePublicSettingsPatch(patch: unknown): AppSettingsPublicPatch {
       patch.mode = permissions.mode
     }
     if (Object.keys(patch).length > 0) output.permissions = patch
+  }
+
+  if (input.emotion !== undefined && typeof input.emotion === "object") {
+    const emotion = input.emotion as Record<string, unknown>
+    const patch: EmotionSettingsPatch = {}
+    if (emotion.enabled !== undefined && typeof emotion.enabled === "boolean") {
+      patch.enabled = emotion.enabled
+    }
+    if (emotion.injectPrompt !== undefined && typeof emotion.injectPrompt === "boolean") {
+      patch.injectPrompt = emotion.injectPrompt
+    }
+    if (emotion.defaultEmotion !== undefined && isEmotion(emotion.defaultEmotion)) {
+      patch.defaultEmotion = emotion.defaultEmotion
+    }
+    if (emotion.stripTagWhenDisabled !== undefined && typeof emotion.stripTagWhenDisabled === "boolean") {
+      patch.stripTagWhenDisabled = emotion.stripTagWhenDisabled
+    }
+    if (Object.keys(patch).length > 0) output.emotion = patch
   }
 
   return output

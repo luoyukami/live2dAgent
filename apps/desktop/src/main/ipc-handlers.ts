@@ -94,6 +94,7 @@ export function registerIpcHandlers(services: IpcServices): void {
       lastToolResult: debug.lastToolResult,
       systemPromptPreview: services.prompts.getPreview(),
       promptError: services.prompts.getError(),
+      emotion: debug.emotion,
 
       model: settings.openaiModel,
       baseURL: settings.openaiBaseUrl,

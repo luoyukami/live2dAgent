@@ -69,6 +69,7 @@ export function mapEventToState(event: AgentEvent): AvatarState | null {
     case "approval.approved":
     case "approval.denied":
     case "settings.updated":
+    case "emotion.set":
       return null
   }
 }

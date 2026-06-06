@@ -102,6 +102,20 @@ export function DebugPanel({
             </section>
 
             <section className="debug-section">
+              <h4>情绪系统</h4>
+              <div className="debug-kv">
+                <div><span>Emotion enabled</span><span>{snapshot?.emotion?.enabled ? "true" : "false"}</span></div>
+                <div><span>Prompt injected</span><span>{snapshot?.emotion?.promptInjected ? "true" : "false"}</span></div>
+                <div><span>Default emotion</span><span>{snapshot?.emotion?.defaultEmotion ?? "—"}</span></div>
+                <div><span>Last emotion</span><span>{snapshot?.emotion?.lastEmotion ?? "—"}</span></div>
+                <div><span>Emotion source</span><span>{snapshot?.emotion?.lastSource ?? "—"}</span></div>
+                <div><span>Raw tag</span><span>{snapshot?.emotion?.lastRawTag ?? "none"}</span></div>
+                <div><span>Parse warning</span><span>{snapshot?.emotion?.lastParseWarning ?? "none"}</span></div>
+                <div><span>Inject prompt setting</span><span>{snapshot?.emotion?.injectPrompt ? "true" : "false"}</span></div>
+              </div>
+            </section>
+
+            <section className="debug-section">
               <h4>最近 AgentEvent</h4>
               <div className="debug-events">
                 {recentEvents.length === 0 && <small>暂无事件</small>}

@@ -5,12 +5,36 @@ import type {
   ToolArtifact,
   MultimodalContent,
   ArtifactRef,
+  Emotion,
 } from "@live2d-agent/shared"
 
 /* ---- Re-export shared types that are part of the core domain ---- */
-export type { ToolName, PermissionLevel, AgentMode, ToolArtifact, MultimodalContent, ArtifactRef }
+export type {
+  ToolName,
+  PermissionLevel,
+  AgentMode,
+  ToolArtifact,
+  MultimodalContent,
+  ArtifactRef,
+  Emotion,
+}
 
 /* ---- Agent Message ---- */
+export type EmotionSource = "llm-tag" | "fallback" | "disabled"
+
+/**
+ * Free-form metadata attached to an AgentMessage. The emotion field is the
+ * only structured value defined today; the rest is left open so future
+ * rendering layers (captions, logs, etc.) can hang their data off the message
+ * without breaking the protocol.
+ */
+export interface AgentMessageMetadata {
+  emotion?: Emotion
+  emotionSource?: EmotionSource
+  rawEmotionTag?: string
+  parseWarning?: string
+}
+
 export interface AgentMessage {
   id: string
   role: "system" | "user" | "assistant" | "tool"
@@ -21,6 +45,11 @@ export interface AgentMessage {
   toolCallId?: string
   createdAt: number
   extra?: Record<string, unknown>
+  /**
+   * Structured per-message metadata. The emotion pipeline (see docs §10)
+   * populates this on assistant messages; other roles leave it undefined.
+   */
+  metadata?: AgentMessageMetadata
 }
 
 /* ---- Agent Action (tool invocation) ---- */
@@ -74,6 +103,12 @@ export type AgentEvent =
   | { type: "tool.error"; result: ToolResult }
   | { type: "agent.error"; error: string }
   | { type: "settings.updated"; settings?: unknown }
+  | {
+      type: "emotion.set"
+      emotion: Emotion
+      source: EmotionSource
+      messageId: string
+    }
 
 /* ---- Callback & subscription types ---- */
 export type AgentEventCallback = (event: AgentEvent) => void

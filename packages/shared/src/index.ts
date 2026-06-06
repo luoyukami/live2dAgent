@@ -12,15 +12,19 @@ export type {
   UiSettings,
   AgentSettings,
   PermissionSettings,
+  Emotion,
+  EmotionSettings,
   AppSettings,
   PublicSettings,
   Live2DSettingsPatch,
   UiSettingsPatch,
   AgentSettingsPatch,
+  EmotionSettingsPatch,
   AppSettingsPublicPatch,
   DebugSnapshot,
+  DebugEmotionInfo,
 } from "./schemas.js"
-export { DEFAULT_PERMISSION_POLICY } from "./schemas.js"
+export { DEFAULT_PERMISSION_POLICY, DEFAULT_EMOTION_SETTINGS, EMOTION_VALUES, isEmotion } from "./schemas.js"
 export type {
   IpcSendUserMessageRequest,
   IpcApproveActionRequest,

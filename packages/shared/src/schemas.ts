@@ -2,6 +2,11 @@
 /*  Basic shared types — no external schema library (no zod)          */
 /* ------------------------------------------------------------------ */
 
+import type { Emotion, EmotionSettings } from "./emotion.js"
+
+export type { Emotion, EmotionSettings } from "./emotion.js"
+export { DEFAULT_EMOTION_SETTINGS, EMOTION_VALUES, isEmotion } from "./emotion.js"
+
 /** Agent mode controls permission enforcement strategy */
 export type AgentMode = "manual" | "confirm" | "auto"
 
@@ -108,6 +113,7 @@ export interface AppSettings {
   ui: UiSettings
   agent: AgentSettings
   permissions: PermissionSettings
+  emotion: EmotionSettings
 }
 
 /** Public-facing settings — API key replaced with a boolean flag */
@@ -122,6 +128,9 @@ export type UiSettingsPatch = Partial<UiSettings>
 /** Partial patch for agent settings (allowed in public patch) */
 export type AgentSettingsPatch = Partial<AgentSettings>
 
+/** Partial patch for emotion settings (allowed in public patch) */
+export type EmotionSettingsPatch = Partial<EmotionSettings>
+
 /** Patch payload allowed through updatePublicPatch — no API key or workspace */
 export interface AppSettingsPublicPatch {
   mode?: AgentMode
@@ -131,11 +140,29 @@ export interface AppSettingsPublicPatch {
   ui?: UiSettingsPatch
   agent?: AgentSettingsPatch
   permissions?: Partial<PermissionSettings>
+  emotion?: EmotionSettingsPatch
 }
 
 /* ------------------------------------------------------------------ */
 /*  Debug Snapshot (used by renderer debug panel)                     */
 /* ------------------------------------------------------------------ */
+
+/** Lightweight summary of the latest parsed emotion, used by Debug Panel. */
+export interface DebugEmotionInfo {
+  enabled: boolean
+  injectPrompt: boolean
+  defaultEmotion: Emotion
+  /** Last emotion that was applied to the Live2D / renderer side. */
+  lastEmotion: Emotion
+  /** Source of the last emotion (llm-tag / fallback / disabled). */
+  lastSource: "llm-tag" | "fallback" | "disabled"
+  /** Raw tag text parsed from the assistant message (if any). */
+  lastRawTag?: string
+  /** Parser warning from the last assistant message (if any). */
+  lastParseWarning?: string
+  /** True when the system prompt currently contains the emotion tag section. */
+  promptInjected: boolean
+}
 
 export interface DebugSnapshot {
   settings: PublicSettings
@@ -152,6 +179,7 @@ export interface DebugSnapshot {
   lastToolResult?: unknown
   systemPromptPreview?: string
   promptError?: string
+  emotion?: DebugEmotionInfo
 
   /** Convenience aliases used by the renderer Debug Panel. */
   model: string

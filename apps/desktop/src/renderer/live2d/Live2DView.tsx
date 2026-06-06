@@ -1,6 +1,11 @@
 import { useEffect, useRef, useState } from "react"
 import * as PIXI from "pixi.js"
-import type { AvatarState } from "@live2d-agent/live2d"
+import {
+  DEFAULT_LIVE2D_EMOTION_PROFILE,
+  resolveEmotionBinding,
+  type AvatarState,
+} from "@live2d-agent/live2d"
+import type { Emotion } from "@live2d-agent/shared"
 
 declare global {
   interface Window {
@@ -49,17 +54,24 @@ export interface Live2DViewProps {
   modelPath: string
   /** Current avatar state from agent-core events. */
   avatarState: AvatarState
+  /**
+   * Latest emotion parsed from the assistant message. `null` means the
+   * system is disabled or no message has been received yet — in that case
+   * the Live2D layer should not switch to a fallback expression.
+   */
+  emotion?: Emotion | null
 }
 
 /* ------------------------------------------------------------------ */
 /*  Component                                                          */
 /* ------------------------------------------------------------------ */
 
-export function Live2DView({ modelPath, avatarState }: Live2DViewProps): JSX.Element {
+export function Live2DView({ modelPath, avatarState, emotion }: Live2DViewProps): JSX.Element {
   const containerRef = useRef<HTMLDivElement>(null)
   const appRef = useRef<PIXI.Application | null>(null)
   const modelRef = useRef<InstanceType<any> | null>(null)
   const [loadError, setLoadError] = useState<string | null>(null)
+  const [modelEpoch, setModelEpoch] = useState(0)
 
   /* ---- 1. Create / destroy the Pixi Application ---- */
   useEffect(() => {
@@ -90,6 +102,9 @@ export function Live2DView({ modelPath, avatarState }: Live2DViewProps): JSX.Ele
 
     destroyModel()
     setLoadError(null)
+    // Bump epoch so the emotion effect replays the current emotion on the new
+    // model (per docs §13.3 — switch model, keep last emotion, re-map).
+    setModelEpoch((value) => value + 1)
 
     if (!modelPath) {
       setLoadError("可在设置中配置 Live2D 模型路径")
@@ -133,6 +148,19 @@ export function Live2DView({ modelPath, avatarState }: Live2DViewProps): JSX.Ele
         break
     }
   }, [avatarState])
+
+  /* ---- 4. React to LLM-parsed emotions ---- */
+  useEffect(() => {
+    const model = modelRef.current
+    if (!model) return
+    if (emotion === undefined || emotion === null) return
+
+    const binding = resolveEmotionBinding(DEFAULT_LIVE2D_EMOTION_PROFILE, emotion)
+    // Missing binding (not even neutral) ⇒ leave the current pose alone.
+    if (!binding) return
+    if (binding.motion) playMotion(model, binding.motion, binding.motionIndex)
+    if (binding.expression) trySetExpression(model, binding.expression)
+  }, [emotion, modelEpoch])
 
   /* ---- Internal helpers ---- */
 
@@ -227,9 +255,13 @@ export function Live2DView({ modelPath, avatarState }: Live2DViewProps): JSX.Ele
     }
   }
 
-  function playMotion(model: InstanceType<any>, group: string): void {
+  function playMotion(model: InstanceType<any>, group: string, index?: number): void {
     try {
-      model.motion?.(group)
+      if (typeof index === "number") {
+        model.motion?.(group, index)
+      } else {
+        model.motion?.(group)
+      }
     } catch {
       /* silently fail – model may not have this motion */
     }

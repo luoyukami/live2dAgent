@@ -1,6 +1,7 @@
 /* ---- Types ---- */
 export type {
   AgentMessage,
+  AgentMessageMetadata,
   AgentAction,
   ToolResult,
   ToolDefinition,
@@ -13,6 +14,8 @@ export type {
   ToolArtifact,
   MultimodalContent,
   ArtifactRef,
+  Emotion,
+  EmotionSource,
 } from "./types.js"
 
 /* ---- Core classes / interfaces ---- */
@@ -24,3 +27,21 @@ export { AgentSession } from "./agent-session.js"
 
 /* ---- Utilities ---- */
 export { formatToolResultsAsObservations } from "./observation-formatter.js"
+
+/* ---- Emotion subsystem ---- */
+export {
+  parseEmotionTag,
+  emotionSettingsForParsing,
+} from "./emotion-parser.js"
+export type {
+  ParseEmotionTagOptions,
+  ParsedEmotionMessage,
+  EmotionSource as ParsedEmotionSource,
+} from "./emotion-parser.js"
+export {
+  getEmotionTagInstructions,
+  composeSystemPrompt,
+  isEmotionPromptInjected,
+  listEmotionValues,
+  EMOTION_PROMPT_MARKER,
+} from "./emotion-prompt.js"

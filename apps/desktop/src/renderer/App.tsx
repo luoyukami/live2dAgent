@@ -1,7 +1,13 @@
 import { useEffect, useMemo, useRef, useState } from "react"
 import type { AgentEvent, AgentMessage, AgentAction } from "@live2d-agent/agent-core"
 import { mapEventToState, type AvatarState } from "@live2d-agent/live2d"
-import type { PublicSettings, DebugSnapshot } from "@live2d-agent/shared"
+import {
+  EMOTION_VALUES,
+  type Emotion,
+  type EmotionSettings,
+  type PublicSettings,
+  type DebugSnapshot,
+} from "@live2d-agent/shared"
 import { Live2DView } from "./live2d/Live2DView"
 import { DebugPanel } from "./components/DebugPanel"
 
@@ -13,6 +19,7 @@ interface SettingsForm {
   workspaceDir: string
   live2dModelPath: string
   permissionMode: PublicSettings["permissions"]["mode"]
+  emotion: EmotionSettings
 }
 
 const RISK_TEXT: Record<string, string> = {
@@ -35,6 +42,12 @@ function defaultForm(): SettingsForm {
     workspaceDir: "",
     live2dModelPath: "",
     permissionMode: "permissive",
+    emotion: {
+      enabled: true,
+      injectPrompt: true,
+      defaultEmotion: "neutral",
+      stripTagWhenDisabled: true,
+    },
   }
 }
 
@@ -48,6 +61,7 @@ export function App(): JSX.Element {
   const [showSettings, setShowSettings] = useState(false)
   const [form, setForm] = useState<SettingsForm>(defaultForm)
   const [settingsError, setSettingsError] = useState<string | null>(null)
+  const [currentEmotion, setCurrentEmotion] = useState<Emotion | null>(null)
 
   /* ---- v0.2 Debug states ---- */
   const [showDebug, setShowDebug] = useState(false)
@@ -65,6 +79,9 @@ export function App(): JSX.Element {
       if (event.type === "message.added") setMessages((items) => [...items, event.message])
       if (event.type === "approval.pending") setPending(event.actions)
       if (event.type === "approval.approved" || event.type === "approval.denied") setPending([])
+      if (event.type === "emotion.set") {
+        setCurrentEmotion(event.emotion)
+      }
     })
   }, [])
 
@@ -78,6 +95,12 @@ export function App(): JSX.Element {
         workspaceDir: settings.workspaceDir,
         live2dModelPath: settings.live2d?.modelPath ?? "",
         permissionMode: settings.permissions?.mode ?? "permissive",
+        emotion: {
+          enabled: settings.emotion?.enabled ?? prev.emotion.enabled,
+          injectPrompt: settings.emotion?.injectPrompt ?? prev.emotion.injectPrompt,
+          defaultEmotion: settings.emotion?.defaultEmotion ?? prev.emotion.defaultEmotion,
+          stripTagWhenDisabled: settings.emotion?.stripTagWhenDisabled ?? prev.emotion.stripTagWhenDisabled,
+        },
       }))
     }
   }, [settings])
@@ -93,6 +116,13 @@ export function App(): JSX.Element {
       return () => clearTimeout(timer)
     }
   }, [status])
+
+  /* Emotion system disabled ⇒ renderer must not apply a fallback emotion to Live2D. */
+  useEffect(() => {
+    if (settings && settings.emotion && !settings.emotion.enabled) {
+      setCurrentEmotion(null)
+    }
+  }, [settings?.emotion?.enabled])
 
   /* Keyboard shortcut: Ctrl/Cmd+Shift+D */
   useEffect(() => {
@@ -155,6 +185,29 @@ export function App(): JSX.Element {
       if (form.openaiBaseUrl !== settings?.openaiBaseUrl) publicPatch.openaiBaseUrl = form.openaiBaseUrl
       if (form.openaiModel !== settings?.openaiModel) publicPatch.openaiModel = form.openaiModel
       if (form.permissionMode !== settings?.permissions?.mode) publicPatch.permissions = { mode: form.permissionMode }
+
+      // Master switch off ⇒ force the prompt-injection switch off too, so the
+      // settings on disk reflect what the agent is actually doing.
+      const emotionPatch: Record<string, unknown> = {}
+      const settingsEmotion = settings?.emotion
+      if (form.emotion.enabled !== (settingsEmotion?.enabled ?? true)) {
+        emotionPatch.enabled = form.emotion.enabled
+      }
+      if (form.emotion.injectPrompt !== (settingsEmotion?.injectPrompt ?? true)) {
+        emotionPatch.injectPrompt = form.emotion.enabled
+          ? form.emotion.injectPrompt
+          : false
+      }
+      if (form.emotion.defaultEmotion !== (settingsEmotion?.defaultEmotion ?? "neutral")) {
+        emotionPatch.defaultEmotion = form.emotion.defaultEmotion
+      }
+      if (form.emotion.stripTagWhenDisabled !== (settingsEmotion?.stripTagWhenDisabled ?? true)) {
+        emotionPatch.stripTagWhenDisabled = form.emotion.stripTagWhenDisabled
+      }
+      if (Object.keys(emotionPatch).length > 0) {
+        publicPatch.emotion = emotionPatch
+      }
+
       if (Object.keys(publicPatch).length > 0) {
         await window.petAgent.updatePublicSettings(publicPatch)
       }
@@ -224,7 +277,12 @@ export function App(): JSX.Element {
     <main className="shell">
       <section className="avatar" data-state={status}>
         <div className="drag-region" />
-        <Live2DView key={live2dReloadKey} modelPath={settings?.live2d?.modelPath ?? ""} avatarState={status} />
+        <Live2DView
+          key={live2dReloadKey}
+          modelPath={settings?.live2d?.modelPath ?? ""}
+          avatarState={status}
+          emotion={currentEmotion}
+        />
         <span>{assistantStateLabel}</span>
       </section>
 
@@ -348,6 +406,68 @@ export function App(): JSX.Element {
                   onChange={(e) => setForm((f) => ({ ...f, live2dModelPath: e.target.value }))}
                   placeholder="model.json 或 .model3.json 路径"
                 />
+              </div>
+
+              <div className="settings-group">
+                <label className="checkbox-label">
+                  <input
+                    type="checkbox"
+                    checked={form.emotion.enabled}
+                    onChange={(e) => setForm((f) => ({
+                      ...f,
+                      emotion: {
+                        ...f.emotion,
+                        enabled: e.target.checked,
+                        // Master switch off ⇒ force prompt injection off in the form too.
+                        injectPrompt: e.target.checked ? f.emotion.injectPrompt : false,
+                      },
+                    }))}
+                  />
+                  <span>启用情绪标签</span>
+                </label>
+                <small className="settings-hint">
+                  开启后，助手会在回复末尾生成一个本地可解析的情绪标签，用于驱动 Live2D 等表现层。关闭后不会注入相关提示词，可减少 token 消耗。
+                </small>
+              </div>
+
+              <div className="settings-group">
+                <label className="checkbox-label">
+                  <input
+                    type="checkbox"
+                    checked={form.emotion.injectPrompt}
+                    disabled={!form.emotion.enabled}
+                    onChange={(e) => setForm((f) => ({ ...f, emotion: { ...f.emotion, injectPrompt: e.target.checked } }))}
+                  />
+                  <span>注入情绪提示词（高级）</span>
+                </label>
+                <small className="settings-hint">
+                  控制是否在 system prompt 中追加 Assistant Emotion Tag 说明。关闭主开关时此项自动关闭。
+                </small>
+              </div>
+
+              <div className="settings-group">
+                <label>默认情绪</label>
+                <select
+                  value={form.emotion.defaultEmotion}
+                  onChange={(e) => setForm((f) => ({ ...f, emotion: { ...f.emotion, defaultEmotion: e.target.value as Emotion } }))}
+                >
+                  {EMOTION_VALUES.map((value) => (
+                    <option key={value} value={value}>{value}</option>
+                  ))}
+                </select>
+                <small className="settings-hint">解析失败或情绪系统关闭时使用的回退情绪。</small>
+              </div>
+
+              <div className="settings-group">
+                <label className="checkbox-label">
+                  <input
+                    type="checkbox"
+                    checked={form.emotion.stripTagWhenDisabled}
+                    onChange={(e) => setForm((f) => ({ ...f, emotion: { ...f.emotion, stripTagWhenDisabled: e.target.checked } }))}
+                  />
+                  <span>关闭时仍剥离尾部情绪标签</span>
+                </label>
+                <small className="settings-hint">关闭情绪系统后，如果模型仍输出尾部标签，是否从用户可见正文中移除。</small>
               </div>
             </div>
 

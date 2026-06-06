@@ -3,10 +3,15 @@ import type {
   AgentAction,
   ToolResult,
   AgentEvent,
+  AgentMessageMetadata,
+  Emotion,
+  MultimodalContent,
 } from "./types.js"
+import type { EmotionSettings } from "@live2d-agent/shared"
 import type { ModelAdapter } from "./model-adapter.js"
 import type { ToolRegistry } from "./tool-registry.js"
 import { EventBus } from "./events.js"
+import { parseEmotionTag } from "./emotion-parser.js"
 
 /* ------------------------------------------------------------------ */
 /*  Interfaces that MUST be implemented by the host environment        */
@@ -36,6 +41,13 @@ export interface TraceStore {
 
 export interface AgentSessionOptions {
   maxSteps?: number
+  /**
+   * Emotion settings snapshot. Required when the host wants the session to
+   * parse trailing `<emotion />` tags, attach `metadata.emotion`, and emit
+   * `emotion.set` events. When omitted the session treats the system as
+   * disabled (no parsing, no events).
+   */
+  emotion?: EmotionSettings
 }
 
 /* ------------------------------------------------------------------ */
@@ -54,6 +66,7 @@ export interface AgentSessionOptions {
 export class AgentSession {
   messages: AgentMessage[] = []
   private readonly maxSteps: number
+  private readonly emotion: EmotionSettings
 
   constructor(
     private model: ModelAdapter,
@@ -65,6 +78,14 @@ export class AgentSession {
     options: AgentSessionOptions = {},
   ) {
     this.maxSteps = options.maxSteps ?? 20
+    // Default to "system disabled" — safer for callers that don't pass
+    // emotion settings (the system is opt-in from the host's perspective).
+    this.emotion = options.emotion ?? {
+      enabled: false,
+      injectPrompt: false,
+      defaultEmotion: "neutral",
+      stripTagWhenDisabled: true,
+    }
   }
 
   /**
@@ -87,9 +108,16 @@ export class AgentSession {
         tools: this.tools.getDefinitions(),
       })
 
-      this.addMessage(assistantMessage)
+      // Parse the trailing <emotion /> tag (if any) BEFORE the message enters
+      // the conversation history. This guarantees:
+      //   1. Chat UI never sees the raw tag.
+      //   2. Tool observations and later steps only see the cleaned text.
+      //   3. The emotion metadata is bound to this specific assistant message.
+      const processed = this.applyEmotionToAssistantMessage(assistantMessage)
+      this.addMessage(processed)
+      this.maybeEmitEmotion(processed)
 
-      const actions = assistantMessage.actions ?? []
+      const actions = processed.actions ?? []
       const actionsToHandle = this.actionsToHandle(actions)
 
       /* ---- No tool calls → idle ---- */
@@ -189,5 +217,138 @@ export class AgentSession {
 
   private generateId(prefix: string): string {
     return `${prefix}_${Date.now()}_${Math.random().toString(36).slice(2, 9)}`
+  }
+
+  /* ---- Emotion pipeline (see docs/情绪功能开发需求.md §11) ---- */
+
+  /**
+   * Strip the trailing `<emotion />` tag from the assistant message and
+   * attach the parsed emotion to `metadata`. Pure transformation; never
+   * mutates the original input.
+   */
+  private applyEmotionToAssistantMessage(message: AgentMessage): AgentMessage {
+    if (message.role !== "assistant") return message
+
+    const result = this.parseAssistantContent(message.content)
+    if (!result) {
+      // Either the system is fully disabled (no parsing wanted) or the
+      // content is non-text (no trailing tag to strip). Leave as-is.
+      return message
+    }
+
+    const metadata: AgentMessageMetadata = {
+      ...(message.metadata ?? {}),
+      emotion: result.emotion,
+      emotionSource: result.emotionSource,
+    }
+    if (result.rawEmotionTag !== undefined) metadata.rawEmotionTag = result.rawEmotionTag
+    if (result.parseWarning !== undefined) metadata.parseWarning = result.parseWarning
+
+    return {
+      ...message,
+      content: result.content,
+      metadata,
+    }
+  }
+
+  /**
+   * Parse the trailing emotion tag out of the assistant content.
+   * Returns `null` when the system is disabled (so the caller can skip work).
+   */
+  private parseAssistantContent(
+    content: string | MultimodalContent[],
+  ): {
+    content: string | MultimodalContent[]
+    emotion: Emotion
+    emotionSource: "llm-tag" | "fallback" | "disabled"
+    rawEmotionTag?: string
+    parseWarning?: string
+  } | null {
+    if (!this.emotion) return null
+
+    // String content — straightforward parse.
+    if (typeof content === "string") {
+      const parsed = parseEmotionTag(content, {
+        enabled: this.emotion.enabled,
+        defaultEmotion: this.emotion.defaultEmotion,
+        stripTagWhenDisabled: this.emotion.stripTagWhenDisabled,
+      })
+      return {
+        content: parsed.visibleText,
+        emotion: parsed.emotion,
+        emotionSource: parsed.emotionSource,
+        rawEmotionTag: parsed.rawEmotionTag,
+        parseWarning: parsed.parseWarning,
+      }
+    }
+
+    // Multimodal — only touch the last text block. Other blocks untouched.
+    const blocks = content
+    let lastTextIndex = -1
+    for (let i = blocks.length - 1; i >= 0; i -= 1) {
+      if (blocks[i]?.type === "text") {
+        lastTextIndex = i
+        break
+      }
+    }
+
+    if (lastTextIndex === -1) {
+      // No text block at all — fall back to default emotion, do not strip.
+      return {
+        content,
+        emotion: this.emotion.defaultEmotion,
+        emotionSource: this.emotion.enabled ? "fallback" : "disabled",
+      }
+    }
+
+    const target = blocks[lastTextIndex]!
+    const rawText = target.text ?? ""
+    const parsed = parseEmotionTag(rawText, {
+      enabled: this.emotion.enabled,
+      defaultEmotion: this.emotion.defaultEmotion,
+      stripTagWhenDisabled: this.emotion.stripTagWhenDisabled,
+    })
+
+    // Build a new blocks array only when something actually changed.
+    const stripped = parsed.rawEmotionTag !== undefined
+    const newText = stripped ? parsed.visibleText : rawText
+    if (!stripped && newText === rawText) {
+      return {
+        content,
+        emotion: parsed.emotion,
+        emotionSource: parsed.emotionSource,
+        rawEmotionTag: parsed.rawEmotionTag,
+        parseWarning: parsed.parseWarning,
+      }
+    }
+
+    const nextBlocks = blocks.slice()
+    nextBlocks[lastTextIndex] = { ...target, text: newText }
+    return {
+      content: nextBlocks,
+      emotion: parsed.emotion,
+      emotionSource: parsed.emotionSource,
+      rawEmotionTag: parsed.rawEmotionTag,
+      parseWarning: parsed.parseWarning,
+    }
+  }
+
+  /**
+   * Emit an `emotion.set` event for the parsed assistant message.
+   * - When the system is disabled, we DO NOT emit (per docs §12.3).
+   * - The event always carries the assistant message id so the renderer can
+   *   correlate it back to the bubble in the chat.
+   */
+  private maybeEmitEmotion(message: AgentMessage): void {
+    if (message.role !== "assistant") return
+    const meta = message.metadata
+    if (!meta || meta.emotion === undefined || meta.emotionSource === undefined) return
+    if (meta.emotionSource === "disabled") return
+    this.emit({
+      type: "emotion.set",
+      emotion: meta.emotion,
+      source: meta.emotionSource,
+      messageId: message.id,
+    })
   }
 }

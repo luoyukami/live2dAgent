@@ -2,10 +2,11 @@ import { clipboard, desktopCapturer } from "electron"
 import { spawn } from "node:child_process"
 import { existsSync, mkdirSync, readFileSync, realpathSync, writeFileSync } from "node:fs"
 import { dirname, isAbsolute, resolve, relative } from "node:path"
-import { AgentSession, EventBus, ToolRegistry, type AgentEvent, type AgentAction, type ToolResult, type ToolRuntime, type ToolArtifact } from "@live2d-agent/agent-core"
+import { AgentSession, EventBus, ToolRegistry, composeSystemPrompt, isEmotionPromptInjected, type AgentEvent, type AgentAction, type ToolResult, type ToolRuntime, type ToolArtifact } from "@live2d-agent/agent-core"
 import { OpenAiCompatibleAdapter } from "@live2d-agent/model-openai-compatible"
 import { createDefaultTools, type RuntimeToolContext } from "@live2d-agent/tools"
-import type { ArtifactRef } from "@live2d-agent/shared"
+import type { ArtifactRef, DebugEmotionInfo, Emotion } from "@live2d-agent/shared"
+import type { EmotionSource } from "@live2d-agent/agent-core"
 import type { ArtifactStore } from "./artifact-store.js"
 import type { PermissionService } from "./permission-service.js"
 import type { PromptService } from "./prompt-service.js"
@@ -20,6 +21,13 @@ export interface AgentServiceDeps {
   prompts: PromptService
 }
 
+interface EmotionDebugState {
+  lastEmotion: Emotion
+  lastSource: EmotionSource
+  lastRawTag?: string
+  lastParseWarning?: string
+}
+
 export class AgentService implements ToolRuntime {
   private session?: AgentSession
   private events = new EventBus()
@@ -30,6 +38,10 @@ export class AgentService implements ToolRuntime {
   private lastToolResult?: unknown
   private stepCount = 0
   private avatarState = "idle"
+  private emotionState: EmotionDebugState = {
+    lastEmotion: "neutral",
+    lastSource: "fallback",
+  }
 
   constructor(private readonly deps: AgentServiceDeps) {
     this.events.subscribe((event) => this.captureEvent(event))
@@ -51,7 +63,7 @@ export class AgentService implements ToolRuntime {
       baseUrl: settings.openaiBaseUrl.replace(/\/$/, ""),
       apiKey: settings.openaiApiKey ?? "",
       model: settings.openaiModel,
-      systemPromptProvider: () => this.deps.prompts.getSystemPrompt(),
+      systemPromptProvider: () => this.composeActiveSystemPrompt(),
       onModelRequest: (request) => { this.lastModelRequest = request },
       onModelResponse: (response) => { this.lastModelResponse = response },
       artifactReader: {
@@ -62,7 +74,24 @@ export class AgentService implements ToolRuntime {
     this.executors = this.createExecutors()
     this.session = new AgentSession(model, registry, this, this.deps.permissions, this.deps.trace, this.events, {
       maxSteps: settings.agent.maxSteps,
+      emotion: settings.emotion,
     })
+  }
+
+  /**
+   * Build the system prompt that will be sent to the model:
+   *  base user-defined prompt
+   *  + emotion tag instructions (when settings allow it)
+   *
+   * The PromptService returns the raw user-editable prompt; we layer the
+   * emotion block on top of it. We do NOT cache the composed prompt inside
+   * the PromptService — that keeps the user-facing system.md file
+   * uncluttered by emotion-related content.
+   */
+  private composeActiveSystemPrompt(): string {
+    const base = this.deps.prompts.getSystemPrompt()
+    const settings = this.deps.settings.get()
+    return composeSystemPrompt(base, settings.emotion)
   }
 
   async sendUserMessage(text: string): Promise<void> {
@@ -121,7 +150,10 @@ export class AgentService implements ToolRuntime {
     lastToolResult?: unknown
     stepCount: number
     avatarState: string
+    emotion: DebugEmotionInfo
   } {
+    const settings = this.deps.settings.get()
+    const composedPrompt = this.composeActiveSystemPrompt()
     return {
       lastModelRequest: this.lastModelRequest,
       lastModelResponse: this.lastModelResponse,
@@ -129,6 +161,16 @@ export class AgentService implements ToolRuntime {
       lastToolResult: this.lastToolResult,
       stepCount: this.stepCount,
       avatarState: this.avatarState,
+      emotion: {
+        enabled: settings.emotion.enabled,
+        injectPrompt: settings.emotion.injectPrompt,
+        defaultEmotion: settings.emotion.defaultEmotion,
+        lastEmotion: this.emotionState.lastEmotion,
+        lastSource: this.emotionState.lastSource,
+        lastRawTag: this.emotionState.lastRawTag,
+        lastParseWarning: this.emotionState.lastParseWarning,
+        promptInjected: isEmotionPromptInjected(composedPrompt),
+      },
     }
   }
 
@@ -302,6 +344,25 @@ export class AgentService implements ToolRuntime {
                 : this.avatarState
     if (event.type === "tool.started") this.lastToolCall = event.action
     if (event.type === "tool.finished" || event.type === "tool.error") this.lastToolResult = event.result
+    if (event.type === "emotion.set") {
+      this.emotionState = {
+        lastEmotion: event.emotion,
+        lastSource: event.source,
+        lastRawTag: undefined,
+        lastParseWarning: undefined,
+      }
+    }
+    if (event.type === "message.added" && event.message.metadata) {
+      const meta = event.message.metadata
+      if (meta.emotion && meta.emotionSource) {
+        this.emotionState = {
+          lastEmotion: meta.emotion,
+          lastSource: meta.emotionSource,
+          lastRawTag: meta.rawEmotionTag,
+          lastParseWarning: meta.parseWarning,
+        }
+      }
+    }
   }
 }
 

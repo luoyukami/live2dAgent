@@ -88,6 +88,10 @@ button:disabled { opacity: .55; cursor: not-allowed; }
 .badge.warn { background: rgba(254, 202, 202, .2); color: #fca5a5; }
 .settings-footer { display: flex; justify-content: flex-end; }
 .settings-error { font-size: 12px; color: #fca5a5; background: rgba(127, 29, 29, .5); padding: 6px 10px; border-radius: 8px; border: 1px solid rgba(248, 113, 113, .4); }
+.checkbox-label { display: flex; align-items: center; gap: 8px; font-size: 13px; color: #e2e8f0; font-weight: 500; }
+.checkbox-label input[type="checkbox"] { width: auto !important; }
+.checkbox-label input[type="checkbox"]:disabled { opacity: .5; cursor: not-allowed; }
+.settings-hint { font-size: 11px; color: #94a3b8; line-height: 1.4; }
 
 /* Debug panel */
 .debug-panel { position: absolute; inset: 0; z-index: 11; display: grid; grid-template-rows: auto 1fr; gap: 10px; padding: 14px; border-radius: 22px; background: rgba(15, 23, 42, .92); backdrop-filter: blur(24px); border: 1px solid rgba(255,255,255,.18); }
