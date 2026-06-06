@@ -9,6 +9,7 @@ import type {
   Live2DSettingsPatch,
   UiSettings,
   AgentSettings,
+  PermissionSettings,
   PublicSettings,
 } from "@live2d-agent/shared"
 
@@ -32,20 +33,120 @@ export const DEFAULT_AGENT_SETTINGS: AgentSettings = {
   maxSteps: 20,
 }
 
+export const DEFAULT_PERMISSION_SETTINGS: PermissionSettings = {
+  mode: "permissive",
+}
+
 export function createDefaultSettings(userDataDir: string): AppSettings {
   const workspaceDir = join(userDataDir, "workspace")
   mkdirSync(workspaceDir, { recursive: true })
 
+  const localDevSettings = readLocalDevSettings()
+
   return {
-    mode: "confirm",
+    mode: readEnvAgentMode() ?? localDevSettings.mode ?? "confirm",
     workspaceDir,
-    openaiBaseUrl: process.env.OPENAI_BASE_URL ?? "https://api.openai.com/v1",
-    openaiModel: process.env.OPENAI_MODEL ?? "gpt-4o-mini",
-    openaiApiKey: process.env.OPENAI_API_KEY,
+    openaiBaseUrl: process.env.OPENAI_BASE_URL ?? localDevSettings.openaiBaseUrl ?? "https://api.openai.com/v1",
+    openaiModel: process.env.OPENAI_MODEL ?? localDevSettings.openaiModel ?? "gpt-4o-mini",
+    openaiApiKey: process.env.OPENAI_API_KEY ?? localDevSettings.openaiApiKey,
     live2d: { ...DEFAULT_LIVE2D_SETTINGS },
     ui: { ...DEFAULT_UI_SETTINGS },
     agent: { ...DEFAULT_AGENT_SETTINGS },
+    permissions: { ...DEFAULT_PERMISSION_SETTINGS, ...(localDevSettings.permissions ?? {}) },
   }
+}
+
+/* ------------------------------------------------------------------ */
+/*  Local development config                                           */
+/* ------------------------------------------------------------------ */
+
+type LocalDevSettings = Partial<Pick<AppSettings, "mode" | "openaiBaseUrl" | "openaiModel" | "openaiApiKey">> & {
+  permissions?: Partial<PermissionSettings>
+}
+
+function isDevEnvironment(): boolean {
+  return process.env.NODE_ENV === "development" || process.env.ELECTRON_RENDERER_URL !== undefined
+}
+
+function readEnvAgentMode(): AgentMode | undefined {
+  return isAgentMode(process.env.AGENT_MODE) ? process.env.AGENT_MODE : undefined
+}
+
+function readLocalDevSettings(): LocalDevSettings {
+  if (!isDevEnvironment()) return {}
+
+  const configPath = findLocalConfigPath()
+  if (!configPath) return {}
+
+  try {
+    return parseLocalDevSettings(readFileSync(configPath, "utf8"))
+  } catch {
+    return {}
+  }
+}
+
+function findLocalConfigPath(): string | null {
+  const candidates = getRepoRootCandidates()
+
+  for (const root of candidates) {
+    const configPath = join(root, "local", "config.yaml")
+    if (existsSync(configPath)) return configPath
+  }
+
+  return null
+}
+
+function getRepoRootCandidates(): string[] {
+  const candidates = [process.cwd(), resolve(process.cwd(), "..", "..")]
+
+  try {
+    const modulePath = fileURLToPath(import.meta.url)
+    candidates.push(resolve(dirname(modulePath), "..", "..", "..", ".."))
+    candidates.push(resolve(dirname(modulePath), "..", "..", ".."))
+  } catch {
+    /* ignore – import.meta.url may not be available */
+  }
+
+  return candidates
+}
+
+function parseLocalDevSettings(yaml: string): LocalDevSettings {
+  const parsed: Record<string, string> = {}
+  let inSettings = false
+
+  for (const line of yaml.split(/\r?\n/)) {
+    const trimmed = line.trim()
+    if (!trimmed || trimmed.startsWith("#")) continue
+
+    if (/^settings\s*:\s*$/.test(trimmed)) {
+      inSettings = true
+      continue
+    }
+
+    if (!inSettings) continue
+    if (!/^\s+/.test(line)) break
+
+    const match = trimmed.match(/^([A-Za-z][A-Za-z0-9]*)\s*:\s*(.*)$/)
+    if (!match) continue
+
+    parsed[match[1]] = unquoteYamlScalar(match[2].trim())
+  }
+
+  const settings: LocalDevSettings = {}
+  if (isAgentMode(parsed.mode)) settings.mode = parsed.mode
+  if (parsed.openaiBaseUrl) settings.openaiBaseUrl = parsed.openaiBaseUrl
+  if (parsed.openaiModel) settings.openaiModel = parsed.openaiModel
+  if (parsed.openaiApiKey) settings.openaiApiKey = parsed.openaiApiKey
+  if (isPermissionMode(parsed.permissionMode)) settings.permissions = { mode: parsed.permissionMode }
+  return settings
+}
+
+function unquoteYamlScalar(value: string): string {
+  const isQuoted = (value.startsWith('"') && value.endsWith('"')) || (value.startsWith("'") && value.endsWith("'"))
+  if (value.length >= 2 && isQuoted) {
+    return value.slice(1, -1)
+  }
+  return value
 }
 
 /* ------------------------------------------------------------------ */
@@ -60,6 +161,7 @@ function deepMergeDefaults(parsed: Record<string, unknown>, defaults: AppSetting
     live2d: { ...defaults.live2d, ...((parsed.live2d ?? {}) as Partial<Live2DSettings>) },
     ui: { ...defaults.ui, ...((parsed.ui ?? {}) as Partial<UiSettings>) },
     agent: { ...defaults.agent, ...((parsed.agent ?? {}) as Partial<AgentSettings>) },
+    permissions: { ...defaults.permissions, ...((parsed.permissions ?? {}) as Partial<PermissionSettings>) },
   }
 }
 
@@ -73,6 +175,10 @@ function isAgentMode(v: unknown): v is AgentMode {
 
 function isNumber(v: unknown): v is number {
   return typeof v === "number" && Number.isFinite(v)
+}
+
+function isPermissionMode(v: unknown): v is PermissionSettings["mode"] {
+  return v === "ask" || v === "permissive"
 }
 
 function numberInRange(value: unknown, field: string, min: number, max: number): number | undefined {
@@ -118,20 +224,7 @@ function localModelPathFromSetting(modelPath: string): string | null {
  * Returns an absolute path to the model JSON, or null if not found.
  */
 function findLocalDevModelPath(): string | null {
-  const candidates: string[] = []
-
-  /* 1. process.cwd() — reliable during `pnpm dev` from repo root */
-  candidates.push(process.cwd())
-  candidates.push(resolve(process.cwd(), "..", ".."))
-
-  /* 2. Derive from the bundle location (out/main/main.js -> repo root) */
-  try {
-    const modulePath = fileURLToPath(import.meta.url)
-    candidates.push(resolve(dirname(modulePath), "..", "..", "..", ".."))
-    candidates.push(resolve(dirname(modulePath), "..", "..", ".."))
-  } catch {
-    /* ignore – import.meta.url may not be available */
-  }
+  const candidates = getRepoRootCandidates()
 
   for (const root of candidates) {
     const localDir = join(root, "local")
@@ -212,6 +305,9 @@ export class SettingsService {
     }
     if (validated.agent !== undefined) {
       this._settings.agent = { ...this._settings.agent, ...validated.agent }
+    }
+    if (validated.permissions !== undefined) {
+      this._settings.permissions = { ...this._settings.permissions, ...validated.permissions }
     }
     this.persist()
   }
@@ -348,6 +444,16 @@ function validatePublicSettingsPatch(patch: unknown): AppSettingsPublicPatch {
     const maxSteps = integerInRange(ag.maxSteps, "agent.maxSteps", 1, 100)
     if (maxSteps !== undefined) patch.maxSteps = maxSteps
     if (Object.keys(patch).length > 0) output.agent = patch
+  }
+
+  if (input.permissions !== undefined && typeof input.permissions === "object") {
+    const permissions = input.permissions as Record<string, unknown>
+    const patch: Partial<PermissionSettings> = {}
+    if (permissions.mode !== undefined) {
+      if (!isPermissionMode(permissions.mode)) throw new Error(`Invalid permission mode: ${String(permissions.mode)}`)
+      patch.mode = permissions.mode
+    }
+    if (Object.keys(patch).length > 0) output.permissions = patch
   }
 
   return output

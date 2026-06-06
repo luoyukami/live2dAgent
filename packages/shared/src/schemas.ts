@@ -5,6 +5,9 @@
 /** Agent mode controls permission enforcement strategy */
 export type AgentMode = "manual" | "confirm" | "auto"
 
+/** Tool permission mode controls how aggressively tools are auto-approved. */
+export type ToolPermissionMode = "ask" | "permissive"
+
 /** Permission levels map 1:1 to the v0 tool set */
 export type PermissionLevel =
   | "safe"
@@ -89,6 +92,11 @@ export interface AgentSettings {
   maxSteps: number
 }
 
+/** Tool permission settings */
+export interface PermissionSettings {
+  mode: ToolPermissionMode
+}
+
 /** Full application settings (stored on disk, never sent to renderer as-is) */
 export interface AppSettings {
   mode: AgentMode
@@ -99,6 +107,7 @@ export interface AppSettings {
   live2d: Live2DSettings
   ui: UiSettings
   agent: AgentSettings
+  permissions: PermissionSettings
 }
 
 /** Public-facing settings — API key replaced with a boolean flag */
@@ -121,6 +130,7 @@ export interface AppSettingsPublicPatch {
   live2d?: Live2DSettingsPatch
   ui?: UiSettingsPatch
   agent?: AgentSettingsPatch
+  permissions?: Partial<PermissionSettings>
 }
 
 /* ------------------------------------------------------------------ */
@@ -148,6 +158,7 @@ export interface DebugSnapshot {
   baseURL: string
   workspace: string
   mode: AgentMode
+  permissionMode: ToolPermissionMode
   maxSteps: number
   avatarState: string
   tracePath: string

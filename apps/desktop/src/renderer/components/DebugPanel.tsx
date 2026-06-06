@@ -51,6 +51,7 @@ export function DebugPanel({
       baseURL: snapshot.baseURL,
       workspace: snapshot.workspace,
       mode: snapshot.mode,
+      permissionMode: snapshot.permissionMode,
       maxSteps: snapshot.maxSteps,
       avatarState: snapshot.avatarState,
       tracePath: snapshot.tracePath,
@@ -93,6 +94,7 @@ export function DebugPanel({
                 <div><span>Base URL</span><span>{snapshot?.baseURL ?? "—"}</span></div>
                 <div><span>Workspace</span><span>{snapshot?.workspace ?? "—"}</span></div>
                 <div><span>Mode</span><span>{snapshot?.mode ?? "—"}</span></div>
+                <div><span>Permission</span><span>{snapshot?.permissionMode ?? "—"}</span></div>
                 <div><span>Max Steps</span><span>{snapshot?.maxSteps ?? "—"}</span></div>
                 <div><span>Avatar State</span><span>{snapshot?.avatarState ?? "—"}</span></div>
                 <div><span>Trace Path</span><span>{snapshot?.tracePath ?? "—"}</span></div>

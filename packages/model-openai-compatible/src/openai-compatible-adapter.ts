@@ -48,7 +48,7 @@ export class OpenAiCompatibleAdapter implements ModelAdapter {
 
     let response: Response
     try {
-      response = await fetch(`${this.config.baseUrl}/chat/completions`, {
+      response = await fetch(this.chatCompletionsUrl(), {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
@@ -165,6 +165,11 @@ export class OpenAiCompatibleAdapter implements ModelAdapter {
   }
 
   /* ---- private helpers ---- */
+
+  private chatCompletionsUrl(): string {
+    const baseUrl = this.config.baseUrl.replace(/\/+$/, "")
+    return /\/chat\/completions$/i.test(baseUrl) ? baseUrl : `${baseUrl}/chat/completions`
+  }
 
   private formatScreenshotImageMessage(result: ToolResult): AgentMessage | undefined {
     if (result.tool === "screenshot.capture" && result.ok) {

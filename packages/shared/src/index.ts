@@ -1,6 +1,7 @@
 export { IPC_CHANNELS, DEFAULT_PATHS } from "./constants.js"
 export type {
   AgentMode,
+  ToolPermissionMode,
   PermissionLevel,
   ToolName,
   ArtifactKind,
@@ -10,6 +11,7 @@ export type {
   Live2DSettings,
   UiSettings,
   AgentSettings,
+  PermissionSettings,
   AppSettings,
   PublicSettings,
   Live2DSettingsPatch,

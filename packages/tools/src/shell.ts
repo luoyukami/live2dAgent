@@ -3,14 +3,14 @@ import type { RuntimeToolContext } from "./runtime.js"
 
 export const shellToolDefinition: ToolDefinition = {
   name: "shell.run",
-  description: "Run a shell command inside the configured workspace.",
+  description: "Run a PowerShell (pwsh) command inside the configured workspace.",
   permission: "shell" as PermissionLevel,
   inputSchema: {
     type: "object",
     properties: {
       command: {
         type: "string",
-        description: "The shell command to execute",
+        description: "The PowerShell command to execute",
       },
       cwd: {
         type: "string",

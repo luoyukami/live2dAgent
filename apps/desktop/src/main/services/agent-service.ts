@@ -316,7 +316,10 @@ function isOutside(parent: string, target: string): boolean {
 
 function runShellCommand(command: string, cwd: string): Promise<{ stdout: string; stderr: string; exitCode: number }> {
   return new Promise((resolve) => {
-    const child = spawn(command, { cwd, shell: true, windowsHide: true })
+    const child = spawn("pwsh", ["-NoLogo", "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-Command", command], {
+      cwd,
+      windowsHide: true,
+    })
     const stdout = createLimitedCollector()
     const stderr = createLimitedCollector()
     let settled = false

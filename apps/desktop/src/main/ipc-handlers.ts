@@ -99,6 +99,7 @@ export function registerIpcHandlers(services: IpcServices): void {
       baseURL: settings.openaiBaseUrl,
       workspace: settings.workspaceDir,
       mode: settings.mode,
+      permissionMode: settings.permissions.mode,
       maxSteps: settings.agent.maxSteps,
       avatarState: debug.avatarState,
       tracePath: services.trace.getSessionFile(),

@@ -12,6 +12,7 @@ interface SettingsForm {
   apiKey: string
   workspaceDir: string
   live2dModelPath: string
+  permissionMode: PublicSettings["permissions"]["mode"]
 }
 
 const RISK_TEXT: Record<string, string> = {
@@ -33,6 +34,7 @@ function defaultForm(): SettingsForm {
     apiKey: "",
     workspaceDir: "",
     live2dModelPath: "",
+    permissionMode: "permissive",
   }
 }
 
@@ -75,6 +77,7 @@ export function App(): JSX.Element {
         openaiModel: settings.openaiModel,
         workspaceDir: settings.workspaceDir,
         live2dModelPath: settings.live2d?.modelPath ?? "",
+        permissionMode: settings.permissions?.mode ?? "permissive",
       }))
     }
   }, [settings])
@@ -151,6 +154,7 @@ export function App(): JSX.Element {
       if (form.mode !== settings?.mode) publicPatch.mode = form.mode
       if (form.openaiBaseUrl !== settings?.openaiBaseUrl) publicPatch.openaiBaseUrl = form.openaiBaseUrl
       if (form.openaiModel !== settings?.openaiModel) publicPatch.openaiModel = form.openaiModel
+      if (form.permissionMode !== settings?.permissions?.mode) publicPatch.permissions = { mode: form.permissionMode }
       if (Object.keys(publicPatch).length > 0) {
         await window.petAgent.updatePublicSettings(publicPatch)
       }
@@ -278,6 +282,17 @@ export function App(): JSX.Element {
                   <option value="manual">manual</option>
                   <option value="confirm">confirm</option>
                   <option value="auto">auto</option>
+                </select>
+              </div>
+
+              <div className="settings-group">
+                <label>工具权限</label>
+                <select
+                  value={form.permissionMode}
+                  onChange={(e) => setForm((f) => ({ ...f, permissionMode: e.target.value as PublicSettings["permissions"]["mode"] }))}
+                >
+                  <option value="permissive">默许模式</option>
+                  <option value="ask">询问模式</option>
                 </select>
               </div>
 

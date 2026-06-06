@@ -7,9 +7,8 @@
     "types": ["node", "electron-vite/node"],
     "outDir": "./dist-types",
     "rootDir": ".",
-    "baseUrl": ".",
     "paths": {
-      "@desktop/*": ["src/*"]
+      "@desktop/*": ["./src/*"]
     }
   },
   "include": ["src", "electron.vite.config.ts"],
