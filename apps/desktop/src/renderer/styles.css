@@ -92,6 +92,7 @@ button:disabled { opacity: .55; cursor: not-allowed; }
 .checkbox-label input[type="checkbox"] { width: auto !important; }
 .checkbox-label input[type="checkbox"]:disabled { opacity: .5; cursor: not-allowed; }
 .settings-hint { font-size: 11px; color: #94a3b8; line-height: 1.4; }
+.settings-static-value { padding: 9px 10px; border: 1px solid rgba(255,255,255,.14); border-radius: 12px; color: #94a3b8; background: rgba(15, 23, 42, .5); font-size: 13px; }
 
 /* Debug panel */
 .debug-panel { position: absolute; inset: 0; z-index: 11; display: grid; grid-template-rows: auto 1fr; gap: 10px; padding: 14px; border-radius: 22px; background: rgba(15, 23, 42, .92); backdrop-filter: blur(24px); border: 1px solid rgba(255,255,255,.18); }

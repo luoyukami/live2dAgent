@@ -42,6 +42,11 @@ export class AgentService implements ToolRuntime {
     lastEmotion: "neutral",
     lastSource: "fallback",
   }
+  /**
+   * Best-effort UI hint populated by renderer telemetry (VOICE_DEBUG_UPDATE).
+   * The main process is the source of truth for audio artifact lifecycle;
+   * this object is advisory only and must not drive control flow.
+   */
   private voiceDebug = {
     lastRecordingState: "idle" as "idle" | "recording" | "finished" | "cancelled" | "error",
     lastAudioArtifact: undefined as { id: string; path: string; mimeType: string; size: number; durationMs: number; createdAt: number } | undefined,
@@ -77,9 +82,9 @@ export class AgentService implements ToolRuntime {
       },
       audioInputEnabled: settings.voice.audioInputEnabled,
       audioReader: {
-        // Buffer is a Uint8Array in Node, but the adapter expects a typed
-        // Uint8Array view; cast once here so the adapter stays clean.
-        readAudio: (ref) => this.deps.artifacts.readArtifact(ref) as unknown as Uint8Array,
+        // Buffer extends Uint8Array; explicit cast keeps the adapter API
+        // platform-agnostic.
+        readAudio: (ref) => this.deps.artifacts.readArtifact(ref) as Uint8Array,
       },
       onAudioSent: (info) => {
         this.deps.trace.append({
@@ -229,6 +234,14 @@ export class AgentService implements ToolRuntime {
     }
   }
 
+  /**
+   * Merge renderer-reported voice debug telemetry into the local state.
+   *
+   * The incoming values are untrusted UI hints (the renderer does not own
+   * the audio artifact lifecycle). Real artifact creation is tracked via
+   * `AUDIO_SAVE_RECORDING` → `setVoiceDebug` called from the main process.
+   * Treat these as best-effort display information only.
+   */
   setVoiceDebug(input: Partial<{
     lastRecordingState: "idle" | "recording" | "finished" | "cancelled" | "error"
     lastAudioArtifact: { id: string; path: string; mimeType: string; size: number; durationMs: number; createdAt: number }

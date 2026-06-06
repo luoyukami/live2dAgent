@@ -17,6 +17,42 @@ export interface IpcServices {
   prompts: PromptService
 }
 
+/**
+ * Runtime-validate a renderer-reported audio lifecycle event. Only the
+ * allowlisted types pass through, and each must carry the correct payload
+ * shape. Returns `null` for any invalid / disallowed event.
+ */
+function validateAudioLifecycleEvent(event: unknown): AgentEvent | null {
+  if (!event || typeof event !== "object") return null
+  const e = event as Record<string, unknown>
+  const isString = (v: unknown): v is string => typeof v === "string" && v.length > 0
+  const isNumber = (v: unknown): v is number => typeof v === "number" && Number.isFinite(v)
+  switch (e.type) {
+    case "recording.started":
+      return isNumber(e.maxDurationMs) && (e.preferredFormat === "wav" || e.preferredFormat === "mp3")
+        ? (event as AgentEvent)
+        : null
+    case "recording.cancelled":
+      return event as AgentEvent
+    case "recording.finished":
+      return isNumber(e.durationMs) && isString(e.mimeType) && isNumber(e.size)
+        ? (event as AgentEvent)
+        : null
+    case "audio.attachment.added":
+      return e.attachment && typeof e.attachment === "object"
+        ? (event as AgentEvent)
+        : null
+    case "audio.attachment.removed":
+      return isString(e.attachmentId) ? (event as AgentEvent) : null
+    case "audio.error":
+      return isString(e.code) && typeof e.message === "string"
+        ? (event as AgentEvent)
+        : null
+    default:
+      return null
+  }
+}
+
 export function registerIpcHandlers(services: IpcServices): void {
   /* ---- Agent messaging ---- */
   ipcMain.handle(IPC_CHANNELS.SEND_USER_MESSAGE, async (_event, textOrInput: string | { text: string; attachments?: AudioContextAttachment[] }) => {
@@ -127,19 +163,10 @@ export function registerIpcHandlers(services: IpcServices): void {
    * This prevents a malicious renderer from spuriously marking tool results
    * as finished, etc.
    */
-  ipcMain.handle(IPC_CHANNELS.TRACE_APPEND, async (_event, event: AgentEvent) => {
-    const allowedTypes = new Set<AgentEvent["type"]>([
-      "audio.attachment.added",
-      "audio.attachment.removed",
-      "audio.error",
-      "recording.started",
-      "recording.cancelled",
-      "recording.finished",
-    ])
-    if (!event || typeof event !== "object" || !allowedTypes.has(event.type)) {
-      return
-    }
-    services.agent.emitEvent(event)
+  ipcMain.handle(IPC_CHANNELS.TRACE_APPEND, async (_event, event: unknown) => {
+    const validated = validateAudioLifecycleEvent(event)
+    if (!validated) return
+    services.agent.emitEvent(validated)
   })
 
   ipcMain.handle(IPC_CHANNELS.TRACE_OPEN_FOLDER, async () => { await shell.openPath(services.trace.getTracesDir()) })
@@ -247,6 +274,11 @@ export function registerIpcHandlers(services: IpcServices): void {
     await shell.openPath(audioDir)
   })
 
+  /**
+   * NOTE: Debug state pushed by the renderer is UI-reported telemetry, NOT the
+   * source of truth. Real artifact creation is tracked in the main process
+   * via AUDIO_SAVE_RECORDING. The Debug Panel must surface this distinction.
+   */
   ipcMain.handle(IPC_CHANNELS.VOICE_DEBUG_UPDATE, async (_event, input: Partial<{
     lastRecordingState: "idle" | "recording" | "finished" | "cancelled" | "error"
     lastAudioArtifact: { id: string; path: string; mimeType: string; size: number; durationMs: number; createdAt: number }

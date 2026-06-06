@@ -43,6 +43,16 @@ export interface ArtifactReader {
   readArtifact(ref: ArtifactRef): Uint8Array
 }
 
+/** Whether the error text indicates the model does not support audio input. */
+export function isAudioUnsupportedError(errorText: string): boolean {
+  return /\baudio\b|input_audio|voice|unsupported.*audio|audio.*unsupported/i.test(errorText)
+}
+
+/** Whether the error text indicates the model does not support image input. */
+export function isImageUnsupportedError(errorText: string): boolean {
+  return /image|vision|multimodal|unsupported/i.test(errorText)
+}
+
 /**
  * Adapter that talks to any OpenAI-compatible /chat/completions endpoint
  * using the built-in `fetch` API (no Node / Electron dependency).
@@ -61,7 +71,16 @@ export class OpenAiCompatibleAdapter implements ModelAdapter {
     messages: AgentMessage[]
     tools: ToolDefinition[]
   }): Promise<AgentMessage> {
-    const body = this.buildRequestBody(input.messages, input.tools)
+    let body: Record<string, unknown>
+    try {
+      body = this.buildRequestBody(input.messages, input.tools)
+    } catch (err: unknown) {
+      const message = err instanceof Error ? err.message : String(err)
+      return this.errorMessage(`Audio input error: ${message}`, {
+        error: { code: "AUDIO_INPUT_ERROR", message: `Audio input error: ${message}`, recoverable: true },
+        recoverable: true,
+      })
+    }
     this.config.onModelRequest?.(this.redactRequest(body))
 
     let response: Response
@@ -82,10 +101,16 @@ export class OpenAiCompatibleAdapter implements ModelAdapter {
     if (!response.ok) {
       const errorText = await response.text().catch(() => "Unknown error")
       this.config.onModelResponse?.({ status: response.status, statusText: response.statusText, error: errorText })
-      const isImageUnsupported = /image|vision|multimodal|unsupported/i.test(errorText)
-      const userMessage = isImageUnsupported
-        ? "当前模型可能不支持图像输入，请切换到支持视觉的模型。"
-        : `API error ${response.status} ${response.statusText}: ${errorText}`
+      const isAudioUnsupported = isAudioUnsupportedError(errorText)
+      const isImageUnsupported = isImageUnsupportedError(errorText)
+      let userMessage: string
+      if (isAudioUnsupported) {
+        userMessage = "当前模型可能不支持音频输入，请切换到支持原生 audio input 的多模态模型。"
+      } else if (isImageUnsupported) {
+        userMessage = "当前模型可能不支持图像输入，请切换到支持视觉的模型。"
+      } else {
+        userMessage = `API error ${response.status} ${response.statusText}: ${errorText}`
+      }
       return this.errorMessage(
         userMessage,
         { code: "API_ERROR", message: errorText, recoverable: true },
@@ -424,6 +449,13 @@ export class OpenAiCompatibleAdapter implements ModelAdapter {
     for (const attachment of message.attachments) {
       if (attachment.type !== "audio") continue
       if (!this.config.audioReader) continue
+
+      // Strictly forbid webm — it cannot be sent as wav/mp3 input_audio.
+      if (attachment.mimeType === "audio/webm") {
+        throw new Error(
+          `当前模型发送仅支持 wav/mp3，audio/webm 暂不支持（附件已保存到 artifacts/audio/）。`,
+        )
+      }
 
       const bytes = this.config.audioReader.readAudio(attachment.artifact)
       const base64 = Buffer.from(bytes).toString("base64")

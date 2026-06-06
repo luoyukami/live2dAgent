@@ -4,7 +4,11 @@
  */
 import { test } from "node:test"
 import assert from "node:assert/strict"
-import { OpenAiCompatibleAdapter } from "./openai-compatible-adapter.js"
+import {
+  OpenAiCompatibleAdapter,
+  isAudioUnsupportedError,
+  isImageUnsupportedError,
+} from "./openai-compatible-adapter.js"
 import type {
   AgentMessage,
   AudioContextAttachment,
@@ -126,10 +130,10 @@ test("audio disabled drops audio, preserves text as string", () => {
 })
 
 /* ------------------------------------------------------------------ */
-/*  3. webm mime → format still "wav"                                  */
+/*  3. webm mime → rejected in send path                               */
 /* ------------------------------------------------------------------ */
 
-test("webm mime type still produces format wav", () => {
+test("webm attachment is rejected with AUDIO_UNSUPPORTED_FORMAT", () => {
   const adapter = new OpenAiCompatibleAdapter({
     ...BASE_CONFIG,
     audioInputEnabled: true,
@@ -157,16 +161,17 @@ test("webm mime type still produces format wav", () => {
     }),
   ])
 
-  const body = adapter.buildRequestBodyForTest([message], [])
-  const messages = body.messages as Array<{ role: string; content: unknown }>
-  const userMsg = messages.find((m) => m.role === "user")!
-
-  assert.ok(Array.isArray(userMsg.content))
-  const parts = userMsg.content as Array<Record<string, unknown>>
-  const audioPart = parts.find((p) => p.type === "input_audio") as {
-    input_audio: { format: string }
-  }
-  assert.equal(audioPart.input_audio.format, "wav")
+  assert.throws(
+    () => adapter.buildRequestBodyForTest([message], []),
+    (err: unknown) => {
+      assert.ok(err instanceof Error, "should throw an Error")
+      assert.ok(
+        err.message.includes("wav/mp3") || err.message.includes("audio/webm"),
+        `error message should mention webm rejection, got: ${err.message}`,
+      )
+      return true
+    },
+  )
 })
 
 /* ------------------------------------------------------------------ */
@@ -336,4 +341,114 @@ test("redactRequest returns a new object, does not mutate original", () => {
     input_audio: { data: string }
   }
   assert.equal(originalAudio.input_audio.data, originalData)
+})
+
+/* ------------------------------------------------------------------ */
+/*  9. audio reader throws → buildRequestBody throws                    */
+/* ------------------------------------------------------------------ */
+
+test("audio reader throws → buildRequestBody throws AUDIO_INPUT_ERROR", () => {
+  const adapter = new OpenAiCompatibleAdapter({
+    ...BASE_CONFIG,
+    audioInputEnabled: true,
+    audioReader: {
+      readAudio(): Uint8Array {
+        throw new Error("ENOENT: file not found")
+      },
+    },
+  })
+
+  const message = makeUserMessage("Hello", [makeAudioAttachment()])
+
+  assert.throws(
+    () => adapter.buildRequestBodyForTest([message], []),
+    (err: unknown) => {
+      assert.ok(err instanceof Error, "should throw an Error")
+      assert.ok(err.message.includes("ENOENT"), `error should include ENOENT, got: ${err.message}`)
+      return true
+    },
+  )
+})
+
+/* ------------------------------------------------------------------ */
+/*  10. webm + text still rejected                                     */
+/* ------------------------------------------------------------------ */
+
+test("audio reader throws when webm AND text exists", () => {
+  const adapter = new OpenAiCompatibleAdapter({
+    ...BASE_CONFIG,
+    audioInputEnabled: true,
+    audioReader: {
+      readAudio(): Uint8Array {
+        return new Uint8Array([1, 2])
+      },
+    },
+  })
+
+  const message = makeUserMessage("Some accompanying text", [
+    makeAudioAttachment({
+      id: "att_webm",
+      mimeType: "audio/webm",
+      durationMs: 4000,
+      artifact: {
+        id: "art_webm",
+        kind: "audio",
+        path: "/tmp/test.webm",
+        mimeType: "audio/webm",
+        size: 256,
+        durationMs: 4000,
+        createdAt: Date.now(),
+      },
+    }),
+  ])
+
+  assert.throws(
+    () => adapter.buildRequestBodyForTest([message], []),
+    (err: unknown) => {
+      assert.ok(err instanceof Error, "should throw an Error")
+      assert.ok(
+        err.message.includes("audio/webm") || err.message.includes("wav/mp3"),
+        `error message should mention webm rejection, got: ${err.message}`,
+      )
+      return true
+    },
+  )
+})
+
+/* ------------------------------------------------------------------ */
+/*  11. isAudioUnsupportedError predicate                              */
+/* ------------------------------------------------------------------ */
+
+test("isAudioUnsupportedError predicate matches audio-related errors", () => {
+  // Positive cases
+  assert.equal(isAudioUnsupportedError("input_audio is not supported"), true)
+  assert.equal(isAudioUnsupportedError("model does not support audio"), true)
+  assert.equal(isAudioUnsupportedError("voice input is disabled"), true)
+  assert.equal(isAudioUnsupportedError("unsupported audio format"), true)
+  assert.equal(isAudioUnsupportedError("audio input not available in this model"), true)
+  assert.equal(isAudioUnsupportedError("The API does not support audio"), true)
+  assert.equal(isAudioUnsupportedError("input_audio field is not allowed"), true)
+
+  // Negative cases — should NOT match
+  assert.equal(isAudioUnsupportedError("audiobook chapter unavailable"), false)
+  assert.equal(isAudioUnsupportedError("rate limit exceeded"), false)
+  assert.equal(isAudioUnsupportedError("invalid request body"), false)
+  assert.equal(isAudioUnsupportedError("model not found"), false)
+})
+
+/* ------------------------------------------------------------------ */
+/*  12. isImageUnsupportedError predicate                              */
+/* ------------------------------------------------------------------ */
+
+test("isImageUnsupportedError predicate matches image-related errors", () => {
+  // Positive cases
+  assert.equal(isImageUnsupportedError("image input is not supported"), true)
+  assert.equal(isImageUnsupportedError("vision capability disabled"), true)
+  assert.equal(isImageUnsupportedError("multimodal not available"), true)
+  assert.equal(isImageUnsupportedError("unsupported content type"), true)
+
+  // Negative cases — should NOT match
+  assert.equal(isImageUnsupportedError("input_audio is not supported"), false)
+  assert.equal(isImageUnsupportedError("rate limit exceeded"), false)
+  assert.equal(isImageUnsupportedError("audio not supported"), false)
 })

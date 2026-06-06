@@ -27,6 +27,9 @@ interface SettingsForm {
   voice: VoiceInputSettings
 }
 
+const HOTKEY_HINT =
+  "v0 快捷键仅在窗口聚焦时生效。当前实现固定为 Ctrl/Cmd + Alt + V，设置中保存的字符串仅用于显示和未来扩展。"
+
 const RISK_TEXT: Record<string, string> = {
   safe: "安全操作",
   workspace_read: "读取工作区文件",
@@ -88,6 +91,9 @@ export function App(): JSX.Element {
   const [recordingError, setRecordingError] = useState<string | null>(null)
   const recorder = useAudioRecorder({
     maxDurationMs: settings?.voice?.maxDurationMs,
+    onAutoStop: (blob) => {
+      void handleRecordingFinished(blob)
+    },
   })
 
   useEffect(() => {
@@ -201,7 +207,7 @@ export function App(): JSX.Element {
       // literal string in settings (which uses Electron's accelerator
       // grammar).
       if (settings?.voice?.enabled && !typing) {
-        if ((e.ctrlKey || e.metaKey) && e.altKey && e.key.toLowerCase() === "v") {
+        if ((e.ctrlKey || e.metaKey) && e.altKey && !e.shiftKey && e.key.toLowerCase() === "v") {
           e.preventDefault()
           void handleHotkeyToggle()
         }
@@ -232,15 +238,14 @@ export function App(): JSX.Element {
     }
   }
 
-  async function handleStopRecording(): Promise<void> {
-    setRecordingError(null)
+  async function handleRecordingFinished(blob: Blob | null): Promise<void> {
+    if (!blob) {
+      setRecordingError(null)
+      void window.petAgent.updateVoiceDebug?.({ lastRecordingState: "cancelled" })
+      void window.petAgent.appendTraceEvent?.({ type: "recording.cancelled" })
+      return
+    }
     try {
-      const blob = await recorder.stop()
-      if (!blob) {
-        void window.petAgent.updateVoiceDebug?.({ lastRecordingState: "cancelled" })
-        void window.petAgent.appendTraceEvent?.({ type: "recording.cancelled" })
-        return
-      }
       const arrayBuffer = await blob.arrayBuffer()
       const durationMs = recorder.durationMs || 0
       const result = await window.petAgent.saveAudioRecording({
@@ -265,6 +270,19 @@ export function App(): JSX.Element {
         void window.petAgent.updateVoiceDebug?.({ lastRecordingState: "error", lastError: msg })
         void window.petAgent.appendTraceEvent?.({ type: "audio.error", code: "save_failed", message: msg })
       }
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err)
+      setRecordingError(msg)
+      void window.petAgent.updateVoiceDebug?.({ lastRecordingState: "error", lastError: msg })
+      void window.petAgent.appendTraceEvent?.({ type: "audio.error", code: "save_failed", message: msg })
+    }
+  }
+
+  async function handleStopRecording(): Promise<void> {
+    setRecordingError(null)
+    try {
+      const blob = await recorder.stop()
+      await handleRecordingFinished(blob)
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err)
       setRecordingError(msg)
@@ -669,9 +687,7 @@ export function App(): JSX.Element {
                   />
                   <span>启用语音输入</span>
                 </label>
-                <small className="settings-hint">
-                  开启后输入区出现录音按钮，可通过快捷键 {form.voice.pushToTalkHotkey} 开始/停止录音。
-                </small>
+                <small className="settings-hint">{HOTKEY_HINT}</small>
               </div>
 
               <div className="settings-group">
@@ -691,14 +707,8 @@ export function App(): JSX.Element {
 
               <div className="settings-group">
                 <label>首选音频格式</label>
-                <select
-                  value={form.voice.preferredFormat}
-                  onChange={(e) => setForm((f) => ({ ...f, voice: { ...f.voice, preferredFormat: e.target.value as "wav" | "mp3" } }))}
-                >
-                  <option value="wav">wav</option>
-                  <option value="mp3">mp3</option>
-                </select>
-                <small className="settings-hint">决定发送给模型时的 content part 格式。当前渲染层始终录为 wav。</small>
+                <div className="settings-static-value">wav</div>
+                <small className="settings-hint">当前仅支持 wav。mp3 转码将在后续版本启用（设置项保留以便将来扩展）。</small>
               </div>
 
               <div className="settings-group">
@@ -724,7 +734,7 @@ export function App(): JSX.Element {
                   onChange={(e) => setForm((f) => ({ ...f, voice: { ...f.voice, pushToTalkHotkey: e.target.value } }))}
                   placeholder="CommandOrControl+Alt+V"
                 />
-                <small className="settings-hint">v0 仅识别 Ctrl/Cmd + Alt + V。其他写法作为字符串保存，不生效。</small>
+                <small className="settings-hint">{HOTKEY_HINT}</small>
               </div>
             </div>
 
@@ -817,7 +827,7 @@ export function App(): JSX.Element {
                 onStart={() => void handleStartRecording()}
                 onStop={() => void handleStopRecording()}
                 onCancel={handleCancelRecording}
-                title={!recorder.isSupported ? "当前环境不支持录音" : `录音 (${settings?.voice?.pushToTalkHotkey ?? "Ctrl+Alt+V"})`}
+                title={!recorder.isSupported ? "当前环境不支持录音" : `录音 (Ctrl/Cmd + Alt + V，窗口聚焦时生效)`}
               />
             )}
             <button onClick={() => void submit()} disabled={isSending || (input.trim() === "" && attachments.length === 0)}>

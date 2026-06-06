@@ -25,6 +25,12 @@ export interface RecorderState {
 export interface UseAudioRecorderOptions {
   /** Hard cap on recording duration, ms. Recording auto-stops when reached. */
   maxDurationMs?: number
+  /**
+   * Called when the recorder auto-stops at `maxDurationMs`.
+   * Receives the final WAV Blob (or null if no samples were captured).
+   * Not invoked on manual `stop()` or `cancel()`.
+   */
+  onAutoStop?: (blob: Blob | null) => void
 }
 
 export interface UseAudioRecorderResult extends RecorderState {
@@ -53,6 +59,12 @@ export function useAudioRecorder(
 ): UseAudioRecorderResult {
   const maxDurationMs = options?.maxDurationMs
 
+  // Keep a ref to the latest options so the rAF tick never captures stale callbacks
+  const optionsRef = useRef(options)
+  useEffect(() => {
+    optionsRef.current = options
+  }, [options])
+
   // Mutable refs for Web Audio objects (not React state — we don't re-render on these)
   const audioCtxRef = useRef<AudioContext | null>(null)
   const processorRef = useRef<ScriptProcessorNode | null>(null)
@@ -60,10 +72,6 @@ export function useAudioRecorder(
   const encoderRef = useRef<WavStreamEncoder | null>(null)
   const rafRef = useRef<number>(0)
   const startTimeRef = useRef<number>(0)
-  const stopPromiseRef = useRef<{
-    resolve: (blob: Blob | null) => void
-  } | null>(null)
-
   const [state, setState] = useState<RecorderState>({
     status: "idle",
     durationMs: 0,
@@ -100,6 +108,29 @@ export function useAudioRecorder(
   const resetState = useCallback(() => {
     setState({ status: "idle", durationMs: 0, error: null, permissionDenied: false })
   }, [])
+
+  /* ---- finalize recording (shared by stop + auto-stop) ---- */
+
+  /**
+   * Finalize the in-progress recording exactly once. Safe to call from
+   * either the public `stop()` or the auto-stop handler — calling it a
+   * second time returns null. The encoder reference is nulled BEFORE
+   * `finalize()` so a concurrent caller sees a clean state.
+   */
+  const finalizeRecording = useCallback(async (): Promise<Blob | null> => {
+    const encoder = encoderRef.current
+    encoderRef.current = null
+    cleanupAudio()
+
+    if (!encoder || encoder.totalSamples === 0) {
+      resetState()
+      return null
+    }
+
+    const blob = encoder.finalize()
+    resetState()
+    return blob
+  }, [cleanupAudio, resetState])
 
   /* ---- start ---- */
 
@@ -196,8 +227,17 @@ export function useAudioRecorder(
         setState((prev) => ({ ...prev, durationMs: elapsed }))
 
         if (maxDurationMs && elapsed >= maxDurationMs) {
-          // Auto-stop at max duration — fire-and-forget
-          void doStop()
+          // Auto-stop at max duration
+          const handleAutoStop = async () => {
+            setState((prev) => ({ ...prev, status: "finishing" }))
+            if (optionsRef.current?.onAutoStop) {
+              const blob = await finalizeRecording()
+              optionsRef.current.onAutoStop(blob)
+            } else {
+              await finalizeRecording()
+            }
+          }
+          void handleAutoStop()
           return
         }
         rafRef.current = requestAnimationFrame(tick)
@@ -210,52 +250,15 @@ export function useAudioRecorder(
 
     startPromiseRef.current = work
     return work
-  }, [maxDurationMs, cleanupAudio])
-
-  /* ---- stop (internal) ---- */
-
-  const doStop = useCallback(async (): Promise<Blob | null> => {
-    const encoder = encoderRef.current
-    cleanupAudio()
-
-    if (!encoder || encoder.totalSamples === 0) {
-      resetState()
-      return null
-    }
-
-    const blob = encoder.finalize()
-    resetState()
-
-    // If someone is waiting for the blob via the public stop(), resolve it
-    if (stopPromiseRef.current) {
-      stopPromiseRef.current.resolve(blob)
-      stopPromiseRef.current = null
-    }
-
-    return blob
-  }, [cleanupAudio, resetState])
+  }, [maxDurationMs, cleanupAudio, finalizeRecording])
 
   /* ---- stop (public) ---- */
 
   const stop = useCallback(async (): Promise<Blob | null> => {
-    // Not recording? Just return null
     if (encoderRef.current === null) return null
-
-    // Set status to finishing
     setState((prev) => ({ ...prev, status: "finishing" }))
-
-    const encoder = encoderRef.current
-    cleanupAudio()
-
-    if (!encoder || encoder.totalSamples === 0) {
-      resetState()
-      return null
-    }
-
-    const blob = encoder.finalize()
-    resetState()
-    return blob
-  }, [cleanupAudio, resetState])
+    return finalizeRecording()
+  }, [finalizeRecording])
 
   /* ---- cancel ---- */
 
@@ -264,12 +267,6 @@ export function useAudioRecorder(
     encoderRef.current = null
     cleanupAudio()
     resetState()
-
-    // If someone is waiting for stop(), resolve with null
-    if (stopPromiseRef.current) {
-      stopPromiseRef.current.resolve(null)
-      stopPromiseRef.current = null
-    }
   }, [cleanupAudio, resetState])
 
   /* ---- cleanup on unmount ---- */
@@ -278,8 +275,6 @@ export function useAudioRecorder(
     return () => {
       encoderRef.current = null
       cleanupAudio()
-      stopPromiseRef.current?.resolve(null)
-      stopPromiseRef.current = null
     }
   }, [cleanupAudio])
 
