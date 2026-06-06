@@ -11,6 +11,13 @@ import { PromptService } from "./services/prompt-service.js"
 import { SettingsService } from "./services/settings-service.js"
 import { TraceService } from "./services/trace-service.js"
 
+// 增加mcp调试的默认端口暴露
+const devtoolsPort = process.env.ELECTRON_REMOTE_DEBUGGING_PORT ?? "9222"
+
+if (!app.isPackaged && process.env.ELECTRON_REMOTE_DEBUGGING !== "0") {
+  app.commandLine.appendSwitch("remote-debugging-port", devtoolsPort)
+}
+
 let windowManager: WindowManager | undefined
 let agentService: AgentService | undefined
 
