@@ -14,6 +14,7 @@ export type {
   ToolArtifact,
   MultimodalContent,
   ArtifactRef,
+  AudioContextAttachment,
   Emotion,
   EmotionSource,
 } from "./types.js"

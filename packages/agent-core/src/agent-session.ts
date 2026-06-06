@@ -6,6 +6,7 @@ import type {
   AgentMessageMetadata,
   Emotion,
   MultimodalContent,
+  AudioContextAttachment,
 } from "./types.js"
 import type { EmotionSettings } from "@live2d-agent/shared"
 import type { ModelAdapter } from "./model-adapter.js"
@@ -91,13 +92,23 @@ export class AgentSession {
   /**
    * Process a new user message through the full agent loop.
    * Returns when the agent reaches an idle state.
+   *
+   * Accepts an optional list of context attachments (audio, future
+   * screenshot, etc.). Attachments are stored on the AgentMessage so the
+   * ModelAdapter can resolve them into multimodal content parts.
    */
-  async runUserMessage(text: string): Promise<void> {
+  async runUserMessage(
+    textOrInput: string | { text: string; attachments?: AudioContextAttachment[] },
+  ): Promise<void> {
+    const text = typeof textOrInput === "string" ? textOrInput : textOrInput.text
+    const attachments = typeof textOrInput === "string" ? undefined : textOrInput.attachments
+
     this.addMessage({
       id: this.generateId("msg"),
       role: "user",
       content: text,
       createdAt: Date.now(),
+      ...(attachments && attachments.length > 0 ? { attachments } : {}),
     })
 
     for (let step = 1; step <= this.maxSteps; step += 1) {

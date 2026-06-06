@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from "react"
-import type { AgentEvent, AgentMessage, AgentAction } from "@live2d-agent/agent-core"
+import type { AgentEvent, AgentMessage, AgentAction, AudioContextAttachment } from "@live2d-agent/agent-core"
 import { mapEventToState, type AvatarState } from "@live2d-agent/live2d"
 import {
   EMOTION_VALUES,
@@ -7,9 +7,13 @@ import {
   type EmotionSettings,
   type PublicSettings,
   type DebugSnapshot,
+  type VoiceInputSettings,
 } from "@live2d-agent/shared"
 import { Live2DView } from "./live2d/Live2DView"
 import { DebugPanel } from "./components/DebugPanel"
+import { AudioAttachmentCard } from "./components/AudioAttachmentCard"
+import { RecorderButton } from "./components/RecorderButton"
+import { useAudioRecorder } from "./audio/useAudioRecorder"
 
 interface SettingsForm {
   mode: PublicSettings["mode"]
@@ -20,6 +24,7 @@ interface SettingsForm {
   live2dModelPath: string
   permissionMode: PublicSettings["permissions"]["mode"]
   emotion: EmotionSettings
+  voice: VoiceInputSettings
 }
 
 const RISK_TEXT: Record<string, string> = {
@@ -48,6 +53,13 @@ function defaultForm(): SettingsForm {
       defaultEmotion: "neutral",
       stripTagWhenDisabled: true,
     },
+    voice: {
+      enabled: true,
+      audioInputEnabled: true,
+      preferredFormat: "wav",
+      maxDurationMs: 30_000,
+      pushToTalkHotkey: "CommandOrControl+Alt+V",
+    },
   }
 }
 
@@ -70,6 +82,13 @@ export function App(): JSX.Element {
   const [lastManualResult, setLastManualResult] = useState<unknown>(null)
   const [live2dReloadKey, setLive2dReloadKey] = useState(0)
   const textareaRef = useRef<HTMLTextAreaElement>(null)
+
+  /* ---- v0 voice input state ---- */
+  const [attachments, setAttachments] = useState<AudioContextAttachment[]>([])
+  const [recordingError, setRecordingError] = useState<string | null>(null)
+  const recorder = useAudioRecorder({
+    maxDurationMs: settings?.voice?.maxDurationMs,
+  })
 
   useEffect(() => {
     window.petAgent.getSettings().then(setSettings)
@@ -101,6 +120,7 @@ export function App(): JSX.Element {
           defaultEmotion: settings.emotion?.defaultEmotion ?? prev.emotion.defaultEmotion,
           stripTagWhenDisabled: settings.emotion?.stripTagWhenDisabled ?? prev.emotion.stripTagWhenDisabled,
         },
+        voice: settings.voice ?? prev.voice,
       }))
     }
   }, [settings])
@@ -124,9 +144,45 @@ export function App(): JSX.Element {
     }
   }, [settings?.emotion?.enabled])
 
-  /* Keyboard shortcut: Ctrl/Cmd+Shift+D */
+  /* Surface recorder errors to the user + main process debug state. */
   useEffect(() => {
+    if (recorder.error) {
+      setRecordingError(recorder.error)
+      void window.petAgent.updateVoiceDebug?.({ lastError: recorder.error, lastRecordingState: "error" })
+    } else {
+      setRecordingError(null)
+    }
+  }, [recorder.error, recorder.status])
+
+  /* Push a `recording.started` trace event the first time the recorder
+   * transitions into the recording state. Other transitions (cancelled,
+   * finished) are pushed synchronously from the action handler. */
+  const recordingPhaseRef = useRef<typeof recorder.status>(recorder.status)
+  useEffect(() => {
+    if (recordingPhaseRef.current !== "recording" && recorder.status === "recording") {
+      void window.petAgent.appendTraceEvent?.({
+        type: "recording.started",
+        maxDurationMs: settings?.voice?.maxDurationMs ?? 30_000,
+        preferredFormat: settings?.voice?.preferredFormat ?? "wav",
+      })
+    }
+    recordingPhaseRef.current = recorder.status
+  }, [recorder.status, settings?.voice?.maxDurationMs, settings?.voice?.preferredFormat])
+
+  /* Keyboard shortcuts: Ctrl/Cmd+Shift+D toggles debug, Ctrl/Cmd+Alt+V toggles recording. */
+  useEffect(() => {
+    function isTypingTarget(target: EventTarget | null): boolean {
+      if (!(target instanceof HTMLElement)) return false
+      const tag = target.tagName
+      return tag === "INPUT" || tag === "TEXTAREA" || target.isContentEditable
+    }
+
     function onKeyDown(e: KeyboardEvent): void {
+      // Don't intercept single-key shortcuts while the user is typing
+      // (Shift / Alt / Ctrl alone are not affected because they don't match
+      // any of the patterns below).
+      const typing = isTypingTarget(e.target)
+
       if ((e.ctrlKey || e.metaKey) && e.shiftKey && e.key.toLowerCase() === "d") {
         e.preventDefault()
         setShowDebug((prev) => {
@@ -136,11 +192,24 @@ export function App(): JSX.Element {
           }
           return next
         })
+        return
+      }
+
+      // Push-to-talk: Ctrl/Cmd + Alt + V. The hotkey setting is consulted
+      // for whether the feature is enabled, but we only support a
+      // platform-agnostic ctrl/meta + alt + v matcher regardless of the
+      // literal string in settings (which uses Electron's accelerator
+      // grammar).
+      if (settings?.voice?.enabled && !typing) {
+        if ((e.ctrlKey || e.metaKey) && e.altKey && e.key.toLowerCase() === "v") {
+          e.preventDefault()
+          void handleHotkeyToggle()
+        }
       }
     }
     window.addEventListener("keydown", onKeyDown)
     return () => window.removeEventListener("keydown", onKeyDown)
-  }, [])
+  }, [settings?.voice?.enabled, recorder.status])
 
   const assistantStateLabel = useMemo(() => ({
     idle: "空闲",
@@ -151,13 +220,104 @@ export function App(): JSX.Element {
     error: "出错",
   }[status]), [status])
 
+  /* ---- Voice input handlers ---- */
+
+  async function handleStartRecording(): Promise<void> {
+    setRecordingError(null)
+    void window.petAgent.updateVoiceDebug?.({ lastRecordingState: "recording" })
+    try {
+      await recorder.start()
+    } catch {
+      // The hook already sets recorder.error; we don't need to throw.
+    }
+  }
+
+  async function handleStopRecording(): Promise<void> {
+    setRecordingError(null)
+    try {
+      const blob = await recorder.stop()
+      if (!blob) {
+        void window.petAgent.updateVoiceDebug?.({ lastRecordingState: "cancelled" })
+        void window.petAgent.appendTraceEvent?.({ type: "recording.cancelled" })
+        return
+      }
+      const arrayBuffer = await blob.arrayBuffer()
+      const durationMs = recorder.durationMs || 0
+      const result = await window.petAgent.saveAudioRecording({
+        data: arrayBuffer,
+        mimeType: blob.type || "audio/wav",
+        durationMs,
+        preferredFormat: settings?.voice?.preferredFormat ?? "wav",
+      })
+      if (result.ok && result.attachment) {
+        setAttachments((prev) => [...prev, result.attachment!])
+        void window.petAgent.updateVoiceDebug?.({ lastRecordingState: "finished" })
+        void window.petAgent.appendTraceEvent?.({
+          type: "recording.finished",
+          durationMs,
+          mimeType: result.attachment.mimeType,
+          size: result.attachment.artifact.size,
+        })
+        void window.petAgent.appendTraceEvent?.({ type: "audio.attachment.added", attachment: result.attachment })
+      } else {
+        const msg = result.error?.message ?? "保存录音失败"
+        setRecordingError(msg)
+        void window.petAgent.updateVoiceDebug?.({ lastRecordingState: "error", lastError: msg })
+        void window.petAgent.appendTraceEvent?.({ type: "audio.error", code: "save_failed", message: msg })
+      }
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err)
+      setRecordingError(msg)
+      void window.petAgent.updateVoiceDebug?.({ lastRecordingState: "error", lastError: msg })
+      void window.petAgent.appendTraceEvent?.({ type: "audio.error", code: "save_failed", message: msg })
+    }
+  }
+
+  function handleCancelRecording(): void {
+    recorder.cancel()
+    void window.petAgent.updateVoiceDebug?.({ lastRecordingState: "cancelled" })
+    void window.petAgent.appendTraceEvent?.({ type: "recording.cancelled" })
+  }
+
+  async function handleHotkeyToggle(): Promise<void> {
+    if (recorder.status === "recording") {
+      await handleStopRecording()
+    } else if (recorder.status === "idle" || recorder.status === "error") {
+      await handleStartRecording()
+    }
+  }
+
+  function handleRemoveAttachment(id: string): void {
+    setAttachments((prev) => prev.filter((a) => a.id !== id))
+    void window.petAgent.appendTraceEvent?.({ type: "audio.attachment.removed", attachmentId: id })
+  }
+
+  function formatAttachmentLabel(att: AudioContextAttachment): string {
+    const seconds = (att.durationMs / 1000).toFixed(1)
+    return `录音 ${seconds}s · ${att.mimeType.replace("audio/", "")}`
+  }
+
+  function formatAttachmentSubLabel(att: AudioContextAttachment): string {
+    const sizeKb = (att.artifact.size / 1024).toFixed(1)
+    return `${att.artifact.path.split(/[\\/]/).pop()} · ${sizeKb} KB`
+  }
+
+  /* ---- Send flow ---- */
+
   async function submit(): Promise<void> {
     const text = input.trim()
-    if (!text || isSending) return
+    if ((!text && attachments.length === 0) || isSending) return
     setInput("")
+    const outgoingAttachments = attachments
+    setAttachments([])
     setIsSending(true)
     try {
-      await window.petAgent.sendUserMessage(text)
+      const payload: { text: string; attachments?: AudioContextAttachment[] } = { text }
+      if (outgoingAttachments.length > 0) {
+        payload.attachments = outgoingAttachments
+        void window.petAgent.updateVoiceDebug?.({ lastSentFormat: outgoingAttachments[0]?.mimeType === "audio/mpeg" ? "mp3" : "wav" })
+      }
+      await window.petAgent.sendUserMessage(payload)
     } finally {
       setIsSending(false)
     }
@@ -206,6 +366,20 @@ export function App(): JSX.Element {
       }
       if (Object.keys(emotionPatch).length > 0) {
         publicPatch.emotion = emotionPatch
+      }
+
+      // Voice settings patch
+      const settingsVoice = settings?.voice
+      if (settingsVoice) {
+        const voicePatch: Record<string, unknown> = {}
+        if (form.voice.enabled !== settingsVoice.enabled) voicePatch.enabled = form.voice.enabled
+        if (form.voice.audioInputEnabled !== settingsVoice.audioInputEnabled) voicePatch.audioInputEnabled = form.voice.audioInputEnabled
+        if (form.voice.preferredFormat !== settingsVoice.preferredFormat) voicePatch.preferredFormat = form.voice.preferredFormat
+        if (form.voice.maxDurationMs !== settingsVoice.maxDurationMs) voicePatch.maxDurationMs = form.voice.maxDurationMs
+        if (form.voice.pushToTalkHotkey !== settingsVoice.pushToTalkHotkey) voicePatch.pushToTalkHotkey = form.voice.pushToTalkHotkey
+        if (Object.keys(voicePatch).length > 0) {
+          publicPatch.voice = voicePatch
+        }
       }
 
       if (Object.keys(publicPatch).length > 0) {
@@ -267,11 +441,13 @@ export function App(): JSX.Element {
     setInput("")
     setIsSending(true)
     try {
-      await window.petAgent.sendUserMessage(text)
+      await window.petAgent.sendUserMessage({ text })
     } finally {
       setIsSending(false)
     }
   }
+
+  const voiceEnabled = settings?.voice?.enabled ?? true
 
   return (
     <main className="shell">
@@ -421,11 +597,6 @@ export function App(): JSX.Element {
                         emotion: {
                           ...f.emotion,
                           enabled: nextEnabled,
-                          // Master switch ON ⇒ default prompt injection back ON.
-                          // Master switch OFF ⇒ force prompt injection OFF.
-                          // We never "remember" the old (forced-off) value, otherwise
-                          // toggling the master switch off then on would leave injection
-                          // silently off.
                           injectPrompt: nextEnabled ? true : false,
                         },
                       }))
@@ -463,7 +634,7 @@ export function App(): JSX.Element {
                     <option key={value} value={value}>{value}</option>
                   ))}
                 </select>
-                <small className="settings-hint">解析失败或情绪系统关闭时使用的回退情绪。</small>
+                <small className="settings-hint">解析失败或情绪系统关闭时使用的回落情绪。</small>
               </div>
 
               <div className="settings-group">
@@ -476,6 +647,84 @@ export function App(): JSX.Element {
                   <span>关闭时仍剥离尾部情绪标签</span>
                 </label>
                 <small className="settings-hint">关闭情绪系统后，如果模型仍输出尾部标签，是否从用户可见正文中移除。</small>
+              </div>
+
+              {/* ---- Voice input (v0) ---- */}
+              <div className="settings-section-divider" />
+              <div className="settings-group">
+                <label className="checkbox-label">
+                  <input
+                    type="checkbox"
+                    checked={form.voice.enabled}
+                    onChange={(e) => {
+                      const nextEnabled = e.target.checked
+                      setForm((f) => ({
+                        ...f,
+                        voice: {
+                          ...f.voice,
+                          enabled: nextEnabled,
+                        },
+                      }))
+                    }}
+                  />
+                  <span>启用语音输入</span>
+                </label>
+                <small className="settings-hint">
+                  开启后输入区出现录音按钮，可通过快捷键 {form.voice.pushToTalkHotkey} 开始/停止录音。
+                </small>
+              </div>
+
+              <div className="settings-group">
+                <label className="checkbox-label">
+                  <input
+                    type="checkbox"
+                    checked={form.voice.audioInputEnabled}
+                    disabled={!form.voice.enabled}
+                    onChange={(e) => setForm((f) => ({ ...f, voice: { ...f.voice, audioInputEnabled: e.target.checked } }))}
+                  />
+                  <span>将音频发送给模型</span>
+                </label>
+                <small className="settings-hint">
+                  关闭后录音仍会保存为附件，但模型不会收到 `input_audio` 多模态输入。适用于仅用作回放或留痕。
+                </small>
+              </div>
+
+              <div className="settings-group">
+                <label>首选音频格式</label>
+                <select
+                  value={form.voice.preferredFormat}
+                  onChange={(e) => setForm((f) => ({ ...f, voice: { ...f.voice, preferredFormat: e.target.value as "wav" | "mp3" } }))}
+                >
+                  <option value="wav">wav</option>
+                  <option value="mp3">mp3</option>
+                </select>
+                <small className="settings-hint">决定发送给模型时的 content part 格式。当前渲染层始终录为 wav。</small>
+              </div>
+
+              <div className="settings-group">
+                <label>单次录音最大时长 (ms)</label>
+                <input
+                  type="number"
+                  min={1000}
+                  max={300000}
+                  step={1000}
+                  value={form.voice.maxDurationMs}
+                  onChange={(e) => {
+                    const n = Number(e.target.value)
+                    if (Number.isFinite(n)) setForm((f) => ({ ...f, voice: { ...f.voice, maxDurationMs: n } }))
+                  }}
+                />
+                <small className="settings-hint">超过该时长录音自动停止。建议 10–60 秒。</small>
+              </div>
+
+              <div className="settings-group">
+                <label>快捷键 (Electron accelerator)</label>
+                <input
+                  value={form.voice.pushToTalkHotkey}
+                  onChange={(e) => setForm((f) => ({ ...f, voice: { ...f.voice, pushToTalkHotkey: e.target.value } }))}
+                  placeholder="CommandOrControl+Alt+V"
+                />
+                <small className="settings-hint">v0 仅识别 Ctrl/Cmd + Alt + V。其他写法作为字符串保存，不生效。</small>
               </div>
             </div>
 
@@ -494,6 +743,7 @@ export function App(): JSX.Element {
             onOpenTraceFolder={() => void window.petAgent.openTraceFolder()}
             onOpenArtifactFolder={() => void window.petAgent.openArtifactFolder()}
             onOpenPromptFolder={() => void window.petAgent.openPromptFolder()}
+            onOpenAudioFolder={() => void window.petAgent.openAudioFolder?.()}
             onReloadSettings={async () => {
               try {
                 const s = await window.petAgent.reloadSettings()
@@ -527,19 +777,53 @@ export function App(): JSX.Element {
         ))}
 
         <footer>
-          <textarea
-            ref={textareaRef}
-            value={input}
-            onChange={(event) => setInput(event.target.value)}
-            onKeyDown={(event) => {
-              if (event.key === "Enter" && !event.shiftKey) {
-                event.preventDefault()
-                void submit()
+          {(attachments.length > 0 || recordingError) && (
+            <div className="attachments-row">
+              {attachments.map((att) => (
+                <AudioAttachmentCard
+                  key={att.id}
+                  label={formatAttachmentLabel(att)}
+                  subLabel={formatAttachmentSubLabel(att)}
+                  onRemove={() => handleRemoveAttachment(att.id)}
+                />
+              ))}
+              {recordingError && (
+                <div className="recording-error">{recordingError}</div>
+              )}
+            </div>
+          )}
+          <div className="input-row">
+            <textarea
+              ref={textareaRef}
+              value={input}
+              onChange={(event) => setInput(event.target.value)}
+              onKeyDown={(event) => {
+                if (event.key === "Enter" && !event.shiftKey) {
+                  event.preventDefault()
+                  void submit()
+                }
+              }}
+              placeholder={
+                attachments.length > 0
+                  ? "可补充文字，或直接发送录音…"
+                  : "输入消息..."
               }
-            }}
-            placeholder="输入消息..."
-          />
-          <button onClick={() => void submit()} disabled={isSending}>{isSending ? "发送中" : "发送"}</button>
+            />
+            {voiceEnabled && (
+              <RecorderButton
+                status={recorder.status}
+                durationMs={recorder.durationMs}
+                disabled={!recorder.isSupported}
+                onStart={() => void handleStartRecording()}
+                onStop={() => void handleStopRecording()}
+                onCancel={handleCancelRecording}
+                title={!recorder.isSupported ? "当前环境不支持录音" : `录音 (${settings?.voice?.pushToTalkHotkey ?? "Ctrl+Alt+V"})`}
+              />
+            )}
+            <button onClick={() => void submit()} disabled={isSending || (input.trim() === "" && attachments.length === 0)}>
+              {isSending ? "发送中" : "发送"}
+            </button>
+          </div>
         </footer>
         <small className="status-line">
           {status === "thinking" ? "助手正在思考..." : status === "running_tool" ? "工具执行中..." : "Enter 发送，Shift+Enter 换行"}
@@ -553,6 +837,7 @@ function MessageBubble({ message }: { message: AgentMessage }): JSX.Element {
   const [expanded, setExpanded] = useState(message.role !== "tool")
   const text = messageContentToText(message)
   const isError = Boolean(message.extra?.error) || /^(API error|Network error|Invalid JSON|Model returned|Error executing)/i.test(text)
+  const audioAttachments = (message.attachments ?? []).filter((a) => a.type === "audio")
 
   async function copy(): Promise<void> {
     await navigator.clipboard.writeText(text)
@@ -571,6 +856,17 @@ function MessageBubble({ message }: { message: AgentMessage }): JSX.Element {
           <button className="ghost-btn" onClick={() => void copy()}>复制</button>
         </div>
       </div>
+      {audioAttachments.length > 0 && (
+        <div className="message-attachments">
+          {audioAttachments.map((att) => (
+            <AudioAttachmentCard
+              key={att.id}
+              label={`录音 ${(att.durationMs / 1000).toFixed(1)}s`}
+              subLabel={`${att.mimeType} · ${(att.artifact.size / 1024).toFixed(1)} KB`}
+            />
+          ))}
+        </div>
+      )}
       {expanded ? <p>{text}</p> : <p className="tool-summary">{summarize(text, 160)}</p>}
     </article>
   )
@@ -620,6 +916,7 @@ function messageContentToText(message: AgentMessage): string {
   return message.content.map((block) => {
     if (block.type === "text") return block.text ?? ""
     if (block.type === "image_url") return "[图片输入]"
+    if (block.type === "input_audio") return "[音频输入]"
     return JSON.stringify(block)
   }).filter(Boolean).join("\n")
 }

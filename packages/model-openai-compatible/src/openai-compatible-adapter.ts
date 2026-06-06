@@ -6,6 +6,7 @@ import type {
   AgentAction,
   ToolArtifact,
   ArtifactRef,
+  MultimodalContent,
 } from "@live2d-agent/agent-core"
 
 /**
@@ -19,6 +20,23 @@ export interface OpenAiCompatibleAdapterConfig {
   systemPromptProvider?: () => string | undefined
   onModelRequest?: (request: unknown) => void
   onModelResponse?: (response: unknown) => void
+  /** When true the adapter converts audio attachments to `input_audio` content parts. */
+  audioInputEnabled?: boolean
+  /** Provides raw audio bytes for a stored audio artifact reference. */
+  audioReader?: {
+    readAudio(ref: ArtifactRef): Uint8Array
+  }
+  /**
+   * Fired for every audio attachment that is actually included in the
+   * outgoing request. Used by the agent service to record a
+   * `audio.sent_to_model` trace event.
+   */
+  onAudioSent?: (info: {
+    attachmentId: string
+    format: "wav" | "mp3"
+    durationMs: number
+    bytes: number
+  }) => void
 }
 
 export interface ArtifactReader {
@@ -312,13 +330,29 @@ export class OpenAiCompatibleAdapter implements ModelAdapter {
     ]
   }
 
-  private redactRequest(body: Record<string, unknown>): Record<string, unknown> {
-    return this.sanitiseDebugValue(body) as Record<string, unknown>
-  }
-
   private sanitiseDebugValue(value: unknown): unknown {
     if (Array.isArray(value)) return value.map((item) => this.sanitiseDebugValue(item))
     if (value && typeof value === "object") {
+      // Redact input_audio.data — build a new object to avoid mutating the original.
+      if ((value as Record<string, unknown>).type === "input_audio") {
+        const obj = value as Record<string, unknown>
+        const output: Record<string, unknown> = {}
+        for (const [key, child] of Object.entries(obj)) {
+          if (key === "input_audio" && child && typeof child === "object") {
+            // Redact the `data` field inside the nested input_audio object
+            const audioObj = child as Record<string, unknown>
+            const sanitized: Record<string, unknown> = {}
+            for (const [k, v] of Object.entries(audioObj)) {
+              sanitized[k] = k === "data" ? "[omitted base64 data]" : v
+            }
+            output[key] = sanitized
+          } else {
+            output[key] = this.sanitiseDebugValue(child)
+          }
+        }
+        return output
+      }
+
       const output: Record<string, unknown> = {}
       for (const [key, child] of Object.entries(value)) {
         if (key === "url" && typeof child === "string" && child.startsWith("data:") && child.includes(";base64,")) {
@@ -341,7 +375,7 @@ export class OpenAiCompatibleAdapter implements ModelAdapter {
   private formatMessage(message: AgentMessage): Record<string, unknown> {
     const msg: Record<string, unknown> = {
       role: message.role,
-      content: message.content,
+      content: this.expandUserMessage(message),
     }
 
     if (message.toolCallId) {
@@ -360,6 +394,58 @@ export class OpenAiCompatibleAdapter implements ModelAdapter {
     }
 
     return msg
+  }
+
+  /**
+   * Convert audio attachments on a user message into multimodal `input_audio`
+   * content parts.  Returns the original content string when there are no
+   * attachments, the message is not a user message, or audio input is disabled.
+   *
+   * @internal `buildRequestBodyForTest` exposes this path for unit testing.
+   */
+  private expandUserMessage(message: AgentMessage): string | MultimodalContent[] {
+    if (
+      message.role !== "user" ||
+      !message.attachments ||
+      message.attachments.length === 0 ||
+      !this.config.audioInputEnabled
+    ) {
+      return message.content
+    }
+
+    const parts: MultimodalContent[] = []
+
+    // Include existing text content first, if any.
+    const text = typeof message.content === "string" ? message.content : ""
+    if (text) {
+      parts.push({ type: "text", text })
+    }
+
+    for (const attachment of message.attachments) {
+      if (attachment.type !== "audio") continue
+      if (!this.config.audioReader) continue
+
+      const bytes = this.config.audioReader.readAudio(attachment.artifact)
+      const base64 = Buffer.from(bytes).toString("base64")
+
+      // Prefer "wav"; only use "mp3" when mime is audio/mpeg.
+      const format: "wav" | "mp3" =
+        attachment.mimeType === "audio/mpeg" ? "mp3" : "wav"
+
+      parts.push({
+        type: "input_audio",
+        input_audio: { data: base64, format },
+      })
+
+      this.config.onAudioSent?.({
+        attachmentId: attachment.id,
+        format,
+        durationMs: attachment.durationMs,
+        bytes: bytes.byteLength,
+      })
+    }
+
+    return parts.length > 0 ? parts : message.content
   }
 
   private errorMessage(
@@ -397,5 +483,23 @@ export class OpenAiCompatibleAdapter implements ModelAdapter {
     const edgeChars = 6_000
     if (content.length <= maxChars) return content
     return `${content.slice(0, edgeChars)}\n\n[... truncated ${content.length - maxChars} chars ...]\n\n${content.slice(-edgeChars)}`
+  }
+
+  /**
+   * Test-only helper that builds a request body without a network round-trip.
+   * @internal — do not rely on this in production code.
+   */
+  buildRequestBodyForTest(
+    messages: AgentMessage[],
+    tools: ToolDefinition[],
+  ): Record<string, unknown> {
+    return this.buildRequestBody(messages, tools)
+  }
+
+  /**
+   * Produce a sanitised copy of a request body safe for debug/tracing output.
+   */
+  redactRequest(body: Record<string, unknown>): Record<string, unknown> {
+    return this.sanitiseDebugValue(body) as Record<string, unknown>
   }
 }

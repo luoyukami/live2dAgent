@@ -5,6 +5,7 @@ import type {
   ToolArtifact,
   MultimodalContent,
   ArtifactRef,
+  AudioContextAttachment,
   Emotion,
 } from "@live2d-agent/shared"
 
@@ -16,6 +17,7 @@ export type {
   ToolArtifact,
   MultimodalContent,
   ArtifactRef,
+  AudioContextAttachment,
   Emotion,
 }
 
@@ -50,6 +52,13 @@ export interface AgentMessage {
    * populates this on assistant messages; other roles leave it undefined.
    */
   metadata?: AgentMessageMetadata
+  /**
+   * Audio context attachments for this message (currently only used on
+   * user messages). The actual audio bytes are NOT stored here — the
+   * ModelAdapter reads the referenced artifact at request time and
+   * converts it to a multimodal `input_audio` part.
+   */
+  attachments?: AudioContextAttachment[]
 }
 
 /* ---- Agent Action (tool invocation) ---- */
@@ -109,6 +118,21 @@ export type AgentEvent =
       source: EmotionSource
       messageId: string
     }
+  /* ---- Audio / voice input lifecycle (trace-only events) ---- */
+  | { type: "audio.artifact.created"; artifact: import("@live2d-agent/shared").AudioArtifactRef }
+  | { type: "audio.attachment.added"; attachment: import("@live2d-agent/shared").AudioContextAttachment }
+  | { type: "audio.attachment.removed"; attachmentId: string }
+  | {
+      type: "audio.sent_to_model"
+      attachmentId: string
+      format: "wav" | "mp3"
+      durationMs: number
+      bytes: number
+    }
+  | { type: "audio.error"; code: string; message: string }
+  | { type: "recording.started"; maxDurationMs: number; preferredFormat: "wav" | "mp3" }
+  | { type: "recording.cancelled"; reason?: string }
+  | { type: "recording.finished"; durationMs: number; mimeType: string; size: number }
 
 /* ---- Callback & subscription types ---- */
 export type AgentEventCallback = (event: AgentEvent) => void

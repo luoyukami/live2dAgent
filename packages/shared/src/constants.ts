@@ -19,6 +19,11 @@ export const IPC_CHANNELS = {
   CLIPBOARD_READ: "tool:clipboard-read",
   CLIPBOARD_WRITE: "tool:clipboard-write",
 
+  /* ---- Audio (voice input) ---- */
+  AUDIO_SAVE_RECORDING: "audio:save-recording",
+  AUDIO_OPEN_FOLDER: "audio:open-folder",
+  VOICE_DEBUG_UPDATE: "audio:voice-debug-update",
+
   /* ---- Settings channels (Phase 1) ---- */
   SETTINGS_GET: "settings:get",
   SETTINGS_UPDATE_PUBLIC: "settings:update-public",
@@ -29,6 +34,7 @@ export const IPC_CHANNELS = {
   /* ---- Debug / Trace / Manual Action (Phase 2) ---- */
   DEBUG_GET_SNAPSHOT: "debug:get-snapshot",
   TRACE_GET_EVENTS: "trace:get-events",
+  TRACE_APPEND: "trace:append",
   TRACE_OPEN_FOLDER: "trace:open-folder",
   ARTIFACT_OPEN_FOLDER: "artifact:open-folder",
   PROMPT_OPEN_FOLDER: "prompt:open-folder",

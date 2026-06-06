@@ -7,7 +7,7 @@
     "build": "tsc -b && corepack pnpm --filter @live2d-agent/desktop build",
     "typecheck": "tsc -b",
     "lint": "eslint . --ext .ts,.tsx",
-    "test": "node --import tsx --test \"packages/agent-core/src/**/*.test.ts\" \"packages/live2d/src/**/*.test.ts\" \"packages/shared/src/**/*.test.ts\" \"apps/desktop/src/main/services/**/*.test.ts\""
+    "test": "node --import tsx --test \"packages/agent-core/src/**/*.test.ts\" \"packages/live2d/src/**/*.test.ts\" \"packages/model-openai-compatible/src/**/*.test.ts\" \"packages/shared/src/**/*.test.ts\" \"apps/desktop/src/main/services/**/*.test.ts\""
   },
   "devDependencies": {
     "@types/node": "^20.14.12",

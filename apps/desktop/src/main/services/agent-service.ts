@@ -5,7 +5,7 @@ import { dirname, isAbsolute, resolve, relative } from "node:path"
 import { AgentSession, EventBus, ToolRegistry, composeSystemPrompt, isEmotionPromptInjected, type AgentEvent, type AgentAction, type ToolResult, type ToolRuntime, type ToolArtifact } from "@live2d-agent/agent-core"
 import { OpenAiCompatibleAdapter } from "@live2d-agent/model-openai-compatible"
 import { createDefaultTools, type RuntimeToolContext } from "@live2d-agent/tools"
-import type { ArtifactRef, DebugEmotionInfo, Emotion } from "@live2d-agent/shared"
+import type { ArtifactRef, AudioArtifactRef, AudioContextAttachment, DebugEmotionInfo, Emotion } from "@live2d-agent/shared"
 import type { EmotionSource } from "@live2d-agent/agent-core"
 import type { ArtifactStore } from "./artifact-store.js"
 import type { PermissionService } from "./permission-service.js"
@@ -42,6 +42,12 @@ export class AgentService implements ToolRuntime {
     lastEmotion: "neutral",
     lastSource: "fallback",
   }
+  private voiceDebug = {
+    lastRecordingState: "idle" as "idle" | "recording" | "finished" | "cancelled" | "error",
+    lastAudioArtifact: undefined as { id: string; path: string; mimeType: string; size: number; durationMs: number; createdAt: number } | undefined,
+    lastSentFormat: undefined as "wav" | "mp3" | undefined,
+    lastError: undefined as string | undefined,
+  }
 
   constructor(private readonly deps: AgentServiceDeps) {
     this.events.subscribe((event) => this.captureEvent(event))
@@ -69,6 +75,22 @@ export class AgentService implements ToolRuntime {
       artifactReader: {
         readArtifact: (ref) => this.deps.artifacts.readArtifact(ref),
       },
+      audioInputEnabled: settings.voice.audioInputEnabled,
+      audioReader: {
+        // Buffer is a Uint8Array in Node, but the adapter expects a typed
+        // Uint8Array view; cast once here so the adapter stays clean.
+        readAudio: (ref) => this.deps.artifacts.readArtifact(ref) as unknown as Uint8Array,
+      },
+      onAudioSent: (info) => {
+        this.deps.trace.append({
+          type: "audio.sent_to_model",
+          attachmentId: info.attachmentId,
+          format: info.format,
+          durationMs: info.durationMs,
+          bytes: info.bytes,
+        })
+        this.voiceDebug.lastSentFormat = info.format
+      },
     })
 
     this.executors = this.createExecutors()
@@ -94,7 +116,7 @@ export class AgentService implements ToolRuntime {
     return composeSystemPrompt(base, settings.emotion)
   }
 
-  async sendUserMessage(text: string): Promise<void> {
+  async sendUserMessage(input: string | { text: string; attachments?: AudioContextAttachment[] }): Promise<void> {
     if (!this.deps.settings.get().openaiApiKey) {
       this.emit({
         type: "message.added",
@@ -109,7 +131,7 @@ export class AgentService implements ToolRuntime {
       return
     }
     if (!this.session) this.reconfigure()
-    await this.session?.runUserMessage(text)
+    await this.session?.runUserMessage(input)
   }
 
   async executeMany(actions: AgentAction[]): Promise<ToolResult[]> {
@@ -153,6 +175,24 @@ export class AgentService implements ToolRuntime {
     emotion: DebugEmotionInfo
     composedSystemPrompt: string
     rawSystemPrompt: string
+    voice?: {
+      enabled: boolean
+      audioInputEnabled: boolean
+      preferredFormat: "wav" | "mp3"
+      maxDurationMs: number
+      hotkey: string
+      lastRecordingState: "idle" | "recording" | "finished" | "cancelled" | "error"
+      lastAudioArtifact?: {
+        id: string
+        path: string
+        mimeType: string
+        size: number
+        durationMs: number
+        createdAt: number
+      }
+      lastSentFormat?: "wav" | "mp3"
+      lastError?: string
+    }
   } {
     const settings = this.deps.settings.get()
     const composedPrompt = this.composeActiveSystemPrompt()
@@ -175,7 +215,35 @@ export class AgentService implements ToolRuntime {
       },
       composedSystemPrompt: composedPrompt,
       rawSystemPrompt: this.deps.prompts.getSystemPrompt(),
+      voice: {
+        enabled: settings.voice.enabled,
+        audioInputEnabled: settings.voice.audioInputEnabled,
+        preferredFormat: settings.voice.preferredFormat,
+        maxDurationMs: settings.voice.maxDurationMs,
+        hotkey: settings.voice.pushToTalkHotkey,
+        lastRecordingState: this.voiceDebug.lastRecordingState,
+        lastAudioArtifact: this.voiceDebug.lastAudioArtifact,
+        lastSentFormat: this.voiceDebug.lastSentFormat,
+        lastError: this.voiceDebug.lastError,
+      },
     }
+  }
+
+  setVoiceDebug(input: Partial<{
+    lastRecordingState: "idle" | "recording" | "finished" | "cancelled" | "error"
+    lastAudioArtifact: { id: string; path: string; mimeType: string; size: number; durationMs: number; createdAt: number }
+    lastSentFormat: "wav" | "mp3"
+    lastError: string
+  }>): void {
+    if (input.lastRecordingState !== undefined) this.voiceDebug.lastRecordingState = input.lastRecordingState
+    if (input.lastAudioArtifact !== undefined) this.voiceDebug.lastAudioArtifact = input.lastAudioArtifact
+    if (input.lastSentFormat !== undefined) this.voiceDebug.lastSentFormat = input.lastSentFormat
+    if (input.lastError !== undefined) this.voiceDebug.lastError = input.lastError
+  }
+
+  emitEvent(event: AgentEvent): void {
+    this.deps.trace.append(event)
+    this.events.emit(event)
   }
 
   private async execute(action: AgentAction): Promise<ToolResult> {

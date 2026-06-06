@@ -1,5 +1,6 @@
 import { ipcMain, shell } from "electron"
-import { IPC_CHANNELS, type DebugSnapshot } from "@live2d-agent/shared"
+import { IPC_CHANNELS, type AudioContextAttachment, type AudioMimeType, type AudioArtifactRef, type DebugSnapshot } from "@live2d-agent/shared"
+import type { AgentEvent } from "@live2d-agent/agent-core"
 import type { AgentService } from "./services/agent-service.js"
 import type { ArtifactStore } from "./services/artifact-store.js"
 import type { PermissionService } from "./services/permission-service.js"
@@ -18,8 +19,8 @@ export interface IpcServices {
 
 export function registerIpcHandlers(services: IpcServices): void {
   /* ---- Agent messaging ---- */
-  ipcMain.handle(IPC_CHANNELS.SEND_USER_MESSAGE, async (_event, text: string) => {
-    await services.agent.sendUserMessage(text)
+  ipcMain.handle(IPC_CHANNELS.SEND_USER_MESSAGE, async (_event, textOrInput: string | { text: string; attachments?: AudioContextAttachment[] }) => {
+    await services.agent.sendUserMessage(textOrInput)
   })
 
   /* ---- Permission actions ---- */
@@ -99,6 +100,7 @@ export function registerIpcHandlers(services: IpcServices): void {
       rawSystemPromptPreview: truncatePreview(debug.rawSystemPrompt),
       promptError: services.prompts.getError(),
       emotion: debug.emotion,
+      voice: debug.voice,
 
       model: settings.openaiModel,
       baseURL: settings.openaiBaseUrl,
@@ -113,6 +115,33 @@ export function registerIpcHandlers(services: IpcServices): void {
   })
 
   ipcMain.handle(IPC_CHANNELS.TRACE_GET_EVENTS, async () => services.trace.readCurrentEvents())
+
+  /**
+   * Generic "renderer pushed a trace event" channel. The renderer uses this
+   * to record audio / recording lifecycle events (recording.started, etc.)
+   * that originate in the renderer process. The main process forwards the
+   * event to the TraceService AND to the EventBus so the renderer sees it
+   * immediately via the agent event channel too.
+   *
+   * SECURITY: only the small set of audio / recording event types is allowed.
+   * This prevents a malicious renderer from spuriously marking tool results
+   * as finished, etc.
+   */
+  ipcMain.handle(IPC_CHANNELS.TRACE_APPEND, async (_event, event: AgentEvent) => {
+    const allowedTypes = new Set<AgentEvent["type"]>([
+      "audio.attachment.added",
+      "audio.attachment.removed",
+      "audio.error",
+      "recording.started",
+      "recording.cancelled",
+      "recording.finished",
+    ])
+    if (!event || typeof event !== "object" || !allowedTypes.has(event.type)) {
+      return
+    }
+    services.agent.emitEvent(event)
+  })
+
   ipcMain.handle(IPC_CHANNELS.TRACE_OPEN_FOLDER, async () => { await shell.openPath(services.trace.getTracesDir()) })
   ipcMain.handle(IPC_CHANNELS.ARTIFACT_OPEN_FOLDER, async () => { await shell.openPath(services.artifacts.getBaseDir()) })
   ipcMain.handle(IPC_CHANNELS.PROMPT_OPEN_FOLDER, async () => { await shell.openPath(services.prompts.getDir()) })
@@ -133,6 +162,98 @@ export function registerIpcHandlers(services: IpcServices): void {
 
   ipcMain.handle(IPC_CHANNELS.MANUAL_ACTION_RUN, async (_event, tool: string, args: unknown) => {
     await services.agent.runManualAction(tool, args)
+  })
+
+  /* ---- Audio (voice input) ---- */
+
+  const KNOWN_AUDIO_MIME_TYPES = new Set<string>(["audio/wav", "audio/mpeg", "audio/webm"])
+
+  function mimeToExt(mimeType: string): string {
+    switch (mimeType as AudioMimeType) {
+      case "audio/wav": return ".wav"
+      case "audio/mpeg": return ".mp3"
+      case "audio/webm": return ".webm"
+      default: return ".bin"
+    }
+  }
+
+  ipcMain.handle(IPC_CHANNELS.AUDIO_SAVE_RECORDING, async (_event, request: { data: ArrayBuffer; mimeType: string; durationMs?: number }) => {
+    try {
+      const { data, mimeType, durationMs } = request
+      if (!data || !(data instanceof ArrayBuffer) || data.byteLength === 0) {
+        const error = { code: "AUDIO_EMPTY_DATA", message: "Recording data is empty" }
+        services.trace.append({ type: "audio.error", ...error })
+        return { ok: false, error }
+      }
+      if (!mimeType || typeof mimeType !== "string" || !KNOWN_AUDIO_MIME_TYPES.has(mimeType)) {
+        const error = { code: "AUDIO_UNSUPPORTED_MIME", message: `Unsupported MIME type: ${String(mimeType)}` }
+        services.trace.append({ type: "audio.error", ...error })
+        return { ok: false, error }
+      }
+
+      const ref = services.artifacts.saveArtifact({
+        kind: "audio",
+        mimeType,
+        data: Buffer.from(data),
+        ext: mimeToExt(mimeType),
+      })
+
+      const audioRef: AudioArtifactRef = {
+        id: ref.id,
+        kind: "audio",
+        path: ref.path,
+        mimeType: mimeType as AudioMimeType,
+        size: ref.size,
+        durationMs: durationMs ?? 0,
+        createdAt: ref.createdAt,
+      }
+
+      const attachment: AudioContextAttachment = {
+        id: `aud_${Date.now()}_${Math.random().toString(36).slice(2, 9)}`,
+        type: "audio",
+        label: "录音",
+        artifact: audioRef,
+        mimeType: mimeType as AudioMimeType,
+        durationMs: durationMs ?? 0,
+        createdAt: Date.now(),
+      }
+
+      services.agent.setVoiceDebug({
+        lastRecordingState: "finished",
+        lastAudioArtifact: {
+          id: ref.id,
+          path: ref.path,
+          mimeType: ref.mimeType,
+          size: ref.size,
+          durationMs: durationMs ?? 0,
+          createdAt: ref.createdAt,
+        },
+      })
+
+      // Trace event
+      services.trace.append({ type: "audio.artifact.created", artifact: audioRef })
+
+      return { ok: true, attachment }
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err)
+      const error = { code: "AUDIO_SAVE_FAILED", message }
+      services.trace.append({ type: "audio.error", ...error })
+      return { ok: false, error }
+    }
+  })
+
+  ipcMain.handle(IPC_CHANNELS.AUDIO_OPEN_FOLDER, async () => {
+    const audioDir = services.artifacts.getBaseDir() + "/audio"
+    await shell.openPath(audioDir)
+  })
+
+  ipcMain.handle(IPC_CHANNELS.VOICE_DEBUG_UPDATE, async (_event, input: Partial<{
+    lastRecordingState: "idle" | "recording" | "finished" | "cancelled" | "error"
+    lastAudioArtifact: { id: string; path: string; mimeType: string; size: number; durationMs: number; createdAt: number }
+    lastSentFormat: "wav" | "mp3"
+    lastError: string
+  }>) => {
+    services.agent.setVoiceDebug(input)
   })
 }
 

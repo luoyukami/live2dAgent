@@ -70,6 +70,14 @@ export function mapEventToState(event: AgentEvent): AvatarState | null {
     case "approval.denied":
     case "settings.updated":
     case "emotion.set":
+    case "audio.artifact.created":
+    case "audio.attachment.added":
+    case "audio.attachment.removed":
+    case "audio.sent_to_model":
+    case "audio.error":
+    case "recording.started":
+    case "recording.cancelled":
+    case "recording.finished":
       return null
   }
 }

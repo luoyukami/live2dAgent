@@ -1,11 +1,12 @@
 import { contextBridge, ipcRenderer } from "electron"
 import { IPC_CHANNELS } from "@live2d-agent/shared"
 import type { AgentEvent } from "@live2d-agent/agent-core"
-import type { PublicSettings, AppSettingsPublicPatch, DebugSnapshot } from "@live2d-agent/shared"
+import type { PublicSettings, AppSettingsPublicPatch, DebugSnapshot, IpcSaveAudioRecordingRequest, IpcSaveAudioRecordingResponse, IpcSendUserMessageRequest } from "@live2d-agent/shared"
 
 const api = {
   /* ---- Agent ---- */
-  sendUserMessage: (text: string) => ipcRenderer.invoke(IPC_CHANNELS.SEND_USER_MESSAGE, text),
+  sendUserMessage: (input: string | IpcSendUserMessageRequest) =>
+    ipcRenderer.invoke(IPC_CHANNELS.SEND_USER_MESSAGE, input),
   approveAction: (actionId: string) => ipcRenderer.invoke(IPC_CHANNELS.APPROVE_ACTION, actionId),
   denyAction: (actionId: string, reason?: string) =>
     ipcRenderer.invoke(IPC_CHANNELS.DENY_ACTION, actionId, reason),
@@ -36,6 +37,8 @@ const api = {
     ipcRenderer.invoke(IPC_CHANNELS.DEBUG_GET_SNAPSHOT),
   getTraceEvents: (): Promise<Array<{ ts: number; event: AgentEvent }>> =>
     ipcRenderer.invoke(IPC_CHANNELS.TRACE_GET_EVENTS),
+  appendTraceEvent: (event: AgentEvent): Promise<void> =>
+    ipcRenderer.invoke(IPC_CHANNELS.TRACE_APPEND, event),
   openTraceFolder: (): Promise<void> =>
     ipcRenderer.invoke(IPC_CHANNELS.TRACE_OPEN_FOLDER),
   openArtifactFolder: (): Promise<void> =>
@@ -50,6 +53,19 @@ const api = {
     ipcRenderer.invoke(IPC_CHANNELS.LIVE2D_RELOAD),
   runManualAction: (tool: string, args: unknown): Promise<void> =>
     ipcRenderer.invoke(IPC_CHANNELS.MANUAL_ACTION_RUN, tool, args),
+
+  /* ---- Audio (voice input) ---- */
+  saveAudioRecording: (request: IpcSaveAudioRecordingRequest): Promise<IpcSaveAudioRecordingResponse> =>
+    ipcRenderer.invoke(IPC_CHANNELS.AUDIO_SAVE_RECORDING, request),
+  openAudioFolder: (): Promise<void> =>
+    ipcRenderer.invoke(IPC_CHANNELS.AUDIO_OPEN_FOLDER),
+  updateVoiceDebug: (input: Partial<{
+    lastRecordingState: "idle" | "recording" | "finished" | "cancelled" | "error"
+    lastAudioArtifact: { id: string; path: string; mimeType: string; size: number; durationMs: number; createdAt: number }
+    lastSentFormat: "wav" | "mp3"
+    lastError: string
+  }>): Promise<void> =>
+    ipcRenderer.invoke(IPC_CHANNELS.VOICE_DEBUG_UPDATE, input),
 }
 
 contextBridge.exposeInMainWorld("petAgent", api)

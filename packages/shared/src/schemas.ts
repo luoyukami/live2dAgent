@@ -39,7 +39,17 @@ export type PermissionLevel =
 export type ToolName = string
 
 /** Kinds of artifacts stored by ArtifactStore */
-export type ArtifactKind = "screenshot" | "tool-output" | "file-content"
+export type ArtifactKind = "screenshot" | "tool-output" | "file-content" | "audio"
+
+/** Audio MIME types the v0 voice input pipeline can produce or consume. */
+export type AudioMimeType = "audio/wav" | "audio/mpeg" | "audio/webm"
+
+/** Reference to a stored audio artifact on disk. */
+export interface AudioArtifactRef extends ArtifactRef {
+  kind: "audio"
+  mimeType: AudioMimeType
+  durationMs: number
+}
 
 /** Reference to a stored artifact on disk */
 export interface ArtifactRef {
@@ -65,12 +75,60 @@ export interface ToolArtifact {
 
 /** Content block for multimodal messages */
 export interface MultimodalContent {
-  type: "text" | "image_url"
+  type: "text" | "image_url" | "input_audio"
   text?: string
   image_url?: {
     url: string
     detail?: "low" | "high" | "auto"
   }
+  /**
+   * Audio input content part. Only generated at request time by the
+   * ModelAdapter — never stored in the AgentMessage on disk, never
+   * persisted in trace files.
+   */
+  input_audio?: {
+    data: string
+    format: "wav" | "mp3"
+  }
+}
+
+/**
+ * Audio context attachment — created when the user finishes recording.
+ * Lives on the user message; the ModelAdapter reads the referenced
+ * artifact at request time and converts it to a multimodal `input_audio`
+ * content part. The attachment object itself carries NO base64 data, so
+ * traces / IPC payloads stay small.
+ */
+export interface AudioContextAttachment {
+  id: string
+  type: "audio"
+  label: string
+  artifact: AudioArtifactRef
+  mimeType: AudioMimeType
+  durationMs: number
+  createdAt: number
+}
+
+/** Voice input settings. v0: master switch + audio-input switch + format + duration cap + push-to-talk hotkey. */
+export interface VoiceInputSettings {
+  /** Master switch. When false the recorder button is hidden and the hotkey is a no-op. */
+  enabled: boolean
+  /** When false the recorder still records but the model adapter will not inject `input_audio` parts. */
+  audioInputEnabled: boolean
+  /** Preferred audio format for model input. The recorder will pick the closest match the browser can produce. */
+  preferredFormat: "wav" | "mp3"
+  /** Hard cap on a single recording's duration, in milliseconds. */
+  maxDurationMs: number
+  /** Electron-style accelerator string. e.g. "CommandOrControl+Alt+V". */
+  pushToTalkHotkey: string
+}
+
+export const DEFAULT_VOICE_INPUT_SETTINGS: VoiceInputSettings = {
+  enabled: true,
+  audioInputEnabled: true,
+  preferredFormat: "wav",
+  maxDurationMs: 30_000,
+  pushToTalkHotkey: "CommandOrControl+Alt+V",
 }
 
 /** Default permission policy (v0) */
@@ -132,6 +190,7 @@ export interface AppSettings {
   agent: AgentSettings
   permissions: PermissionSettings
   emotion: EmotionSettings
+  voice: VoiceInputSettings
 }
 
 /** Public-facing settings — API key replaced with a boolean flag */
@@ -155,6 +214,9 @@ export type AgentSettingsPatch = Partial<AgentSettings>
 /** Partial patch for emotion settings (allowed in public patch) */
 export type EmotionSettingsPatch = Partial<EmotionSettings>
 
+/** Partial patch for voice input settings (allowed in public patch) */
+export type VoiceInputSettingsPatch = Partial<VoiceInputSettings>
+
 /** Patch payload allowed through updatePublicPatch — no API key or workspace */
 export interface AppSettingsPublicPatch {
   mode?: AgentMode
@@ -165,6 +227,7 @@ export interface AppSettingsPublicPatch {
   agent?: AgentSettingsPatch
   permissions?: Partial<PermissionSettings>
   emotion?: EmotionSettingsPatch
+  voice?: VoiceInputSettingsPatch
 }
 
 /* ------------------------------------------------------------------ */
@@ -222,4 +285,35 @@ export interface DebugSnapshot {
   avatarState: string
   tracePath: string
   lastPermission?: unknown
+
+  /* ---- Voice input (v0 voice feature) ---- */
+  voice?: DebugVoiceInfo
+}
+
+/**
+ * Lightweight voice-input summary used by the Debug Panel.
+ * `lastAudioArtifact` / `lastAudioAttachment` are references (path + id),
+ * not the raw bytes. The Debug Panel must NEVER show base64.
+ */
+export interface DebugVoiceInfo {
+  enabled: boolean
+  audioInputEnabled: boolean
+  preferredFormat: "wav" | "mp3"
+  maxDurationMs: number
+  hotkey: string
+  /** Status of the most recent recording attempt. */
+  lastRecordingState: "idle" | "recording" | "finished" | "cancelled" | "error"
+  /** Reference to the most recently created audio artifact (if any). */
+  lastAudioArtifact?: {
+    id: string
+    path: string
+    mimeType: string
+    size: number
+    durationMs: number
+    createdAt: number
+  }
+  /** Format that was actually sent to the model on the most recent send. */
+  lastSentFormat?: "wav" | "mp3"
+  /** Most recent audio error message (if any). */
+  lastError?: string
 }

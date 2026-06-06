@@ -3,6 +3,7 @@ import { dirname, join, resolve } from "node:path"
 import { fileURLToPath } from "node:url"
 import {
   DEFAULT_EMOTION_SETTINGS,
+  DEFAULT_VOICE_INPUT_SETTINGS,
   isEmotion,
   type AgentMode,
   type AppSettings,
@@ -18,6 +19,8 @@ import {
   type AgentSettings,
   type PermissionSettings,
   type PublicSettings,
+  type VoiceInputSettings,
+  type VoiceInputSettingsPatch,
 } from "@live2d-agent/shared"
 
 /* ------------------------------------------------------------------ */
@@ -61,6 +64,7 @@ export function createDefaultSettings(userDataDir: string): AppSettings {
     agent: { ...DEFAULT_AGENT_SETTINGS },
     permissions: { ...DEFAULT_PERMISSION_SETTINGS, ...(localDevSettings.permissions ?? {}) },
     emotion: { ...DEFAULT_EMOTION_SETTINGS },
+    voice: { ...DEFAULT_VOICE_INPUT_SETTINGS },
   }
 }
 
@@ -185,6 +189,10 @@ function deepMergeDefaults(parsed: Record<string, unknown>, defaults: AppSetting
       (parsed.emotion ?? {}) as Partial<EmotionSettings>,
       defaults.emotion,
     ),
+    voice: {
+      ...defaults.voice,
+      ...((parsed.voice ?? {}) as Partial<VoiceInputSettings>),
+    },
   }
 }
 
@@ -457,6 +465,9 @@ export class SettingsService {
     if (validated.emotion !== undefined) {
       this._settings.emotion = applyEmotionPatch(this._settings.emotion, validated.emotion)
     }
+    if (validated.voice !== undefined) {
+      this._settings.voice = { ...this._settings.voice, ...validated.voice }
+    }
     this.persist()
   }
 
@@ -630,6 +641,32 @@ function validatePublicSettingsPatch(patch: unknown): AppSettingsPublicPatch {
       patch.stripTagWhenDisabled = emotion.stripTagWhenDisabled
     }
     if (Object.keys(patch).length > 0) output.emotion = patch
+  }
+
+  if (input.voice !== undefined && typeof input.voice === "object") {
+    const voice = input.voice as Record<string, unknown>
+    const patch: VoiceInputSettingsPatch = {}
+    if (voice.enabled !== undefined && typeof voice.enabled === "boolean") {
+      patch.enabled = voice.enabled
+    }
+    if (voice.audioInputEnabled !== undefined && typeof voice.audioInputEnabled === "boolean") {
+      patch.audioInputEnabled = voice.audioInputEnabled
+    }
+    if (voice.preferredFormat !== undefined) {
+      if (voice.preferredFormat !== "wav" && voice.preferredFormat !== "mp3") {
+        throw new Error(`Invalid voice.preferredFormat: must be "wav" or "mp3"`)
+      }
+      patch.preferredFormat = voice.preferredFormat
+    }
+    const maxDurationMs = integerInRange(voice.maxDurationMs, "voice.maxDurationMs", 1_000, 5 * 60_000)
+    if (maxDurationMs !== undefined) patch.maxDurationMs = maxDurationMs
+    if (voice.pushToTalkHotkey !== undefined) {
+      if (typeof voice.pushToTalkHotkey !== "string" || voice.pushToTalkHotkey.length === 0) {
+        throw new Error("voice.pushToTalkHotkey must be a non-empty string")
+      }
+      patch.pushToTalkHotkey = voice.pushToTalkHotkey
+    }
+    if (Object.keys(patch).length > 0) output.voice = patch
   }
 
   return output

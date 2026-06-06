@@ -136,4 +136,15 @@ button:disabled { opacity: .55; cursor: not-allowed; }
 .preset-label { font-size: 13px; font-weight: 700; color: #e2e8f0; }
 .preset-actions { display: flex; gap: 6px; }
 
+/* Voice input — attachments + recording row */
+footer { flex-direction: column; align-items: stretch; gap: 6px; }
+.attachments-row { display: flex; flex-wrap: wrap; gap: 6px; }
+.attachments-row .recording-error { width: 100%; font-size: 12px; color: #fecaca; background: rgba(127, 29, 29, .55); border: 1px solid rgba(248, 113, 113, .55); padding: 6px 8px; border-radius: 8px; }
+.input-row { display: flex; align-items: center; gap: 8px; }
+.input-row textarea { flex: 1; }
+
+.message-attachments { display: flex; flex-direction: column; gap: 6px; margin: 6px 0 0; }
+
+.settings-section-divider { height: 1px; background: rgba(255,255,255,.12); margin: 4px 0 2px; }
+
 @keyframes float { 0%, 100% { transform: translateY(0) scale(1); } 50% { transform: translateY(-10px) scale(1.02); } }

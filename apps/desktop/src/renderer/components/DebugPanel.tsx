@@ -22,7 +22,18 @@ interface Props {
   lastManualResult: unknown
   onFillInput: (text: string) => void
   onSendMessage: (text: string) => void
+  onOpenAudioFolder: () => void
   onClose: () => void
+}
+
+function formatBytes(n: number): string {
+  if (n < 1024) return `${n} B`
+  if (n < 1024 * 1024) return `${(n / 1024).toFixed(1)} KB`
+  return `${(n / 1024 / 1024).toFixed(1)} MB`
+}
+
+function formatMs(ms: number): string {
+  return `${(ms / 1000).toFixed(1)}s`
 }
 
 export function DebugPanel({
@@ -40,6 +51,7 @@ export function DebugPanel({
   lastManualResult,
   onFillInput,
   onSendMessage,
+  onOpenAudioFolder,
   onClose,
 }: Props): JSX.Element {
   const [tab, setTab] = useState<Tab>("overview")
@@ -112,6 +124,39 @@ export function DebugPanel({
                 <div><span>Raw tag</span><span>{snapshot?.emotion?.lastRawTag ?? "none"}</span></div>
                 <div><span>Parse warning</span><span>{snapshot?.emotion?.lastParseWarning ?? "none"}</span></div>
                 <div><span>Inject prompt setting</span><span>{snapshot?.emotion?.injectPrompt ? "true" : "false"}</span></div>
+              </div>
+            </section>
+
+            <section className="debug-section">
+              <h4>语音输入</h4>
+              <div className="debug-kv">
+                <div><span>Enabled</span><span>{snapshot?.voice?.enabled ? "true" : "false"}</span></div>
+                <div><span>Audio input enabled</span><span>{snapshot?.voice?.audioInputEnabled ? "true" : "false"}</span></div>
+                <div><span>Preferred format</span><span>{snapshot?.voice?.preferredFormat ?? "—"}</span></div>
+                <div><span>Max duration</span><span>{snapshot?.voice?.maxDurationMs != null ? `${snapshot.voice.maxDurationMs} ms` : "—"}</span></div>
+                <div><span>Hotkey</span><span>{snapshot?.voice?.hotkey ?? "—"}</span></div>
+                <div><span>Last recording state</span><span style={{ color: snapshot?.voice?.lastRecordingState === "error" ? "#fca5a5" : snapshot?.voice?.lastRecordingState === "finished" ? "#a7f3d0" : "#94a3b8" }}>{snapshot?.voice?.lastRecordingState ?? "—"}</span></div>
+                <div><span>Last audio artifact id</span><span>{snapshot?.voice?.lastAudioArtifact?.id ?? "—"}</span></div>
+                <div><span>Last audio artifact path</span><span>{snapshot?.voice?.lastAudioArtifact?.path ?? "—"}</span></div>
+                <div><span>Last audio format</span><span>{snapshot?.voice?.lastAudioArtifact?.mimeType ?? "—"}</span></div>
+                <div><span>Last audio size</span><span>{snapshot?.voice?.lastAudioArtifact?.size != null ? formatBytes(snapshot.voice.lastAudioArtifact.size) : "—"}</span></div>
+                <div><span>Last audio duration</span><span>{snapshot?.voice?.lastAudioArtifact?.durationMs != null ? formatMs(snapshot.voice.lastAudioArtifact.durationMs) : "—"}</span></div>
+                <div><span>Last sent format</span><span>{snapshot?.voice?.lastSentFormat ?? "—"}</span></div>
+                <div><span>Last error</span><span>{snapshot?.voice?.lastError ?? "none"}</span></div>
+              </div>
+              <div className="debug-actions-row">
+                <button
+                  className="ghost-btn"
+                  disabled={!snapshot?.voice?.lastAudioArtifact}
+                  onClick={() => {
+                    if (snapshot?.voice?.lastAudioArtifact) {
+                      void navigator.clipboard.writeText(JSON.stringify(snapshot.voice.lastAudioArtifact, null, 2))
+                    }
+                  }}
+                >
+                  复制 audio attachment metadata
+                </button>
+                <button className="ghost-btn" onClick={() => void onOpenAudioFolder()}>打开 audio 文件夹</button>
               </div>
             </section>
 
