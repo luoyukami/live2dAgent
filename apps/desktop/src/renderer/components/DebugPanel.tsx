@@ -229,7 +229,7 @@ export function DebugPanel({
                   <pre className="trace-json prompt-preview">{snapshot?.systemPromptPreview ?? "—"}</pre>
                 </details>
                 <details>
-                  <summary>用户编辑的原始 system.md</summary>
+                  <summary>设置预设组成的基础 prompt（未注入情绪块）</summary>
                   <pre className="trace-json prompt-preview">{snapshot?.rawSystemPromptPreview ?? "—"}</pre>
                 </details>
               </div>

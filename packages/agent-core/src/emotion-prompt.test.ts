@@ -2,6 +2,7 @@ import { test } from "node:test"
 import assert from "node:assert/strict"
 import {
   composeSystemPrompt,
+  composePromptPresetInstructions,
   getEmotionTagInstructions,
   isEmotionPromptInjected,
   EMOTION_PROMPT_MARKER,
@@ -61,4 +62,16 @@ test("isEmotionPromptInjected recognises the marker", () => {
   assert.equal(isEmotionPromptInjected("Hello\n\n## Assistant Emotion Tag\n"), true)
   assert.equal(isEmotionPromptInjected("just a plain prompt"), false)
   assert.equal(isEmotionPromptInjected(undefined), false)
+})
+
+test("composePromptPresetInstructions slots role and user info into markdown sections", () => {
+  const result = composePromptPresetInstructions({
+    rolePrompt: "你是小花。",
+    userInfoPrompt: "用户偏好中文。",
+  })
+
+  assert.ok(result.includes("# Assistant Runtime Prompt"))
+  assert.ok(result.includes("## 角色提示词\n\n你是小花。"))
+  assert.ok(result.includes("## 用户信息提示词\n\n用户偏好中文。"))
+  assert.ok(result.includes("## 固定行为与工具规则"))
 })

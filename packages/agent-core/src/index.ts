@@ -41,6 +41,7 @@ export type {
 } from "./emotion-parser.js"
 export {
   getEmotionTagInstructions,
+  composePromptPresetInstructions,
   composeSystemPrompt,
   isEmotionPromptInjected,
   listEmotionValues,

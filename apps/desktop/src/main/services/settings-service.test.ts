@@ -10,6 +10,7 @@ import assert from "node:assert/strict"
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
+import { DEFAULT_PROMPT_PRESET_SETTINGS } from "@live2d-agent/shared"
 import { SettingsService } from "./settings-service.js"
 
 /* ------------------------------------------------------------------ */
@@ -119,6 +120,35 @@ test("reasoningEffort defaults to low and validates public patches", () => {
     assert.throws(
       () => service.updatePublicPatch({ reasoningEffort: "ultra" as never }),
       /Invalid reasoning effort/,
+    )
+  } finally {
+    cleanup(dir)
+  }
+})
+
+test("promptPresets default, merge, and accept public patches", () => {
+  const { service, dir } = makeServiceWith({
+    promptPresets: { userInfoPrompt: "用户偏好简洁回答。" },
+  })
+  try {
+    const initial = service.getPublicSettings().promptPresets
+    assert.equal(initial.rolePrompt, DEFAULT_PROMPT_PRESET_SETTINGS.rolePrompt)
+    assert.equal(initial.userInfoPrompt, "用户偏好简洁回答。")
+
+    service.updatePublicPatch({
+      promptPresets: {
+        rolePrompt: "你是测试助手。",
+        userInfoPrompt: "用户使用 TypeScript。",
+      },
+    })
+
+    const updated = service.getPublicSettings().promptPresets
+    assert.equal(updated.rolePrompt, "你是测试助手。")
+    assert.equal(updated.userInfoPrompt, "用户使用 TypeScript。")
+
+    assert.throws(
+      () => service.updatePublicPatch({ promptPresets: { rolePrompt: 42 as never } }),
+      /promptPresets\.rolePrompt must be a string/,
     )
   } finally {
     cleanup(dir)

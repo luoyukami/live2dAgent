@@ -3,6 +3,7 @@ import { dirname, join, resolve } from "node:path"
 import { fileURLToPath } from "node:url"
 import {
   DEFAULT_EMOTION_SETTINGS,
+  DEFAULT_PROMPT_PRESET_SETTINGS,
   DEFAULT_VOICE_INPUT_SETTINGS,
   isEmotion,
   type AgentMode,
@@ -18,6 +19,8 @@ import {
   type UiSettings,
   type AgentSettings,
   type PermissionSettings,
+  type PromptPresetSettings,
+  type PromptPresetSettingsPatch,
   type PublicSettings,
   type ReasoningEffort,
   type VoiceInputSettings,
@@ -66,6 +69,7 @@ export function createDefaultSettings(userDataDir: string): AppSettings {
     ui: { ...DEFAULT_UI_SETTINGS },
     agent: { ...DEFAULT_AGENT_SETTINGS },
     permissions: { ...DEFAULT_PERMISSION_SETTINGS, ...(localDevSettings.permissions ?? {}) },
+    promptPresets: { ...DEFAULT_PROMPT_PRESET_SETTINGS },
     emotion: { ...DEFAULT_EMOTION_SETTINGS },
     voice: { ...DEFAULT_VOICE_INPUT_SETTINGS },
   }
@@ -194,6 +198,10 @@ function deepMergeDefaults(parsed: Record<string, unknown>, defaults: AppSetting
     ui: { ...defaults.ui, ...((parsed.ui ?? {}) as Partial<UiSettings>) },
     agent: { ...defaults.agent, ...((parsed.agent ?? {}) as Partial<AgentSettings>) },
     permissions: { ...defaults.permissions, ...((parsed.permissions ?? {}) as Partial<PermissionSettings>) },
+    promptPresets: mergePromptPresetSettings(
+      (parsed.promptPresets ?? {}) as Partial<PromptPresetSettings>,
+      defaults.promptPresets,
+    ),
     emotion: mergeEmotionSettings(
       (parsed.emotion ?? {}) as Partial<EmotionSettings>,
       defaults.emotion,
@@ -203,6 +211,20 @@ function deepMergeDefaults(parsed: Record<string, unknown>, defaults: AppSetting
       ...((parsed.voice ?? {}) as Partial<VoiceInputSettings>),
     },
   }
+}
+
+function mergePromptPresetSettings(
+  parsed: Partial<PromptPresetSettings>,
+  defaults: PromptPresetSettings,
+): PromptPresetSettings {
+  return {
+    rolePrompt: pickString(parsed.rolePrompt, defaults.rolePrompt),
+    userInfoPrompt: pickString(parsed.userInfoPrompt, defaults.userInfoPrompt),
+  }
+}
+
+function pickString(value: unknown, fallback: string): string {
+  return typeof value === "string" ? value : fallback
 }
 
 /**
@@ -476,6 +498,9 @@ export class SettingsService {
     if (validated.permissions !== undefined) {
       this._settings.permissions = { ...this._settings.permissions, ...validated.permissions }
     }
+    if (validated.promptPresets !== undefined) {
+      this._settings.promptPresets = { ...this._settings.promptPresets, ...validated.promptPresets }
+    }
     if (validated.emotion !== undefined) {
       this._settings.emotion = applyEmotionPatch(this._settings.emotion, validated.emotion)
     }
@@ -644,6 +669,20 @@ function validatePublicSettingsPatch(patch: unknown): AppSettingsPublicPatch {
       patch.mode = permissions.mode
     }
     if (Object.keys(patch).length > 0) output.permissions = patch
+  }
+
+  if (input.promptPresets !== undefined && typeof input.promptPresets === "object") {
+    const promptPresets = input.promptPresets as Record<string, unknown>
+    const patch: PromptPresetSettingsPatch = {}
+    if (promptPresets.rolePrompt !== undefined) {
+      if (typeof promptPresets.rolePrompt !== "string") throw new Error("promptPresets.rolePrompt must be a string")
+      patch.rolePrompt = promptPresets.rolePrompt
+    }
+    if (promptPresets.userInfoPrompt !== undefined) {
+      if (typeof promptPresets.userInfoPrompt !== "string") throw new Error("promptPresets.userInfoPrompt must be a string")
+      patch.userInfoPrompt = promptPresets.userInfoPrompt
+    }
+    if (Object.keys(patch).length > 0) output.promptPresets = patch
   }
 
   if (input.emotion !== undefined && typeof input.emotion === "object") {

@@ -1,4 +1,4 @@
-import { EMOTION_VALUES, type Emotion, type EmotionSettings } from "@live2d-agent/shared"
+import { EMOTION_VALUES, type Emotion, type EmotionSettings, type PromptPresetSettings } from "@live2d-agent/shared"
 
 /**
  * The trailing-tag protocol is described in the emotion requirements doc.
@@ -29,6 +29,44 @@ The emotion tag is for local rendering only. Do not explain it. Do not mention i
  */
 export function getEmotionTagInstructions(): string {
   return EMOTION_TAG_INSTRUCTIONS
+}
+
+const EMPTY_USER_INFO = "用户暂未填写固定信息。不要臆测用户资料；需要时向用户确认。"
+
+/**
+ * Compose the user-editable prompt presets into a stable markdown system prompt.
+ * The headings are intentionally hard-coded so user text is slotted into a
+ * predictable structure before the emotion block is appended.
+ */
+export function composePromptPresetInstructions(presets: PromptPresetSettings): string {
+  const rolePrompt = normalizePromptPart(presets.rolePrompt)
+  const userInfoPrompt = normalizePromptPart(presets.userInfoPrompt)
+
+  return `# Assistant Runtime Prompt
+
+## 角色提示词
+
+${rolePrompt}
+
+## 用户信息提示词
+
+${userInfoPrompt || EMPTY_USER_INFO}
+
+## 固定行为与工具规则
+
+- 上面的“角色提示词”定义你的身份、语气、风格和长期职责；在不违背安全、事实和用户指令的前提下保持一致。
+- 上面的“用户信息提示词”只作为用户长期偏好和背景参考；不要泄露、复述或过度推断其中未明确要求使用的信息。
+- 普通对话直接用自然语言回答；技术/严肃任务优先清晰、准确、简洁。
+- 不编造能力、文件、工具结果或事实；不确定时说明不确定，并给出可验证的方法。
+- 不要为问候、闲聊或仅凭对话即可回答的问题调用工具。
+- 仅在完成用户明确请求确实需要时使用工具。
+- 只有用户明确要求读写剪贴板时，才使用 clipboard 工具。
+- 只有用户明确委托一个需要标记完成的任务时，才使用 task.finish；不要在闲聊中使用它。
+- 执行有风险操作前先确认；文件和 shell 操作必须保持在配置的 workspace 内。`
+}
+
+function normalizePromptPart(value: string | undefined): string {
+  return (value ?? "").trim()
 }
 
 /**

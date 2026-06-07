@@ -2,7 +2,7 @@ import { clipboard, desktopCapturer } from "electron"
 import { spawn } from "node:child_process"
 import { existsSync, mkdirSync, readFileSync, realpathSync, writeFileSync } from "node:fs"
 import { dirname, isAbsolute, resolve, relative } from "node:path"
-import { AgentSession, AssistantRuntime, ContextManager, ConversationManager, DefaultProviderRuntimeRegistry, EventBus, RunController, ToolRegistry, WsSessionManager, composeSystemPrompt, isEmotionPromptInjected, ToolResultLimiter, WS_RUNTIME_CONSTANTS, estimateTokens, type AgentEvent, type AgentAction, type AgentRuntimeEvent, type ArtifactWriter, type ToolResult, type ToolRuntime, type ToolArtifact, type ConversationStore, type ConversationStoreMessage, type ContextBuilder, type ToolManager, type ToolValidationResult, type CanonicalToolDefinition, type ModelToolCall, type ValidatedToolCall, type CanonicalToolResult, type CanonicalCreateInput, type CanonicalToolContinuationInput, type AssistantRuntimeEvent, type ProviderRuntime, type ModelMessage, type ModelContentPart } from "@live2d-agent/agent-core"
+import { AgentSession, AssistantRuntime, ContextManager, ConversationManager, DefaultProviderRuntimeRegistry, EventBus, RunController, ToolRegistry, WsSessionManager, composePromptPresetInstructions, composeSystemPrompt, isEmotionPromptInjected, ToolResultLimiter, WS_RUNTIME_CONSTANTS, estimateTokens, type AgentEvent, type AgentAction, type AgentRuntimeEvent, type ArtifactWriter, type ToolResult, type ToolRuntime, type ToolArtifact, type ConversationStore, type ConversationStoreMessage, type ContextBuilder, type ToolManager, type ToolValidationResult, type CanonicalToolDefinition, type ModelToolCall, type ValidatedToolCall, type CanonicalToolResult, type CanonicalCreateInput, type CanonicalToolContinuationInput, type AssistantRuntimeEvent, type ProviderRuntime, type ModelMessage, type ModelContentPart } from "@live2d-agent/agent-core"
 import { OpenAiCompatibleAdapter, OpenAiCompatibleWsClient, MimoWsRuntime } from "@live2d-agent/model-openai-compatible"
 import { createDefaultTools, type RuntimeToolContext } from "@live2d-agent/tools"
 import type { ArtifactRef, AudioArtifactRef, AudioContextAttachment, DebugEmotionInfo, Emotion } from "@live2d-agent/shared"
@@ -285,17 +285,16 @@ export class AgentService implements ToolRuntime {
 
   /**
    * Build the system prompt that will be sent to the model:
-   *  base user-defined prompt
+   *  role prompt + user information prompt in a hard-coded markdown structure
    *  + emotion tag instructions (when settings allow it)
    *
-   * The PromptService returns the raw user-editable prompt; we layer the
-   * emotion block on top of it. We do NOT cache the composed prompt inside
-   * the PromptService — that keeps the user-facing system.md file
-   * uncluttered by emotion-related content.
+   * Prompt presets live in SettingsService so the renderer can edit them.
+   * We do NOT persist the composed prompt with emotion instructions — that
+   * keeps settings clean and lets emotion injection stay independently gated.
    */
   private composeActiveSystemPrompt(): string {
-    const base = this.deps.prompts.getSystemPrompt()
     const settings = this.deps.settings.get()
+    const base = composePromptPresetInstructions(settings.promptPresets)
     return composeSystemPrompt(base, settings.emotion)
   }
 
@@ -431,7 +430,7 @@ export class AgentService implements ToolRuntime {
         promptInjected: isEmotionPromptInjected(composedPrompt),
       },
       composedSystemPrompt: composedPrompt,
-      rawSystemPrompt: this.deps.prompts.getSystemPrompt(),
+      rawSystemPrompt: composePromptPresetInstructions(settings.promptPresets),
       voice: {
         enabled: settings.voice.enabled,
         audioInputEnabled: settings.voice.audioInputEnabled,

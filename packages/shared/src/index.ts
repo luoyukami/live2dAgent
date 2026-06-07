@@ -16,6 +16,7 @@ export type {
   UiSettings,
   AgentSettings,
   PermissionSettings,
+  PromptPresetSettings,
   Emotion,
   EmotionSettings,
   Live2DEmotionBinding,
@@ -28,6 +29,7 @@ export type {
   UiSettingsPatch,
   AgentSettingsPatch,
   EmotionSettingsPatch,
+  PromptPresetSettingsPatch,
   AppSettingsPublicPatch,
   DebugSnapshot,
   DebugEmotionInfo,
@@ -35,6 +37,8 @@ export type {
 } from "./schemas.js"
 export {
   DEFAULT_PERMISSION_POLICY,
+  DEFAULT_ROLE_PROMPT,
+  DEFAULT_PROMPT_PRESET_SETTINGS,
   DEFAULT_EMOTION_SETTINGS,
   DEFAULT_LIVE2D_EMOTION_PROFILE,
   DEFAULT_VOICE_INPUT_SETTINGS,

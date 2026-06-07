@@ -183,6 +183,23 @@ export interface PermissionSettings {
   mode: ToolPermissionMode
 }
 
+/** User-editable prompt presets that are composed into the final system prompt. */
+export interface PromptPresetSettings {
+  /** Role/persona instructions for the assistant. */
+  rolePrompt: string
+  /** Optional stable information about the user, preferences, and context. */
+  userInfoPrompt: string
+}
+
+export const DEFAULT_ROLE_PROMPT = `你是“小花”，住在桌面里的猫娘助手，是用户的日常陪伴者与开发搭档。形象：金黑双色长发，猫耳猫尾，粉黑金配色服装，像元气偶像又带一点和风，甜美、灵动、会晃尾巴观察用户。性格：活泼、机灵、贴心，略调皮但关键时刻可靠；可撒娇、吐槽、鼓励，但不吵不油腻。默认称呼用户“主人”。
+
+职责：陪聊、提醒休息、整理思路、写文档、设计方案、分析代码、排查 bug、处理日常小任务。始终说中文，语气自然可爱；可少量使用“喵”“喵呜”“欸嘿”“交给小花吧”“爪爪准备好了”等口癖，但技术/严肃场景优先清晰、准确、简洁。用户低落时先共情再拆解问题；技术任务先给结论和步骤。不编造能力、文件或事实，不做超出自己能力的事；不确定就说明并给验证方法。`
+
+export const DEFAULT_PROMPT_PRESET_SETTINGS: PromptPresetSettings = {
+  rolePrompt: DEFAULT_ROLE_PROMPT,
+  userInfoPrompt: "",
+}
+
 /** Full application settings (stored on disk, never sent to renderer as-is) */
 export interface AppSettings {
   mode: AgentMode
@@ -195,6 +212,7 @@ export interface AppSettings {
   ui: UiSettings
   agent: AgentSettings
   permissions: PermissionSettings
+  promptPresets: PromptPresetSettings
   emotion: EmotionSettings
   voice: VoiceInputSettings
 }
@@ -220,6 +238,9 @@ export type AgentSettingsPatch = Partial<AgentSettings>
 /** Partial patch for emotion settings (allowed in public patch) */
 export type EmotionSettingsPatch = Partial<EmotionSettings>
 
+/** Partial patch for prompt presets (allowed in public patch) */
+export type PromptPresetSettingsPatch = Partial<PromptPresetSettings>
+
 /** Partial patch for voice input settings (allowed in public patch) */
 export type VoiceInputSettingsPatch = Partial<VoiceInputSettings>
 
@@ -233,6 +254,7 @@ export interface AppSettingsPublicPatch {
   ui?: UiSettingsPatch
   agent?: AgentSettingsPatch
   permissions?: Partial<PermissionSettings>
+  promptPresets?: PromptPresetSettingsPatch
   emotion?: EmotionSettingsPatch
   voice?: VoiceInputSettingsPatch
 }
@@ -272,12 +294,12 @@ export interface DebugSnapshot {
   lastPermissionDecision?: unknown
   lastToolResult?: unknown
   /**
-   * The prompt that will actually be sent to the model — i.e. the raw
-   * user-editable prompt with the emotion block appended (when enabled).
+   * The prompt that will actually be sent to the model — i.e. the structured
+   * prompt presets with the emotion block appended (when enabled).
    * This is what the chat header and debug panel should display.
    */
   systemPromptPreview?: string
-  /** Optional preview of the raw user-editable system prompt (no emotion block). */
+  /** Optional preview of the structured prompt presets before emotion injection. */
   rawSystemPromptPreview?: string
   promptError?: string
   emotion?: DebugEmotionInfo

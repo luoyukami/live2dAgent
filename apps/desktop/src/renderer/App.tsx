@@ -3,8 +3,10 @@ import type { AgentEvent, AgentMessage, AgentAction, AudioContextAttachment } fr
 import { mapEventToState, type AvatarState } from "@live2d-agent/live2d"
 import {
   EMOTION_VALUES,
+  DEFAULT_PROMPT_PRESET_SETTINGS,
   type Emotion,
   type EmotionSettings,
+  type PromptPresetSettings,
   type PublicSettings,
   type ReasoningEffort,
   type DebugSnapshot,
@@ -25,6 +27,7 @@ interface SettingsForm {
   workspaceDir: string
   live2dModelPath: string
   permissionMode: PublicSettings["permissions"]["mode"]
+  promptPresets: PromptPresetSettings
   emotion: EmotionSettings
   voice: VoiceInputSettings
 }
@@ -85,6 +88,7 @@ function defaultForm(): SettingsForm {
     workspaceDir: "",
     live2dModelPath: "",
     permissionMode: "permissive",
+    promptPresets: { ...DEFAULT_PROMPT_PRESET_SETTINGS },
     emotion: {
       enabled: true,
       injectPrompt: true,
@@ -133,7 +137,7 @@ export function App(): JSX.Element {
   const [showInput, setShowInput] = useState(false)
   const [showDetail, setShowDetail] = useState(false)
   const [detailTab, setDetailTab] = useState<"chat" | "settings" | "debug">("chat")
-  const [activeSettingsSection, setActiveSettingsSection] = useState<"general" | "emotion" | "voice">("general")
+  const [activeSettingsSection, setActiveSettingsSection] = useState<"general" | "presets" | "emotion" | "voice">("general")
   const [compactAssistantBubbleVisible, setCompactAssistantBubbleVisible] = useState(false)
 
   useEffect(() => {
@@ -188,6 +192,7 @@ export function App(): JSX.Element {
         workspaceDir: settings.workspaceDir,
         live2dModelPath: settings.live2d?.modelPath ?? "",
         permissionMode: settings.permissions?.mode ?? "permissive",
+        promptPresets: settings.promptPresets ?? prev.promptPresets,
         emotion: {
           enabled: settings.emotion?.enabled ?? prev.emotion.enabled,
           injectPrompt: settings.emotion?.injectPrompt ?? prev.emotion.injectPrompt,
@@ -443,6 +448,18 @@ export function App(): JSX.Element {
       if (form.reasoningEffort !== (settings?.reasoningEffort ?? "low")) publicPatch.reasoningEffort = form.reasoningEffort
       if (form.permissionMode !== settings?.permissions?.mode) publicPatch.permissions = { mode: form.permissionMode }
 
+      const settingsPromptPresets = settings?.promptPresets
+      const promptPresetPatch: Record<string, unknown> = {}
+      if (form.promptPresets.rolePrompt !== (settingsPromptPresets?.rolePrompt ?? "")) {
+        promptPresetPatch.rolePrompt = form.promptPresets.rolePrompt
+      }
+      if (form.promptPresets.userInfoPrompt !== (settingsPromptPresets?.userInfoPrompt ?? "")) {
+        promptPresetPatch.userInfoPrompt = form.promptPresets.userInfoPrompt
+      }
+      if (Object.keys(promptPresetPatch).length > 0) {
+        publicPatch.promptPresets = promptPresetPatch
+      }
+
       const emotionPatch: Record<string, unknown> = {}
       const settingsEmotion = settings?.emotion
       if (form.emotion.enabled !== (settingsEmotion?.enabled ?? true)) {
@@ -544,6 +561,7 @@ export function App(): JSX.Element {
 
   const settingsTabs = [
     { key: "general" as const, label: "基础" },
+    { key: "presets" as const, label: "预设" },
     { key: "emotion" as const, label: "情绪" },
     { key: "voice" as const, label: "语音" },
   ]
@@ -912,6 +930,43 @@ export function App(): JSX.Element {
                         </div>
                       </div>
                     </>
+                  )}
+
+                  {activeSettingsSection === "presets" && (
+                    <div className="settings-card">
+                      <h3 className="settings-card-title">提示词预设</h3>
+                      <div className="settings-group">
+                        <label>角色提示词</label>
+                        <textarea
+                          className="prompt-preset-textarea role"
+                          value={form.promptPresets.rolePrompt}
+                          onChange={(e) => setForm((f) => ({
+                            ...f,
+                            promptPresets: { ...f.promptPresets, rolePrompt: e.target.value },
+                          }))}
+                          placeholder="描述助手的角色、性格、语气、职责和边界"
+                        />
+                        <small className="settings-hint">
+                          会被放入最终 system prompt 的“角色提示词”部分，用于定义助手身份、风格和长期职责。
+                        </small>
+                      </div>
+
+                      <div className="settings-group">
+                        <label>用户信息提示词</label>
+                        <textarea
+                          className="prompt-preset-textarea user-info"
+                          value={form.promptPresets.userInfoPrompt}
+                          onChange={(e) => setForm((f) => ({
+                            ...f,
+                            promptPresets: { ...f.promptPresets, userInfoPrompt: e.target.value },
+                          }))}
+                          placeholder="例如：用户偏好的称呼、语言风格、常用技术栈、作息习惯等（可留空）"
+                        />
+                        <small className="settings-hint">
+                          会被放入最终 system prompt 的“用户信息提示词”部分。建议只填写稳定、愿意让模型长期参考的信息。
+                        </small>
+                      </div>
+                    </div>
                   )}
 
                   {activeSettingsSection === "emotion" && (
