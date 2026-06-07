@@ -421,8 +421,21 @@ export class WsSessionManager {
         return
       }
 
-      // Record a new ping time. ModelWsClient-specific ping transport is supplied
-      // by provider implementations; this manager owns timeout/reconnect policy.
+      // Skip ping if there has been recent activity (< heartbeat interval ago).
+      // Model events (response.*, pong, etc.) keep the connection alive naturally.
+      if (now - session.lastActivityAt <= this.heartbeatIntervalMs) {
+        return
+      }
+
+      // Actually send a ping via the client.
+      const client = this.clients.get(conversationId)
+      if (client) {
+        try {
+          void client.ping()
+        } catch {
+          // Non-fatal — the pong timeout will catch stale connections.
+        }
+      }
       session.lastPingAt = now
     }, this.heartbeatIntervalMs)
     interval.unref?.()
@@ -524,6 +537,9 @@ export class WsSessionManager {
    * conversationId the event belongs to.  No global responseId→conv mapping needed.
    */
   private handleClientEvent(conversationId: string, event: ModelWsEvent): void {
+    // Any event from the client counts as activity (keeps heartbeat from sending redundant pings)
+    this.updateLastActivity(conversationId)
+
     // Forward to downstream (RunController) so it can process model-level events
     this.emitModelEvent(conversationId, event)
 

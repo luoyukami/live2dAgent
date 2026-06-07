@@ -33,10 +33,10 @@ export const WS_RUNTIME_CONSTANTS = {
   MAX_QUEUED_USER_MESSAGES_PER_CONVERSATION: 8,
 
   /** Max tool calls in a single run. */
-  MAX_TOOL_CALLS_PER_RUN: 20,
+  MAX_TOOL_CALLS_PER_RUN: 12,
 
   /** Max model continuations (tool-result → model turns) per run. */
-  MAX_MODEL_CONTINUATIONS_PER_RUN: 30,
+  MAX_MODEL_CONTINUATIONS_PER_RUN: 16,
 
   /** Single tool execution timeout in ms. */
   TOOL_EXECUTION_TIMEOUT_MS: 60_000,

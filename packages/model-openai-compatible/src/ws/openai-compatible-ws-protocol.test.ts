@@ -32,8 +32,8 @@ describe("JsonModelWsProtocol", () => {
   test("encodes outbound messages", () => {
     const protocol = new JsonModelWsProtocol()
     assert.equal(
-      protocol.encode({ type: "ping", timestamp: 123 }),
-      JSON.stringify({ type: "ping", timestamp: 123 }),
+      protocol.encode({ type: "ping" }),
+      JSON.stringify({ type: "ping" }),
     )
   })
 })

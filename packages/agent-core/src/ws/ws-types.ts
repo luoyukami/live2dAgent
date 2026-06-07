@@ -205,6 +205,16 @@ export interface ModelWsCreateResponseInput {
     role: "user" | "assistant" | "system"
     content: string
   }>
+  /** Tool results to include as function_call_output items in the next response. */
+  toolResults?: Array<{
+    toolCallId: string
+    status: "ok" | "error" | "denied"
+    summary: string
+    contentForModel: string
+    artifactRef?: string
+  }>
+  /** Tool definitions to register for this response. */
+  tools?: unknown[]
 }
 
 export interface ModelWsToolResultInput {

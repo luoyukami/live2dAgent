@@ -27,6 +27,7 @@ class MockModelWsClient implements ModelWsClient {
   public connectCalls: Array<{ url: string }> = []
   public initSessionCalls: number = 0
   public closeCalls: Array<{ reason?: string }> = []
+  public pingCallCount: number = 0
   public shouldFail = false
 
   constructor(id?: string) {
@@ -54,6 +55,10 @@ class MockModelWsClient implements ModelWsClient {
 
   async cancelResponse(): Promise<void> {
     // Not used in session manager tests
+  }
+
+  async ping(): Promise<void> {
+    this.pingCallCount += 1
   }
 
   async close(input: { reason?: string }): Promise<void> {
@@ -402,15 +407,42 @@ describe("WsSessionManager idle close", () => {
 /* ------------------------------------------------------------------ */
 
 describe("WsSessionManager heartbeat skeleton", () => {
-  test("heartbeat interval starts after connect", async () => {
-    const { mgr } = createHarness({ heartbeatIntervalMs: 10 })
+  test("heartbeat interval starts after connect and calls client.ping()", async () => {
+    const { mgr, client } = createHarness({ heartbeatIntervalMs: 10 })
     await mgr.connect("conv_1")
 
     const session = mgr.getSession("conv_1")!
-    // Wait for at least one heartbeat tick
-    await new Promise((resolve) => setTimeout(resolve, 15))
+    // Wait longer than heartbeat interval + activity timeout
+    // Activity was set during connect, so we need to wait > heartbeatIntervalMs
+    // for the heartbeat to decide to ping.
+    await new Promise((resolve) => setTimeout(resolve, 25))
 
-    assert.equal(typeof session.lastPingAt, "number", "lastPingAt should be set after heartbeat interval fires")
+    // The heartbeat should have called client.ping() at least once
+    assert.ok(client.pingCallCount >= 1, "client.ping() should be called by heartbeat")
+    assert.equal(typeof session.lastPingAt, "number", "lastPingAt should be set after heartbeat fires")
+  })
+
+  test("heartbeat skips ping when recent model activity exists", async () => {
+    const { mgr, client } = createHarness({ heartbeatIntervalMs: 50 })
+    await mgr.connect("conv_1")
+
+    const pingCountBefore = client.pingCallCount
+
+    // Wait for heartbeat interval to almost elapse, then emit an event to reset activity
+    await new Promise((resolve) => setTimeout(resolve, 10))
+    // Emit a model event — this resets lastActivityAt via handleClientEvent
+    const clientWrapper = client // MockModelWsClient
+    clientWrapper.emit({ type: "pong" })
+
+    // Wait for a heartbeat tick that still falls within the recent-activity window.
+    await new Promise((resolve) => setTimeout(resolve, 45))
+
+    // Ping should NOT have been called because activity was updated recently
+    assert.equal(
+      client.pingCallCount,
+      pingCountBefore,
+      "client.ping() should NOT be called when recent activity exists",
+    )
   })
 
   test("pong from ModelWsClient updates lastPongAt", async () => {

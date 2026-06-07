@@ -8,13 +8,29 @@ import type {
   WsToolCall,
 } from "@live2d-agent/agent-core"
 
+/**
+ * Outbound messages for the OpenAI Responses WebSocket protocol.
+ *
+ * Reference: https://platform.openai.com/docs/api-reference/responses
+ *
+ * Key differences from the previous custom protocol:
+ *  - No session.init — model/instructions are per-response.
+ *  - Tool results are not sent as separate messages; they are included as
+ *    function_call_output items in the next response.create's `input`.
+ *  - response.create includes model, store, previous_response_id, input, and tools.
+ *  - API key is passed via constructor options (headers), not in the URL.
+ */
 export type OpenAiCompatibleWsOutboundMessage =
-  | { type: "session.init"; session: ModelWsSessionInit }
-  | { type: "response.create"; input: ModelWsCreateResponseInput }
-  | { type: "tool.result"; input: ModelWsToolResultInput }
-  | { type: "response.cancel"; input: ModelWsCancelInput }
-  | { type: "ping"; timestamp: number }
-  | { type: "session.close"; input: ModelWsCloseInput }
+  | {
+      type: "response.create"
+      model?: string
+      store?: boolean
+      previous_response_id?: string | null
+      input?: unknown[]
+      tools?: unknown[]
+    }
+  | { type: "response.cancel"; response_id: string }
+  | { type: "ping" }
 
 export interface OpenAiCompatibleWsProtocol {
   encode(message: OpenAiCompatibleWsOutboundMessage): string

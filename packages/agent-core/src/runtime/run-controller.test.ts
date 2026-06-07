@@ -66,6 +66,10 @@ class MockModelWsClient implements ModelWsClient {
 
   async close(): Promise<void> { /* noop */ }
 
+  async ping(): Promise<void> {
+    // noop
+  }
+
   onEvent(listener: ModelWsEventListener): ModelWsEventUnsubscribe {
     this.listeners.add(listener)
     return () => this.listeners.delete(listener)

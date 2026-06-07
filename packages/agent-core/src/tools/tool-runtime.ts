@@ -290,6 +290,8 @@ export interface ProcessToolCallsInput {
   inlineCharLimit?: number
   /** Summary char limit (default: WS_RUNTIME_CONSTANTS.TOOL_RESULT_SUMMARY_CHAR_LIMIT). */
   summaryCharLimit?: number
+  /** Tool execution timeout override for testing (default: WS_RUNTIME_CONSTANTS.TOOL_EXECUTION_TIMEOUT_MS). */
+  toolExecutionTimeoutMs?: number
 }
 
 /**
@@ -309,6 +311,7 @@ export async function processToolCalls(
     artifactWriter,
     inlineCharLimit = WS_RUNTIME_CONSTANTS.TOOL_RESULT_INLINE_CHAR_LIMIT,
     summaryCharLimit = WS_RUNTIME_CONSTANTS.TOOL_RESULT_SUMMARY_CHAR_LIMIT,
+    toolExecutionTimeoutMs = WS_RUNTIME_CONSTANTS.TOOL_EXECUTION_TIMEOUT_MS,
   } = input
 
   const validator = new ToolCallValidator()
@@ -356,7 +359,7 @@ export async function processToolCalls(
     const approvedCalls = validCalls.filter(({ call }) => !deniedIds.has(call.id))
     const deniedCalls = validCalls.filter(({ call }) => deniedIds.has(call.id))
 
-    // Phase 3: Execute approved calls
+    // Phase 3: Execute approved calls with timeout
     if (approvedCalls.length > 0) {
       const execInputs = approvedCalls.map(({ call }) => ({
         id: call.id,
@@ -366,13 +369,18 @@ export async function processToolCalls(
 
       let execResults: Array<{ id: string; ok: boolean; content: string; data?: unknown }>
       try {
-        execResults = await runtime.executeMany(execInputs)
+        execResults = await withTimeout(
+          runtime.executeMany(execInputs),
+          toolExecutionTimeoutMs,
+          "Tool execution timed out",
+        )
       } catch (err) {
         // Runtime error — all approved calls fail
+        const isTimeout = err instanceof Error && err.message === "Tool execution timed out"
         execResults = execInputs.map((input) => ({
           id: input.id,
           ok: false,
-          content: err instanceof Error ? err.message : "Tool execution failed",
+          content: isTimeout ? `TOOL_EXECUTION_TIMEOUT: tool '${input.tool}' exceeded ${toolExecutionTimeoutMs}ms` : (err instanceof Error ? err.message : "Tool execution failed"),
         }))
       }
 
@@ -396,16 +404,21 @@ export async function processToolCalls(
           continue
         }
 
+        const isTimeout = !execResult.ok && execResult.content.startsWith("TOOL_EXECUTION_TIMEOUT:")
         const truncated = await truncator.truncate(call.name, execResult.content)
         results[findIndex(toolCalls, call.id)] = {
           toolCallId: call.id,
           result: {
             toolCallId: call.id,
             status: execResult.ok ? "ok" : "error",
-            summary: truncated.summary.slice(0, summaryCharLimit),
+            summary: isTimeout
+              ? `Timeout executing tool ${call.name}: exceeded ${toolExecutionTimeoutMs}ms`
+              : truncated.summary.slice(0, summaryCharLimit),
             contentForModel: truncated.contentForModel,
             artifactRef: truncated.artifactRef,
-            metadata: execResult.ok ? undefined : { errorCode: "execution_error" },
+            metadata: execResult.ok
+              ? undefined
+              : { errorCode: isTimeout ? "tool_execution_timeout" : "execution_error" },
           },
         }
       }
@@ -440,4 +453,24 @@ export async function processToolCalls(
 
 function findIndex(calls: WsToolCall[], callId: string): number {
   return calls.findIndex((c) => c.id === callId)
+}
+
+/**
+ * Race a promise against a timeout.
+ * Rejects with `timeoutMessage` if the timeout fires before the promise settles.
+ */
+function withTimeout<T>(promise: Promise<T>, ms: number, timeoutMessage: string): Promise<T> {
+  return new Promise<T>((resolve, reject) => {
+    const timer = setTimeout(() => reject(new Error(timeoutMessage)), ms)
+    timer.unref?.()
+    promise
+      .then((val) => {
+        clearTimeout(timer)
+        resolve(val)
+      })
+      .catch((err) => {
+        clearTimeout(timer)
+        reject(err)
+      })
+  })
 }

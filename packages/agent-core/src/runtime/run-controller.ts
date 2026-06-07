@@ -6,7 +6,7 @@
  *   - Collects tool calls from ModelWsEvent.response.tool_call.created
  *   - Processes them through permission check, execution, truncation
  *   - Sends results back to model and triggers continuation
- *   - Enforces MAX_TOOL_CALLS_PER_RUN (20) and MAX_MODEL_CONTINUATIONS_PER_RUN (30)
+ *   - Enforces MAX_TOOL_CALLS_PER_RUN (12) and MAX_MODEL_CONTINUATIONS_PER_RUN (16)
  *
  * Key design decisions:
  *   - Delta accumulation is per-conversation (not global) — different conversations'
@@ -444,7 +444,7 @@ export class RunController {
       toolResults: [],
       currentArtifacts: [],
       historicalArtifacts: [],
-      toolSchemas: [],
+      toolSchemas: this.toolOpts?.toolRegistry.getDefinitions() ?? [],
       currentTurnIndex: convMsgs.length,
     }
     const modelInput = effectiveContextManager.build(contextInput)
@@ -478,24 +478,15 @@ export class RunController {
     try {
       await client.createResponse({
         messages: createResponseMessages,
+        tools: this.toolOpts?.toolRegistry.getDefinitions(),
         ...(remoteContextId ? { remoteContextId } : {}),
       })
     } catch (err) {
-      run.status = "failed"
-      run.completedAt = Date.now()
-      this.clearDeltaState(conversationId)
-      this.wsSessionManager.clearActiveRun(conversationId)
-      this.wsSessionManager.transitionSessionState(conversationId, "ready")
-      this.emit({
-        type: "run.failed",
-        conversationId,
-        runId: run.id,
-        error: {
-          code: "create_response_failed",
-          message: err instanceof Error ? err.message : "Unknown error",
-          retryable: true,
-          cause: err,
-        },
+      this.failRun(run, {
+        code: "create_response_failed",
+        message: err instanceof Error ? err.message : "Unknown error",
+        retryable: true,
+        cause: err,
       })
     }
   }
@@ -860,7 +851,7 @@ export class RunController {
         })),
         currentArtifacts: [],
         historicalArtifacts: [],
-        toolSchemas: [],
+        toolSchemas: this.toolOpts?.toolRegistry.getDefinitions() ?? [],
         currentTurnIndex: convMsgs.length,
       }
       const modelInput = effectiveContextManager.build(contextInput)
@@ -900,6 +891,7 @@ export class RunController {
       if (continuationClient) {
         await continuationClient.createResponse({
           messages: createResponseMessages,
+          tools: this.toolOpts?.toolRegistry.getDefinitions(),
           ...(remoteContextId ? { remoteContextId } : {}),
         })
       } else {

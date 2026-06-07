@@ -63,6 +63,9 @@ export interface ModelWsClient {
   /** Cancel the currently active response. */
   cancelResponse(input: ModelWsCancelInput): Promise<void>
 
+  /** Send a ping to keep the connection alive. */
+  ping(): void | Promise<void>
+
   /** Gracefully close the connection. */
   close(input: ModelWsCloseInput): Promise<void>
 

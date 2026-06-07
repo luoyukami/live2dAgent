@@ -2,8 +2,8 @@ import { clipboard, desktopCapturer } from "electron"
 import { spawn } from "node:child_process"
 import { existsSync, mkdirSync, readFileSync, realpathSync, writeFileSync } from "node:fs"
 import { dirname, isAbsolute, resolve, relative } from "node:path"
-import { AgentSession, EventBus, ToolRegistry, composeSystemPrompt, isEmotionPromptInjected, type AgentEvent, type AgentAction, type ToolResult, type ToolRuntime, type ToolArtifact } from "@live2d-agent/agent-core"
-import { OpenAiCompatibleAdapter } from "@live2d-agent/model-openai-compatible"
+import { AgentSession, ContextManager, ConversationManager, EventBus, RunController, ToolRegistry, WsSessionManager, composeSystemPrompt, isEmotionPromptInjected, type AgentEvent, type AgentAction, type AgentRuntimeEvent, type ArtifactWriter, type ToolResult, type ToolRuntime, type ToolArtifact } from "@live2d-agent/agent-core"
+import { OpenAiCompatibleAdapter, OpenAiCompatibleWsClient } from "@live2d-agent/model-openai-compatible"
 import { createDefaultTools, type RuntimeToolContext } from "@live2d-agent/tools"
 import type { ArtifactRef, AudioArtifactRef, AudioContextAttachment, DebugEmotionInfo, Emotion } from "@live2d-agent/shared"
 import type { EmotionSource } from "@live2d-agent/agent-core"
@@ -29,13 +29,19 @@ interface EmotionDebugState {
 }
 
 export class AgentService implements ToolRuntime {
+  private activeConversationId?: string
+  private conversationManager?: ConversationManager
+  private wsSessionManager?: WsSessionManager
+  private runController?: RunController
   private session?: AgentSession
+  private useWsRuntime = true
   private events = new EventBus()
   private executors = new Map<string, (action: AgentAction) => Promise<ToolResult>>()
   private lastModelRequest?: unknown
   private lastModelResponse?: unknown
   private lastToolCall?: unknown
   private lastToolResult?: unknown
+  private runtimeToolCalls = new Map<string, { name: string; args: unknown }>()
   private stepCount = 0
   private avatarState = "idle"
   private emotionState: EmotionDebugState = {
@@ -64,6 +70,9 @@ export class AgentService implements ToolRuntime {
   }
 
   reconfigure(): void {
+    this.runController?.dispose()
+    this.wsSessionManager?.dispose()
+
     const settings = this.deps.settings.get()
     const definitions = this.deps.prompts.applyToolOverrides(createDefaultTools())
     const registry = new ToolRegistry()
@@ -100,6 +109,65 @@ export class AgentService implements ToolRuntime {
     })
 
     this.executors = this.createExecutors()
+    this.conversationManager = new ConversationManager()
+    this.activeConversationId = this.conversationManager.createConversation("Default").id
+    this.wsSessionManager = new WsSessionManager(() => new OpenAiCompatibleWsClient({
+      baseUrl: settings.openaiBaseUrl.replace(/\/$/, ""),
+      apiKey: settings.openaiApiKey ?? "",
+      model: settings.openaiModel,
+      onRawSend: (request) => { this.lastModelRequest = request },
+      onRawReceive: (response) => { this.lastModelResponse = response },
+    }))
+    this.runController = new RunController(
+      this.conversationManager,
+      this.wsSessionManager,
+      {
+        toolRegistry: registry,
+        runtime: {
+          executeMany: async (calls) => {
+            const actions: AgentAction[] = calls.map((call) => ({
+              id: call.id,
+              providerToolCallId: call.id,
+              tool: call.tool,
+              args: call.args,
+              source: "llm",
+              createdAt: Date.now(),
+            }))
+            const results = await this.executeMany(actions)
+            return results.map((result) => ({
+              id: result.providerToolCallId ?? result.actionId,
+              ok: result.ok,
+              content: result.content,
+              data: result.data,
+            }))
+          },
+        },
+        permission: {
+          check: async (actions) => {
+            const agentActions: AgentAction[] = actions.map((action) => ({
+              id: action.id,
+              providerToolCallId: action.id,
+              tool: action.tool,
+              args: action.args,
+              source: "llm",
+              createdAt: Date.now(),
+            }))
+            const decision = await this.deps.permissions.check(agentActions)
+            return {
+              status: decision.status,
+              reason: decision.reason,
+              actions: decision.actions.map((action) => ({ id: action.id, tool: action.tool, args: action.args })),
+            }
+          },
+        },
+        artifactWriter: this.createToolArtifactWriter(),
+      },
+      new ContextManager(),
+    )
+    this.runController.setSystemInstructions(this.composeActiveSystemPrompt())
+    this.runController.onEvent((event) => this.captureRuntimeEvent(event))
+    this.wsSessionManager.onEvent((event) => this.captureRuntimeEvent(event))
+
     this.session = new AgentSession(model, registry, this, this.deps.permissions, this.deps.trace, this.events, {
       maxSteps: settings.agent.maxSteps,
       emotion: settings.emotion,
@@ -136,6 +204,17 @@ export class AgentService implements ToolRuntime {
       })
       return
     }
+    if (this.useWsRuntime) {
+      if (!this.runController || !this.activeConversationId) this.reconfigure()
+      const text = typeof input === "string" ? input : input.text
+      this.emit({
+        type: "message.added",
+        message: { id: `msg_user_${Date.now()}`, role: "user", content: text, createdAt: Date.now(), attachments: typeof input === "string" ? undefined : input.attachments },
+      })
+      await this.runController?.enqueueUserMessage(this.activeConversationId!, text)
+      return
+    }
+
     if (!this.session) this.reconfigure()
     await this.session?.runUserMessage(input)
   }
@@ -411,6 +490,88 @@ export class AgentService implements ToolRuntime {
   private emit(event: AgentEvent): void {
     this.deps.trace.append(event)
     this.events.emit(event)
+  }
+
+  private createToolArtifactWriter(): ArtifactWriter {
+    return {
+      writeArtifact: async (name, content, mimeType = "text/plain") => {
+        const ref = this.deps.artifacts.saveArtifact({
+          kind: "tool-output",
+          mimeType,
+          data: Buffer.from(content, "utf8"),
+          ext: ".txt",
+        })
+        return { id: ref.id, path: ref.path, size: ref.size }
+      },
+    }
+  }
+
+  private captureRuntimeEvent(event: AgentRuntimeEvent): void {
+    switch (event.type) {
+      case "run.started":
+        this.emit({ type: "agent.thinking" })
+        break
+      case "run.completed":
+        this.emit({ type: "agent.idle" })
+        break
+      case "run.cancelled":
+        this.emit({ type: "agent.idle" })
+        break
+      case "run.failed":
+        this.emit({ type: "agent.error", error: event.error.message })
+        this.emit({ type: "agent.idle" })
+        break
+      case "assistant.message.completed": {
+        const message = this.conversationManager
+          ?.getMessages(event.conversationId)
+          .find((item) => item.id === event.messageId)
+        if (message && message.content.trim().length > 0) {
+          this.emit({
+            type: "message.added",
+            message: {
+              id: message.id,
+              role: "assistant",
+              content: message.content,
+              createdAt: message.createdAt,
+            },
+          })
+        }
+        break
+      }
+      case "tool.call.waiting_approval":
+        this.avatarState = "waiting_approval"
+        break
+      case "tool.call.created":
+        this.lastToolCall = event.toolCall
+        this.runtimeToolCalls.set(event.toolCall.id, { name: event.toolCall.name, args: event.toolCall.arguments })
+        break
+      case "tool.call.started":
+        {
+        const call = this.runtimeToolCalls.get(event.toolCallId)
+        this.emit({
+          type: "tool.started",
+          action: {
+            id: event.toolCallId,
+            providerToolCallId: event.toolCallId,
+            tool: call?.name ?? "task.finish",
+            args: call?.args ?? {},
+            source: "llm",
+            createdAt: Date.now(),
+          },
+        })
+        }
+        break
+      case "tool.call.completed":
+      case "tool.call.failed":
+        // Tool result details are captured via executeMany()/PermissionService;
+        // keep the runtime event available in debug state without inventing an
+        // incompatible AgentEvent payload.
+        this.lastToolResult = event
+        break
+      case "ws.error":
+        this.emit({ type: "agent.error", error: event.error.message })
+        break
+    }
   }
 
   private captureEvent(event: AgentEvent): void {

@@ -11,8 +11,14 @@
       "default": "./src/index.ts"
     }
   },
-  "files": ["src"],
+  "files": [
+    "src"
+  ],
   "dependencies": {
-    "@live2d-agent/agent-core": "workspace:^"
+    "@live2d-agent/agent-core": "workspace:^",
+    "ws": "^8.21.0"
+  },
+  "devDependencies": {
+    "@types/ws": "^8.18.1"
   }
 }

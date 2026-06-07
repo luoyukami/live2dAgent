@@ -554,6 +554,35 @@ describe("processToolCalls", () => {
     assert.equal(results[0]!.result.summary.length, 50) // Summary capped
   })
 
+  test("tool execution timeout returns error with tool_execution_timeout metadata", async () => {
+    const call = makeToolCall()
+    // Simulate a tool that never completes (hangs)
+    const results = await processToolCalls({
+      toolCalls: [call],
+      toolRegistry: registry,
+      runtime: {
+        async executeMany() {
+          // Never resolve — should be timed out
+          return new Promise<Array<{ id: string; ok: boolean; content: string }>>(() => {})
+        },
+      },
+      permission: {
+        async check() {
+          return { status: "approved", actions: [] }
+        },
+      },
+      // Override timeout to 30ms for testing
+      toolExecutionTimeoutMs: 30,
+    })
+
+    // The tool should have timed out (status=error, metadata includes tool_execution_timeout)
+    assert.equal(results.length, 1)
+    assert.equal(results[0]!.result.status, "error")
+    assert.equal(results[0]!.result.metadata?.errorCode, "tool_execution_timeout",
+      "Timeout should produce tool_execution_timeout error code")
+    assert.ok(results[0]!.result.summary.includes("Timeout"), "Summary should mention timeout")
+  })
+
   test("empty tool call list returns empty results", async () => {
     const results = await processToolCalls({
       toolCalls: [],
