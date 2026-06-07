@@ -112,6 +112,43 @@ button, input, select, textarea {
   backdrop-filter: blur(10px);
 }
 
+.assistant-speech-bubble {
+  position: absolute;
+  top: clamp(16px, 7vh, 64px);
+  left: 50%;
+  z-index: 3;
+  max-width: min(360px, calc(100% - 28px));
+  padding: 10px 14px;
+  border: 1px solid rgba(255, 255, 255, 0.2);
+  border-radius: 18px;
+  background: rgba(15, 23, 42, 0.78);
+  color: var(--text-primary);
+  box-shadow: var(--shadow-md);
+  backdrop-filter: blur(18px);
+  font-size: 13px;
+  line-height: 1.5;
+  text-align: left;
+  white-space: pre-wrap;
+  word-break: break-word;
+  pointer-events: none;
+  animation: speechBubbleIn 0.2s ease both;
+  transform: translateX(-50%);
+}
+
+.assistant-speech-bubble::after {
+  content: "";
+  position: absolute;
+  left: 50%;
+  bottom: -8px;
+  width: 14px;
+  height: 14px;
+  border-right: 1px solid rgba(255, 255, 255, 0.2);
+  border-bottom: 1px solid rgba(255, 255, 255, 0.2);
+  background: rgba(15, 23, 42, 0.78);
+  backdrop-filter: blur(18px);
+  transform: translateX(-50%) rotate(45deg);
+}
+
 /* ---- Compact-first interaction layer ---- */
 .floating-approvals {
   position: absolute;
@@ -707,6 +744,10 @@ footer { flex-direction: column; align-items: stretch; gap: 6px; }
   from { opacity: 0; transform: translateY(18px) scale(0.98); }
   to { opacity: 1; transform: translateY(0) scale(1); }
 }
+@keyframes speechBubbleIn {
+  from { opacity: 0; transform: translateX(-50%) translateY(-6px) scale(0.98); }
+  to { opacity: 1; transform: translateX(-50%) translateY(0) scale(1); }
+}
 
 /* ---- Responsive narrow window ---- */
 @media (max-width: 640px) {
@@ -716,6 +757,7 @@ footer { flex-direction: column; align-items: stretch; gap: 6px; }
   .header-actions { gap: 6px; }
   .icon-btn { padding: 6px 8px; }
   .bubble { max-width: 94%; padding: 8px 10px; }
+  .assistant-speech-bubble { top: 12px; font-size: 12px; max-width: calc(100% - 20px); }
   .compact-bar { left: 8px; right: 8px; bottom: 8px; }
   .compact-bar-inner { gap: 4px; padding: 6px; }
   .compact-bar button { min-width: 32px; height: 32px; padding: 0 8px; }

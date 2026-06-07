@@ -131,6 +131,7 @@ export function App(): JSX.Element {
   const [showDetail, setShowDetail] = useState(false)
   const [detailTab, setDetailTab] = useState<"chat" | "settings" | "debug">("chat")
   const [activeSettingsSection, setActiveSettingsSection] = useState<"general" | "emotion" | "voice">("general")
+  const [compactAssistantBubbleVisible, setCompactAssistantBubbleVisible] = useState(false)
 
   useEffect(() => {
     if (showInput || showDetail) {
@@ -531,6 +532,22 @@ export function App(): JSX.Element {
   ]
 
   const canSubmit = !isSending && (input.trim().length > 0 || attachments.length > 0)
+  const latestAssistantMessage = useMemo(
+    () => [...messages].reverse().find((message) => message.role === "assistant" && hasVisibleText(message)),
+    [messages],
+  )
+  const latestAssistantText = latestAssistantMessage ? messageContentToText(latestAssistantMessage).trim() : ""
+
+  useEffect(() => {
+    if (!latestAssistantMessage || latestAssistantText.length === 0) {
+      setCompactAssistantBubbleVisible(false)
+      return
+    }
+
+    setCompactAssistantBubbleVisible(true)
+    const timer = window.setTimeout(() => setCompactAssistantBubbleVisible(false), 20_000)
+    return () => window.clearTimeout(timer)
+  }, [latestAssistantMessage?.id, latestAssistantText])
 
   return (
     <main className="shell">
@@ -545,6 +562,11 @@ export function App(): JSX.Element {
             emotion={currentEmotion}
             emotionProfile={settings?.live2d?.emotionProfile}
           />
+          {compactAssistantBubbleVisible && !showDetail && latestAssistantText && (
+            <div className="assistant-speech-bubble" aria-live="polite">
+              {summarize(latestAssistantText, 220)}
+            </div>
+          )}
           <span className="stage-status">{assistantStateLabel}</span>
         </div>
       </section>
