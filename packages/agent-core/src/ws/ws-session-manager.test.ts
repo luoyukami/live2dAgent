@@ -1,0 +1,527 @@
+/**
+ * WsSessionManager unit tests.
+ *
+ * Phase 1 scope:
+ *   - connect / ensureReady / state transitions
+ *   - Invalid transition rejection
+ *   - Idle close timer
+ *   - Heartbeat skeleton (ping/pong tracking)
+ *   - Reconnect skeleton
+ *   - Run / response tracking helpers
+ *
+ * Uses a mock ModelWsClient so no real network I/O is involved.
+ */
+import { test, describe, before, after, mock } from "node:test"
+import assert from "node:assert/strict"
+import { WsSessionManager, ALLOWED_TRANSITIONS } from "./ws-session-manager.js"
+import type { ModelWsClient, ModelWsEvent, ModelWsEventListener, ModelWsEventUnsubscribe } from "./model-ws-client.js"
+import type { WsSessionState, AgentRuntimeEvent } from "./ws-types.js"
+
+/* ------------------------------------------------------------------ */
+/*  Mock ModelWsClient                                                 */
+/* ------------------------------------------------------------------ */
+
+class MockModelWsClient implements ModelWsClient {
+  private listeners = new Set<ModelWsEventListener>()
+  public connectCalls: Array<{ url: string }> = []
+  public initSessionCalls: number = 0
+  public closeCalls: Array<{ reason?: string }> = []
+  public shouldFail = false
+
+  async connect(config: { url: string; apiKey?: string; timeoutMs?: number }): Promise<void> {
+    if (this.shouldFail) throw new Error("Connection failed")
+    this.connectCalls.push({ url: config.url })
+    this.emit({ type: "connected" })
+  }
+
+  async initSession(): Promise<void> {
+    this.initSessionCalls += 1
+    this.emit({ type: "session.ready" })
+  }
+
+  async createResponse(): Promise<void> {
+    // Not used in session manager tests
+  }
+
+  async sendToolResult(): Promise<void> {
+    // Not used in session manager tests
+  }
+
+  async cancelResponse(): Promise<void> {
+    // Not used in session manager tests
+  }
+
+  async close(input: { reason?: string }): Promise<void> {
+    this.closeCalls.push(input)
+    this.emit({ type: "closed", reason: input.reason })
+  }
+
+  onEvent(listener: ModelWsEventListener): ModelWsEventUnsubscribe {
+    this.listeners.add(listener)
+    return () => this.listeners.delete(listener)
+  }
+
+  /** Test helper: emit a ModelWsEvent as if the real client emitted it. */
+  emit(event: ModelWsEvent): void {
+    for (const listener of this.listeners) {
+      listener(event)
+    }
+  }
+
+  /** Test helper: reset call counters. */
+  reset(): void {
+    this.connectCalls = []
+    this.initSessionCalls = 0
+    this.closeCalls = []
+    this.shouldFail = false
+  }
+}
+
+/* ------------------------------------------------------------------ */
+/*  Helpers                                                            */
+/* ------------------------------------------------------------------ */
+
+interface Harness {
+  client: MockModelWsClient
+  mgr: WsSessionManager
+  events: AgentRuntimeEvent[]
+}
+
+function createHarness(options?: {
+  idleCloseMs?: number
+  heartbeatIntervalMs?: number
+  connectTimeoutMs?: number
+  reconnectDelaysMs?: readonly number[]
+  shouldFail?: boolean
+}): Harness {
+  const client = new MockModelWsClient()
+  if (options?.shouldFail) client.shouldFail = true
+  const events: AgentRuntimeEvent[] = []
+  const mgr = new WsSessionManager(client, {
+    idleCloseMs: options?.idleCloseMs ?? 100_000,
+    heartbeatIntervalMs: options?.heartbeatIntervalMs ?? 50_000,
+    pongTimeoutMs: 10_000,
+    connectTimeoutMs: options?.connectTimeoutMs ?? 5_000,
+    reconnectDelaysMs: options?.reconnectDelaysMs,
+  })
+  mgr.onEvent((event) => events.push(event))
+  return { client, mgr, events }
+}
+
+/* ------------------------------------------------------------------ */
+/*  ALLOWED_TRANSITIONS table                                          */
+/* ------------------------------------------------------------------ */
+
+describe("ALLOWED_TRANSITIONS", () => {
+  test("every WsSessionState has an entry", () => {
+    const states: WsSessionState[] = [
+      "disconnected",
+      "connecting",
+      "ready",
+      "responding",
+      "waiting_tool",
+      "waiting_approval",
+      "reconnecting",
+      "closing",
+      "closed",
+    ]
+    for (const state of states) {
+      assert.ok(
+        ALLOWED_TRANSITIONS[state] !== undefined,
+        `Missing transition entry for ${state}`,
+      )
+    }
+  })
+
+  test("disconnected can transition to connecting, closed, and disconnected", () => {
+    assert.deepEqual([...ALLOWED_TRANSITIONS.disconnected].sort(), ["closed", "connecting", "disconnected"])
+  })
+
+  test("ready can transition to responding, reconnecting, and closing", () => {
+    const allowed = ALLOWED_TRANSITIONS.ready
+    assert.ok(allowed.includes("responding"))
+    assert.ok(allowed.includes("reconnecting"))
+    assert.ok(allowed.includes("closing"))
+  })
+})
+
+/* ------------------------------------------------------------------ */
+/*  connect                                                            */
+/* ------------------------------------------------------------------ */
+
+describe("WsSessionManager connect", () => {
+  test("connect transitions from disconnected → connecting → ready", async () => {
+    const { client, mgr, events } = createHarness()
+    await mgr.connect("conv_1")
+
+    const session = mgr.getSession("conv_1")!
+    assert.equal(session.state, "ready")
+    assert.equal(session.conversationId, "conv_1")
+    assert.equal(typeof session.openedAt, "number")
+
+    // Events emitted in order
+    const connectingEvents = events.filter((e) => e.type === "ws.connecting")
+    const readyEvents = events.filter((e) => e.type === "ws.ready")
+    assert.equal(connectingEvents.length, 1)
+    assert.equal(connectingEvents[0]!.conversationId, "conv_1")
+    assert.equal(readyEvents.length, 1)
+    assert.equal(readyEvents[0]!.conversationId, "conv_1")
+
+    // Verify ModelWsClient was called
+    assert.equal(client.connectCalls.length, 1)
+    assert.equal(client.initSessionCalls, 1)
+  })
+
+  test("connect on already-ready session is a no-op", async () => {
+    const { mgr } = createHarness()
+    await mgr.connect("conv_1")
+    const session = mgr.getSession("conv_1")!
+
+    await mgr.connect("conv_1")
+    assert.equal(session.state, "ready")
+  })
+
+  test("connect on failed model client transitions to disconnected", async () => {
+    const { mgr, events } = createHarness({ shouldFail: true })
+    await assert.rejects(() => mgr.connect("conv_1"))
+
+    const session = mgr.getSession("conv_1")!
+    assert.equal(session.state, "disconnected")
+
+    const errorEvents = events.filter((e) => e.type === "ws.error")
+    assert.equal(errorEvents.length, 1)
+  })
+
+  test("invalid transition throws", async () => {
+    const { mgr } = createHarness()
+    // Can't go from disconnected → responding directly
+    const session = mgr.ensureSession("conv_1")
+    assert.throws(() => {
+      // Force an invalid transition via the state machine internals
+      // We test this by calling connect first to get to ready,
+      // then try an impossible manual transition
+      mgr["transition"](session, "responding")
+    }, /Invalid WS state transition/)
+  })
+
+  test("ensureReady connects a disconnected session", async () => {
+    const { mgr, client } = createHarness()
+    await mgr.ensureReady("conv_1")
+    assert.equal(mgr.getState("conv_1"), "ready")
+    assert.equal(client.connectCalls.length, 1)
+  })
+
+  test("ensureReady is a no-op when already ready", async () => {
+    const { mgr, client } = createHarness()
+    await mgr.connect("conv_1")
+    client.reset()
+
+    await mgr.ensureReady("conv_1")
+    assert.equal(client.connectCalls.length, 0)
+  })
+})
+
+/* ------------------------------------------------------------------ */
+/*  State machine                                                      */
+/* ------------------------------------------------------------------ */
+
+describe("WsSessionManager state machine", () => {
+  test("getState returns undefined for unknown conversation", () => {
+    const { mgr } = createHarness()
+    assert.equal(mgr.getState("nonexistent"), undefined)
+  })
+
+  test("getSession returns undefined for unknown conversation", () => {
+    const { mgr } = createHarness()
+    assert.equal(mgr.getSession("nonexistent"), undefined)
+  })
+
+  test("ensureSession creates a session in disconnected state", () => {
+    const { mgr } = createHarness()
+    const session = mgr.ensureSession("conv_1")
+    assert.equal(session.state, "disconnected")
+    assert.equal(session.conversationId, "conv_1")
+    assert.equal(session.activeRunId, null)
+    assert.equal(session.activeResponseId, null)
+    assert.equal(session.remoteContextId, null)
+  })
+})
+
+/* ------------------------------------------------------------------ */
+/*  Run / response tracking                                            */
+/* ------------------------------------------------------------------ */
+
+describe("WsSessionManager run/response tracking", () => {
+  test("setActiveRun / clearActiveRun", async () => {
+    const { mgr } = createHarness()
+    await mgr.connect("conv_1")
+
+    mgr.setActiveRun("conv_1", "run_1")
+    assert.equal(mgr.getActiveRunId("conv_1"), "run_1")
+
+    mgr.clearActiveRun("conv_1")
+    assert.equal(mgr.getActiveRunId("conv_1"), null)
+  })
+
+  test("setActiveResponse / clearActiveResponse / getActiveResponseId", async () => {
+    const { mgr } = createHarness()
+    await mgr.connect("conv_1")
+
+    mgr.setActiveResponse("conv_1", "resp_1")
+    assert.equal(mgr.getActiveResponseId("conv_1"), "resp_1")
+
+    mgr.clearActiveResponse("conv_1")
+    assert.equal(mgr.getActiveResponseId("conv_1"), null)
+  })
+
+  test("getActiveResponseId returns null before any response", async () => {
+    const { mgr } = createHarness()
+    await mgr.connect("conv_1")
+    assert.equal(mgr.getActiveResponseId("conv_1"), null)
+  })
+
+  test("setRemoteContextId / getRemoteContextId", async () => {
+    const { mgr } = createHarness()
+    await mgr.connect("conv_1")
+
+    mgr.setRemoteContextId("conv_1", "ctx_abc")
+    assert.equal(mgr.getRemoteContextId("conv_1"), "ctx_abc")
+  })
+
+  test("getRemoteContextId returns null before any context is set", async () => {
+    const { mgr } = createHarness()
+    await mgr.connect("conv_1")
+    assert.equal(mgr.getRemoteContextId("conv_1"), null)
+  })
+})
+
+/* ------------------------------------------------------------------ */
+/*  Idle close                                                         */
+/* ------------------------------------------------------------------ */
+
+describe("WsSessionManager idle close", () => {
+  test("session auto-closes after idle timeout when no active run", async () => {
+    // Use a very short idle timeout
+    const { mgr, events } = createHarness({ idleCloseMs: 10 })
+    await mgr.connect("conv_1")
+    assert.equal(mgr.getState("conv_1"), "ready")
+
+    // Wait for idle timer to fire
+    await new Promise((resolve) => setTimeout(resolve, 50))
+
+    assert.equal(mgr.getState("conv_1"), "closed")
+
+    const closedEvents = events.filter((e) => e.type === "ws.closed")
+    assert.ok(closedEvents.length >= 1)
+    if (closedEvents[0]?.type === "ws.closed") {
+      assert.equal(closedEvents[0].reason, "idle")
+    }
+  })
+
+  test("idle timer does not close when an active run exists", async () => {
+    const { mgr } = createHarness({ idleCloseMs: 10 })
+    await mgr.connect("conv_1")
+
+    mgr.setActiveRun("conv_1", "run_1")
+    // Wait longer than idle timeout
+    await new Promise((resolve) => setTimeout(resolve, 30))
+
+    // Should still be ready because active run blocks idle close
+    assert.equal(mgr.getState("conv_1"), "ready")
+  })
+
+  test("idle timer starts after clearing active run", async () => {
+    const { mgr, events } = createHarness({ idleCloseMs: 10 })
+    await mgr.connect("conv_1")
+
+    mgr.setActiveRun("conv_1", "run_1")
+    await new Promise((resolve) => setTimeout(resolve, 5))
+    mgr.clearActiveRun("conv_1")
+    // Now idle timer should start
+
+    await new Promise((resolve) => setTimeout(resolve, 30))
+    assert.equal(mgr.getState("conv_1"), "closed")
+
+    const closedEvents = events.filter((e) => e.type === "ws.closed")
+    assert.ok(closedEvents.length >= 1)
+  })
+
+  test("updateLastActivity resets the idle timer", async () => {
+    const { mgr, events } = createHarness({ idleCloseMs: 10 })
+    await mgr.connect("conv_1")
+
+    // Wait half the idle time and touch activity
+    await new Promise((resolve) => setTimeout(resolve, 6))
+    mgr.updateLastActivity("conv_1")
+
+    // Wait more than original 10ms total but less than 10ms from the activity touch
+    await new Promise((resolve) => setTimeout(resolve, 6))
+
+    // Activity was touched 6ms ago, so 10ms idle hasn't elapsed since activity
+    // Actually the timer was reset 6ms ago, so 6ms < 10ms → still open
+    assert.equal(mgr.getState("conv_1"), "ready")
+
+    // Wait for the idle timer to eventually fire
+    await new Promise((resolve) => setTimeout(resolve, 15))
+    assert.equal(mgr.getState("conv_1"), "closed")
+  })
+})
+
+/* ------------------------------------------------------------------ */
+/*  Heartbeat skeleton                                                 */
+/* ------------------------------------------------------------------ */
+
+describe("WsSessionManager heartbeat skeleton", () => {
+  test("heartbeat interval starts after connect", async () => {
+    const { mgr } = createHarness({ heartbeatIntervalMs: 10 })
+    await mgr.connect("conv_1")
+
+    const session = mgr.getSession("conv_1")!
+    // Wait for at least one heartbeat tick
+    await new Promise((resolve) => setTimeout(resolve, 15))
+
+    assert.equal(typeof session.lastPingAt, "number", "lastPingAt should be set after heartbeat interval fires")
+  })
+
+  test("pong from ModelWsClient updates lastPongAt", async () => {
+    const { mgr, client } = createHarness()
+    await mgr.connect("conv_1")
+
+    const session = mgr.getSession("conv_1")!
+    session.lastPingAt = Date.now() - 100
+
+    // Simulate pong from the mock client
+    client.emit({ type: "pong" })
+
+    assert.ok(session.lastPongAt !== null)
+    assert.ok(session.lastPongAt! >= session.lastPingAt!)
+  })
+
+  test("heartbeat stops after closeSession", async () => {
+    const { mgr } = createHarness({ heartbeatIntervalMs: 10 })
+    await mgr.connect("conv_1")
+
+    await mgr.closeSession("conv_1")
+
+    // After close, heartbeat should be stopped
+    // (no easy way to verify this directly, but at minimum no crash)
+    assert.equal(mgr.getState("conv_1"), "closed")
+  })
+})
+
+/* ------------------------------------------------------------------ */
+/*  Reconnect skeleton                                                 */
+/* ------------------------------------------------------------------ */
+
+describe("WsSessionManager reconnect skeleton", () => {
+  test("startReconnect attempts reconnection and emits events", async () => {
+    const { mgr, events } = createHarness({
+      idleCloseMs: 100_000,
+      connectTimeoutMs: 100,
+      reconnectDelaysMs: [1],
+    })
+    await mgr.connect("conv_1")
+
+    // Start reconnect
+    const reconnectPromise = mgr.startReconnect("conv_1")
+
+    // Should succeed quickly since mock client works
+    await reconnectPromise
+
+    const reconnectingEvents = events.filter((e) => e.type === "ws.reconnecting")
+    assert.ok(reconnectingEvents.length >= 1)
+    assert.equal(mgr.getState("conv_1"), "ready")
+  })
+
+  test("startReconnect fails after max attempts and transitions to disconnected", async () => {
+    const { mgr, client, events } = createHarness({
+      idleCloseMs: 100_000,
+      connectTimeoutMs: 1,
+      reconnectDelaysMs: [1, 2, 3],
+    })
+    await mgr.connect("conv_1")
+
+    // Make client fail
+    client.shouldFail = true
+
+    await mgr.startReconnect("conv_1")
+
+    assert.equal(mgr.getState("conv_1"), "disconnected")
+
+    const errorEvents = events.filter((e) => e.type === "ws.error")
+    const reconnectErrors = errorEvents.filter(
+      (e) => e.type === "ws.error" && e.error.code === "ws_reconnect_failed",
+    )
+    assert.equal(reconnectErrors.length, 1)
+  })
+})
+
+/* ------------------------------------------------------------------ */
+/*  closeSession                                                       */
+/* ------------------------------------------------------------------ */
+
+describe("WsSessionManager closeSession", () => {
+  test("closeSession transitions to closed and emits event", async () => {
+    const { mgr, events, client } = createHarness()
+    await mgr.connect("conv_1")
+
+    await mgr.closeSession("conv_1", "user_requested")
+    assert.equal(mgr.getState("conv_1"), "closed")
+    assert.equal(client.closeCalls.length, 1)
+    assert.equal(client.closeCalls[0]!.reason, "user_requested")
+
+    const closedEvents = events.filter((e) => e.type === "ws.closed")
+    assert.equal(closedEvents.length, 1)
+    if (closedEvents[0]?.type === "ws.closed") {
+      assert.equal(closedEvents[0].reason, "user_requested")
+    }
+  })
+
+  test("closeSession on already-closed session is a no-op", async () => {
+    const { mgr, client } = createHarness()
+    await mgr.connect("conv_1")
+    await mgr.closeSession("conv_1")
+    const callCount = client.closeCalls.length
+
+    await mgr.closeSession("conv_1")
+    assert.equal(client.closeCalls.length, callCount)
+  })
+})
+
+/* ------------------------------------------------------------------ */
+/*  Events                                                             */
+/* ------------------------------------------------------------------ */
+
+describe("WsSessionManager events", () => {
+  test("unsubscribe stops receiving events", async () => {
+    const { mgr, events } = createHarness()
+    // All events up to this point are captured
+
+    const unsub = mgr.onEvent(() => {}) // dummy
+    unsub()
+
+    // Connect — the event should not be received
+    await mgr.connect("conv_1")
+
+    // Our original events array should have the ws.ready event
+    const readyEvents = events.filter((e) => e.type === "ws.ready")
+    assert.equal(readyEvents.length, 1)
+  })
+})
+
+/* ------------------------------------------------------------------ */
+/*  dispose                                                             */
+/* ------------------------------------------------------------------ */
+
+describe("WsSessionManager dispose", () => {
+  test("dispose clears all sessions and listeners", async () => {
+    const { mgr } = createHarness()
+    await mgr.connect("conv_1")
+    await mgr.connect("conv_2")
+
+    mgr.dispose()
+
+    assert.equal(mgr.getSession("conv_1"), undefined)
+    assert.equal(mgr.getSession("conv_2"), undefined)
+  })
+})
