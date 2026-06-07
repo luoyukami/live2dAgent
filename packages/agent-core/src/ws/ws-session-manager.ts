@@ -21,6 +21,7 @@ import type {
 import type { ModelWsClient } from "./model-ws-client.js"
 import type { ModelWsEvent } from "./model-ws-client.js"
 import { WS_RUNTIME_CONSTANTS } from "./ws-runtime-constants.js"
+import { RuntimeErrors } from "./ws-errors.js"
 
 /* ------------------------------------------------------------------ */
 /*  Types                                                              */
@@ -48,8 +49,8 @@ const ALLOWED_TRANSITIONS: Record<WsSessionState, readonly WsSessionState[]> = {
   connecting: ["ready", "disconnected", "closed"],
   ready: ["responding", "reconnecting", "closing", "disconnected", "connecting"],
   responding: ["ready", "waiting_tool", "waiting_approval", "reconnecting"],
-  waiting_tool: ["responding", "waiting_approval"],
-  waiting_approval: ["waiting_tool", "responding", "ready"],
+  waiting_tool: ["responding", "waiting_approval", "reconnecting", "disconnected"],
+  waiting_approval: ["waiting_tool", "responding", "ready", "reconnecting", "disconnected"],
   reconnecting: ["ready", "responding", "disconnected", "closed", "connecting"],
   closing: ["closed", "disconnected"],
   closed: ["disconnected", "connecting", "closed"],
@@ -74,6 +75,8 @@ export class WsSessionManager {
   private idleTimers = new Map<string, ReturnType<typeof setTimeout>>()
   /** Per-session heartbeat intervals */
   private heartbeatIntervals = new Map<string, ReturnType<typeof setInterval>>()
+  /** Guard: set of conversation IDs currently reconnecting (prevents concurrent reconnect). */
+  private reconnectingSessions = new Set<string>()
 
   constructor(modelWsClient: ModelWsClient, options?: WsSessionManagerOptions) {
     this.modelWsClient = modelWsClient
@@ -321,25 +324,30 @@ export class WsSessionManager {
         return
       }
 
-      // Record ping time
-      session.lastPingAt = Date.now()
+      const now = Date.now()
+      const hasUnansweredPing =
+        session.lastPingAt !== null &&
+        (session.lastPongAt === null || session.lastPongAt < session.lastPingAt)
 
-      // In a real implementation, we would send a ping command via ModelWsClient
-      // and expect a "pong" back. For the Phase 1 skeleton, we just track the timestamps.
-
-      // Check pong timeout: if we haven't received a pong within the window
-      if (session.lastPongAt !== null && session.lastPingAt !== null) {
-        const elapsed = Date.now() - session.lastPingAt
-        if (elapsed > this.pongTimeoutMs) {
-          // Connection may be dead — enter reconnecting.
-          // This is a skeleton for Phase 3.
+      if (hasUnansweredPing && now - session.lastPingAt! > this.pongTimeoutMs) {
+        this.startReconnect(conversationId).catch((err) => {
           this.emit({
-            type: "ws.reconnecting",
+            type: "ws.error",
             conversationId,
-            attempt: session.reconnectAttempt + 1,
+            error: {
+              code: "ws_reconnect_failed",
+              message: err instanceof Error ? err.message : "Heartbeat reconnect failed",
+              retryable: true,
+              cause: err,
+            },
           })
-        }
+        })
+        return
       }
+
+      // Record a new ping time. ModelWsClient-specific ping transport is supplied
+      // by provider implementations; this manager owns timeout/reconnect policy.
+      session.lastPingAt = now
     }, this.heartbeatIntervalMs)
     interval.unref?.()
 
@@ -354,68 +362,125 @@ export class WsSessionManager {
     }
   }
 
-  /* ---- Reconnect skeleton ---- */
+  /* ---- Reconnect ---- */
 
   /**
    * Initiate reconnection for a conversation.
-   * Uses the defined delay sequence. Skeleton for Phase 3.
+   *
+   * - Uses MAX_RECONNECT_ATTEMPTS to limit retries.
+   * - Emits ws.reconnecting per attempt.
+   * - On success: transitions to responding (if activeRunId/activeResponseId) or ready.
+   * - On failure: transitions to disconnected, emits ws.error with ws_reconnect_failed.
+   * - Guards against concurrent reconnect calls.
    */
   async startReconnect(conversationId: string): Promise<void> {
     const session = this.sessions.get(conversationId)
     if (!session) return
 
-    session.reconnectAttempt = 0
-    const delays = [...this.reconnectDelaysMs]
+    // Guard: prevent concurrent reconnect attempts
+    if (this.reconnectingSessions.has(conversationId)) return
+    this.reconnectingSessions.add(conversationId)
 
-    // First, ensure the session is in disconnected state so connect() will attempt a real connection
-    if (session.state !== "disconnected" && session.state !== "closed") {
-      this.transition(session, "disconnected")
-    }
+    try {
+      session.reconnectAttempt = 0
 
-    for (const delay of delays) {
-      session.reconnectAttempt += 1
-      this.emit({
-        type: "ws.reconnecting",
-        conversationId,
-        attempt: session.reconnectAttempt,
-      })
-
-      await this.delay(delay)
-
-      try {
-        await this.connect(conversationId)
-        // Success — back to ready
-        session.reconnectAttempt = 0
-        return
-      } catch {
-        // Try next delay
+      // Transition to reconnecting state (or disconnected if not allowed from current state)
+      const allowedFrom = ALLOWED_TRANSITIONS[session.state]
+      if (!allowedFrom?.includes("reconnecting")) {
+        try { this.transition(session, "disconnected") } catch { /* ignore */ }
+      } else {
+        try { this.transition(session, "reconnecting") } catch { /* ignore */ }
       }
-    }
 
-    // All attempts failed
-    session.reconnectAttempt = 0
-    this.transition(session, "disconnected")
-    this.emit({
-      type: "ws.error",
-      conversationId,
-      error: {
-        code: "ws_reconnect_failed",
-        message: "WebSocket reconnection failed after maximum attempts",
-        retryable: false,
-      },
-    })
+      const maxAttempts = WS_RUNTIME_CONSTANTS.MAX_RECONNECT_ATTEMPTS
+
+      for (let i = 0; i < maxAttempts; i++) {
+        session.reconnectAttempt += 1
+        this.emit({
+          type: "ws.reconnecting",
+          conversationId,
+          attempt: session.reconnectAttempt,
+        })
+
+        // Use the delay for this attempt (clamp to delay array bounds)
+        const delayMs = this.reconnectDelaysMs[Math.min(i, this.reconnectDelaysMs.length - 1)]
+        await this.delay(delayMs)
+
+        try {
+          await this.connect(conversationId)
+          // Success — determine target state
+          session.reconnectAttempt = 0
+          session.lastActivityAt = Date.now()
+
+          // connect() transitions to "ready" — check if we need "responding"
+          if (
+            (session.activeRunId !== null || session.activeResponseId !== null) &&
+            session.state === "ready"
+          ) {
+            this.transition(session, "responding")
+          }
+          // If already "responding" or "ready", stay as-is
+          return
+        } catch {
+          // Try next delay
+        }
+      }
+
+      // All attempts failed
+      session.reconnectAttempt = 0
+      this.transition(session, "disconnected")
+      this.emit({
+        type: "ws.error",
+        conversationId,
+        error: RuntimeErrors.wsReconnectFailed(),
+      })
+    } finally {
+      this.reconnectingSessions.delete(conversationId)
+    }
   }
 
   /* ---- ModelWS event handler ---- */
 
   private handleModelWsEvent(event: ModelWsEvent): void {
-    if (event.type === "pong") {
-      for (const session of this.sessions.values()) {
-        session.lastPongAt = Date.now()
-      }
+    switch (event.type) {
+      case "pong":
+        for (const session of this.sessions.values()) {
+          session.lastPongAt = Date.now()
+        }
+        break
+
+      case "closed":
+        // Unexpected close — trigger reconnect for active sessions
+        for (const session of this.sessions.values()) {
+          // Skip sessions already closed, disconnected, or in closing state
+          if (
+            session.state === "closed" ||
+            session.state === "disconnected" ||
+            session.state === "closing"
+          ) continue
+          // Unexpected close for this session
+          this.emit({
+            type: "ws.error",
+            conversationId: session.conversationId,
+            error: RuntimeErrors.wsClosedUnexpectedly(),
+          })
+          this.startReconnect(session.conversationId)
+        }
+        break
+
+      case "error":
+        // WS error — trigger reconnect for all active sessions
+        for (const session of this.sessions.values()) {
+          if (
+            session.state === "closed" ||
+            session.state === "disconnected" ||
+            session.state === "closing" ||
+            session.state === "reconnecting"
+          ) continue
+          this.startReconnect(session.conversationId)
+        }
+        break
     }
-    // Other events (closed, error) are handled by the RunController
-    // or can trigger reconnect logic in future phases.
   }
 
   /* ---- State machine ---- */
@@ -473,6 +538,7 @@ export class WsSessionManager {
     }
     this.sessions.clear()
     this.eventListeners.clear()
+    this.reconnectingSessions.clear()
   }
 }
 

@@ -25,6 +25,7 @@ import type { ToolRegistry } from "../tool-registry.js"
 import type { ConversationManager } from "../conversation/conversation-manager.js"
 import type { WsSessionManager } from "../ws/ws-session-manager.js"
 import { WS_RUNTIME_CONSTANTS } from "../ws/ws-runtime-constants.js"
+import { RuntimeErrors } from "../ws/ws-errors.js"
 import { processToolCalls, type ArtifactWriter, type ToolCallProcessResult } from "../tools/tool-runtime.js"
 
 /* ------------------------------------------------------------------ */
@@ -87,6 +88,7 @@ export class RunController {
   private deltaFlushTimer: ReturnType<typeof setTimeout> | null = null
 
   private modelWsUnsubscribe: (() => void) | null = null
+  private wsSessionUnsubscribe: (() => void) | null = null
 
   /* ---- Phase 2: tool call state ---- */
 
@@ -94,6 +96,13 @@ export class RunController {
   private pendingToolCalls = new Map<string, WsToolCall[]>()
   /** Continuation counter per run ID. */
   private continuationCount = new Map<string, number>()
+
+  /* ---- Phase 3: replay tracking ---- */
+
+  /** Replay count per conversation (max 1). */
+  private replayCount = new Map<string, number>()
+  /** Original user message text per run ID for replay. */
+  private runUserText = new Map<string, string>()
 
   constructor(
     private conversationManager: ConversationManager,
@@ -105,6 +114,12 @@ export class RunController {
     this.modelWsUnsubscribe = this.modelWsClient.onEvent((event) =>
       this.handleModelWsEvent(event),
     )
+    // Subscribe to WS session events for reconnect failure handling
+    this.wsSessionUnsubscribe = this.wsSessionManager.onEvent((event) => {
+      if (event.type === "ws.error" && event.error.code === "ws_reconnect_failed") {
+        this.handleReconnectFailed(event.conversationId)
+      }
+    })
   }
 
   /* ---- Event bus ---- */
@@ -132,8 +147,8 @@ export class RunController {
    * Enqueue (or immediately start) a user message for the given conversation.
    *
    * - If there is no active run, starts one immediately.
-   * - If an active run exists, the message is queued.
-   * - If the queue is full, throws an error.
+   * - If an active run exists, the message is queued with a real run ID.
+   * - If the queue is full, throws a RuntimeErrorPayload with code conversation_queue_full.
    */
   async enqueueUserMessage(conversationId: string, text: string): Promise<void> {
     const conv = this.conversationManager.getConversation(conversationId)
@@ -144,14 +159,39 @@ export class RunController {
     // Check if there's an active run
     const activeRun = this.getActiveRun(conversationId)
     if (activeRun) {
-      // Queue the message
+      // Queue the message with a real run ID
       const queue = this.getOrCreateQueue(conversationId)
       if (queue.length >= WS_RUNTIME_CONSTANTS.MAX_QUEUED_USER_MESSAGES_PER_CONVERSATION) {
-        throw new Error("Conversation queue is full")
+        // Use RuntimeErrorPayload with conversation_queue_full code
+        const error = RuntimeErrors.conversationQueueFull()
+        const runId = this.generateId("run_q")
+        this.emit({
+          type: "run.failed",
+          conversationId,
+          runId,
+          error,
+        })
+        throw error
       }
+
+      // Create a queued run entry with traceable ID
+      const now = Date.now()
+      const queuedRun: AgentRun = {
+        id: this.generateId("run_q"),
+        conversationId,
+        status: "queued",
+        userMessageId: "",
+        assistantMessageId: null,
+        startedAt: now,
+        updatedAt: now,
+        completedAt: null,
+        stepIndex: 0,
+        toolCallCount: 0,
+      }
+      this.runs.set(queuedRun.id, queuedRun)
       queue.push({ content: text, conversationId })
-      // Emit informational queued event
-      this.emit({ type: "run.queued", conversationId, runId: `${conversationId}_q_${Date.now()}` })
+      // Emit queued event with real run ID
+      this.emit({ type: "run.queued", conversationId, runId: queuedRun.id })
       return
     }
 
@@ -161,12 +201,19 @@ export class RunController {
 
   /**
    * Cancel the currently active run for a conversation.
+   *
+   * Flow: cancelling → cancelled
+   * - Saves partial assistant message (via flushDelta)
+   * - Calls modelWsClient.cancelResponse
+   * - Clears active response, transitions WS back to ready
+   * - Processes next queued message
    */
   async cancelRun(conversationId: string): Promise<void> {
     const run = this.getActiveRun(conversationId)
-    if (!run) return
+    if (!run || run.status === "cancelled" || run.status === "completed" || run.status === "failed") return
 
     run.status = "cancelling"
+    run.updatedAt = Date.now()
 
     // Tell the model to cancel
     const responseId = this.wsSessionManager.getActiveResponseId(conversationId)
@@ -178,7 +225,7 @@ export class RunController {
       }
     }
 
-    // Flush any pending delta
+    // Flush any pending delta (saves partial assistant message content)
     this.flushDelta()
 
     // Mark cancelled
@@ -190,11 +237,56 @@ export class RunController {
     this.pendingToolCalls.delete(run.id)
     this.continuationCount.delete(run.id)
 
-    this.wsSessionManager.clearActiveRun(conversationId)
-    this.wsSessionManager.clearActiveResponse(conversationId)
-
     this.emit({ type: "run.cancelled", conversationId, runId: run.id })
-    this.clearDeltaState()
+
+    // Cleanup: transition WS to ready, clear active run/response, process queue
+    this.cleanupAfterRun(conversationId)
+  }
+
+  /* ---- Phase 3: reconnect & replay ---- */
+
+  /**
+   * Handle reconnect failure for a conversation.
+   *
+   * Flow:
+   *   1. If there is an active run, fail it.
+   *   2. If the user message is replayable (max 1), start a new run.
+   *   3. If replay already attempted, emit run_replay_failed.
+   */
+  private handleReconnectFailed(conversationId: string): void {
+    const activeRunId = this.wsSessionManager.getActiveRunId(conversationId)
+    if (!activeRunId) return
+
+    const run = this.runs.get(activeRunId)
+    if (!run) return
+
+    const userText = this.runUserText.get(activeRunId)
+    if (!userText) {
+      // No user text stored — can't replay, fail with run_replay_failed
+      this.failRun(run, RuntimeErrors.runReplayFailed())
+      return
+    }
+
+    const replayCount = this.replayCount.get(conversationId) ?? 0
+    if (replayCount >= 1) {
+      // Already replayed once — fail with run_replay_failed
+      this.failRun(run, RuntimeErrors.runReplayFailed())
+      return
+    }
+
+    // Mark replay count
+    this.replayCount.set(conversationId, replayCount + 1)
+
+    // Fail current run (triggers cleanupAfterRun → processes queue → clears active run)
+    this.failRun(run, RuntimeErrors.wsReconnectFailed())
+
+    // Start replay run after current cleanup completes
+    // Use queueMicrotask to let the current failRun/cleanupAfterRun call stack finish
+    queueMicrotask(() => {
+      this.startRun(conversationId, userText).catch((err) => {
+        console.error("[RunController] Replay failed:", err)
+      })
+    })
   }
 
   /** Dispose all resources. */
@@ -207,11 +299,17 @@ export class RunController {
       this.modelWsUnsubscribe()
       this.modelWsUnsubscribe = null
     }
+    if (this.wsSessionUnsubscribe) {
+      this.wsSessionUnsubscribe()
+      this.wsSessionUnsubscribe = null
+    }
     this.eventListeners.clear()
     this.queues.clear()
     this.runs.clear()
     this.pendingToolCalls.clear()
     this.continuationCount.clear()
+    this.replayCount.clear()
+    this.runUserText.clear()
     this.clearDeltaState()
   }
 
@@ -247,6 +345,8 @@ export class RunController {
       toolCallCount: 0,
     }
     this.runs.set(run.id, run)
+    // Store user text for potential replay
+    this.runUserText.set(run.id, text)
     // Initialize tool tracking for this run
     this.pendingToolCalls.set(run.id, [])
     this.continuationCount.set(run.id, 0)
@@ -374,6 +474,11 @@ export class RunController {
         if (!this.currentRunId) break
         const run = this.runs.get(this.currentRunId)
         if (!run) break
+        // Skip if already cancelled (cancelRun may have already processed this)
+        if (run.status === "cancelled" || run.status === "cancelling") {
+          this.cleanupAfterRun(run.conversationId)
+          break
+        }
         // Flush any remaining text before marking cancelled
         this.flushDelta()
         run.status = "cancelled"

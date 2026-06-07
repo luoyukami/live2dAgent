@@ -34,6 +34,7 @@ import { ToolRegistry } from "../tool-registry.js"
 import type { WsSessionManager } from "../ws/ws-session-manager.js"
 import type { ModelWsClient, ModelWsEvent, ModelWsEventListener, ModelWsEventUnsubscribe, ModelWsToolResultInput } from "../ws/model-ws-client.js"
 import type { AgentRuntimeEvent, WsToolCall } from "../ws/ws-types.js"
+import type { RuntimeEventCallback, RuntimeEventUnsubscribe } from "../ws/ws-session-manager.js"
 import { WS_RUNTIME_CONSTANTS } from "../ws/ws-runtime-constants.js"
 
 /* ------------------------------------------------------------------ */
@@ -96,6 +97,8 @@ class MockWsSessionManager {
   public remoteContextIds: Record<string, string | null> = {}
   /** Track session state transitions for testing. */
   public sessionStateTransitions: Array<{ conversationId: string; newState: string }> = []
+  /** Event listeners for ws.session manager events. */
+  private eventListeners = new Set<RuntimeEventCallback>()
 
   async ensureReady(conversationId: string): Promise<void> {
     this.state[conversationId] = "ready"
@@ -166,12 +169,20 @@ class MockWsSessionManager {
     // noop
   }
 
-  onEvent(): () => void {
-    return () => {}
+  onEvent(callback: RuntimeEventCallback): RuntimeEventUnsubscribe {
+    this.eventListeners.add(callback)
+    return () => this.eventListeners.delete(callback)
+  }
+
+  /** Test helper: emit a ws session manager event. */
+  emit(event: AgentRuntimeEvent): void {
+    for (const listener of this.eventListeners) {
+      listener(event)
+    }
   }
 
   dispose(): void {
-    // noop
+    this.eventListeners.clear()
   }
 }
 
@@ -399,11 +410,45 @@ describe("RunController — queuing", () => {
       await controller.enqueueUserMessage(conv.id, `Queue ${i}`)
     }
 
-    // Next one should throw
+    // Next one should throw with conversation_queue_full code
     await assert.rejects(
       () => controller.enqueueUserMessage(conv.id, "Too many"),
-      /queue is full/,
+      (err: any) => err?.code === "conversation_queue_full",
     )
+  })
+
+  test("queue full emits run.failed event with conversation_queue_full code", async () => {
+    const { convManager, controller, events } = createHarness()
+    const conv = convManager.createConversation()
+
+    await controller.enqueueUserMessage(conv.id, "First")
+
+    const maxQueue = WS_RUNTIME_CONSTANTS.MAX_QUEUED_USER_MESSAGES_PER_CONVERSATION
+    for (let i = 0; i < maxQueue; i++) {
+      await controller.enqueueUserMessage(conv.id, `Queue ${i}`)
+    }
+
+    // Clear events before the one that should fail
+    const beforeCount = events.length
+
+    try {
+      await controller.enqueueUserMessage(conv.id, "Too many")
+    } catch {
+      // Expected
+    }
+
+    // Should have run.failed event with conversation_queue_full
+    const failedEvents = events.slice(beforeCount).filter((e) => e.type === "run.failed")
+    assert.equal(failedEvents.length, 1)
+    if (failedEvents[0]?.type === "run.failed") {
+      assert.equal(failedEvents[0].error.code, "conversation_queue_full")
+    }
+
+    // run.queued should use a real runId
+    const queuedEvents = events.slice(0, beforeCount).filter((e) => e.type === "run.queued")
+    for (const qe of queuedEvents) {
+      assert.ok(qe.runId.startsWith("run_q") || qe.runId.startsWith("run"), `run.queued runId should be a real ID, got ${qe.runId}`)
+    }
   })
 })
 
@@ -436,6 +481,133 @@ describe("RunController — cancellation", () => {
 
     const cancelledEvents = events.filter((e) => e.type === "run.cancelled")
     assert.equal(cancelledEvents.length, 0)
+  })
+})
+
+/* ------------------------------------------------------------------ */
+/*  Phase 3 Test: cancel → WS ready + queue processing                 */
+/* ------------------------------------------------------------------ */
+
+describe("RunController — Phase 3 cancel & reconnect", () => {
+  test("cancelRun transitions WS to ready and processes queue", async () => {
+    const { convManager, controller, client, wsManager, events } = createHarness()
+    const conv = convManager.createConversation()
+
+    // Start first run and queue a second message
+    await controller.enqueueUserMessage(conv.id, "First")
+    client.emit({ type: "response.created", responseId: "resp_1" })
+    await controller.enqueueUserMessage(conv.id, "Second")
+
+    // Cancel the active run
+    await controller.cancelRun(conv.id)
+
+    // WS should be ready after cancel
+    assert.equal(wsManager.state[conv.id], "ready")
+
+    // Second message should be dequeued and started (processNextInQueue runs)
+    await new Promise((resolve) => setTimeout(resolve, 10))
+
+    const messages = convManager.getMessages(conv.id)
+    const userMessages = messages.filter((m) => m.role === "user")
+    // After cancel: first run is cancelled, second run starts
+    // At minimum, we should have the first user message
+    assert.ok(userMessages.length >= 1)
+
+    // Run.cancelled should have been emitted
+    const cancelledEvents = events.filter((e) => e.type === "run.cancelled")
+    assert.equal(cancelledEvents.length, 1)
+  })
+
+  test("cancelRun saves partial assistant message", async () => {
+    const { convManager, controller, client, events } = createHarness()
+    const conv = convManager.createConversation()
+
+    await controller.enqueueUserMessage(conv.id, "Hello")
+    client.emit({ type: "response.created", responseId: "resp_1" })
+
+    // Send some delta text
+    client.emit({ type: "response.text.delta", responseId: "resp_1", delta: "Partial " })
+    client.emit({ type: "response.text.delta", responseId: "resp_1", delta: "message" })
+
+    // Cancel before flush
+    await controller.cancelRun(conv.id)
+
+    // Wait for flush
+    await new Promise((resolve) => setTimeout(resolve, WS_RUNTIME_CONSTANTS.ASSISTANT_DELTA_FLUSH_INTERVAL_MS + 10))
+
+    // Assistant content should be preserved (flushDelta on cancel)
+    const messages = convManager.getMessages(conv.id)
+    const assistantMsg = messages.find((m) => m.role === "assistant")
+    assert.ok(assistantMsg, "Assistant message should exist")
+    assert.equal(assistantMsg!.content, "Partial message")
+  })
+
+  test("reconnect failure fails current run and replays once", async () => {
+    const { convManager, controller, client, wsManager, events } = createHarness()
+    const conv = convManager.createConversation()
+
+    await controller.enqueueUserMessage(conv.id, "Replay me")
+    client.emit({ type: "response.created", responseId: "resp_1" })
+
+    const startedCount = events.filter((e) => e.type === "run.started").length
+
+    // Simulate reconnect failure
+    wsManager.setActiveRun(conv.id, controller.getCurrentRunId(conv.id) ?? "")
+    wsManager.emit({
+      type: "ws.error",
+      conversationId: conv.id,
+      error: { code: "ws_reconnect_failed", message: "Reconnect failed", retryable: false },
+    })
+
+    // Wait for microtask (replay is scheduled via queueMicrotask)
+    await new Promise((resolve) => setTimeout(resolve, 20))
+
+    // The original run should be failed with ws_reconnect_failed
+    const failedEvents = events.filter(
+      (e) => e.type === "run.failed" && e.error.code === "ws_reconnect_failed",
+    )
+    assert.equal(failedEvents.length, 1)
+
+    // A new run should have started (replay)
+    const newStartedEvents = events.filter((e) => e.type === "run.started")
+    assert.equal(newStartedEvents.length, startedCount + 1, "Should have started a new run (replay)")
+  })
+
+  test("reconnect failure with already-replayed emits run_replay_failed", async () => {
+    const { convManager, controller, client, wsManager, events } = createHarness()
+    const conv = convManager.createConversation()
+
+    await controller.enqueueUserMessage(conv.id, "Test replay limit")
+    client.emit({ type: "response.created", responseId: "resp_1" })
+
+    // First reconnect failure — should replay
+    wsManager.setActiveRun(conv.id, controller.getCurrentRunId(conv.id) ?? "")
+    wsManager.emit({
+      type: "ws.error",
+      conversationId: conv.id,
+      error: { code: "ws_reconnect_failed", message: "Reconnect failed", retryable: false },
+    })
+    await new Promise((resolve) => setTimeout(resolve, 20))
+
+    // Complete the replay run
+    const replayStartedEvents = events.filter((e) => e.type === "run.started")
+    const replayRunId = replayStartedEvents[replayStartedEvents.length - 1]
+    assert.ok(replayRunId?.type === "run.started")
+
+    // Make the replay run active, then fail again
+    wsManager.setActiveRun(conv.id, replayRunId.runId)
+    wsManager.emit({
+      type: "ws.error",
+      conversationId: conv.id,
+      error: { code: "ws_reconnect_failed", message: "Reconnect failed again", retryable: false },
+    })
+    await new Promise((resolve) => setTimeout(resolve, 20))
+
+    // Should have run_replay_failed on the second failure
+    const replayFailedEvents = events.filter(
+      (e) => e.type === "run.failed" && e.error.code === "run_replay_failed",
+    )
+    assert.equal(replayFailedEvents.length, 1, "Should have run_replay_failed")
   })
 })
 

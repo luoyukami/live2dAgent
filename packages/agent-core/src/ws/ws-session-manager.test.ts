@@ -457,6 +457,139 @@ describe("WsSessionManager reconnect skeleton", () => {
 })
 
 /* ------------------------------------------------------------------ */
+/*  Phase 3: reconnect details — state after success / failure         */
+/* ------------------------------------------------------------------ */
+
+describe("WsSessionManager — Phase 3 reconnect details", () => {
+  test("reconnect success → ready when no active run/response", async () => {
+    const { mgr, events } = createHarness({
+      idleCloseMs: 100_000,
+      connectTimeoutMs: 100,
+      reconnectDelaysMs: [1],
+    })
+    await mgr.connect("conv_1")
+    // No active run or response set
+
+    await mgr.startReconnect("conv_1")
+
+    assert.equal(mgr.getState("conv_1"), "ready")
+
+    // Should emit at least one ws.reconnecting on the way
+    const reconEvents = events.filter((e) => e.type === "ws.reconnecting")
+    assert.ok(reconEvents.length >= 1)
+  })
+
+  test("reconnect success → responding when active run exists", async () => {
+    const { mgr, events } = createHarness({
+      idleCloseMs: 100_000,
+      connectTimeoutMs: 100,
+      reconnectDelaysMs: [1],
+    })
+    await mgr.connect("conv_1")
+
+    // Simulate an active run and response
+    mgr.setActiveRun("conv_1", "run_1")
+    mgr.setActiveResponse("conv_1", "resp_1")
+
+    await mgr.startReconnect("conv_1")
+
+    // Should end up in responding state
+    assert.equal(mgr.getState("conv_1"), "responding")
+  })
+
+  test("reconnect success → responding when active response exists (no run)", async () => {
+    const { mgr, events } = createHarness({
+      idleCloseMs: 100_000,
+      connectTimeoutMs: 100,
+      reconnectDelaysMs: [1],
+    })
+    await mgr.connect("conv_1")
+
+    // Simulate only an active response
+    mgr.setActiveResponse("conv_1", "resp_1")
+
+    await mgr.startReconnect("conv_1")
+
+    assert.equal(mgr.getState("conv_1"), "responding")
+  })
+
+  test("unexpected close triggers startReconnect", async () => {
+    const { mgr, client, events } = createHarness({
+      idleCloseMs: 100_000,
+      connectTimeoutMs: 100,
+      reconnectDelaysMs: [1],
+    })
+    await mgr.connect("conv_1")
+    assert.equal(mgr.getState("conv_1"), "ready")
+
+    // Clear events before unexpected close
+    const beforeCount = events.length
+
+    // Simulate unexpected close from ModelWsClient
+    client.emit({ type: "closed", code: 1006, reason: "connection lost" })
+
+    // Wait for reconnect attempt
+    await new Promise((resolve) => setTimeout(resolve, 10))
+
+    // Should have emitted ws.error (ws_closed_unexpectedly)
+    const errorEvents = events.slice(beforeCount).filter((e) => e.type === "ws.error")
+    assert.ok(errorEvents.length >= 1)
+    if (errorEvents[0]?.type === "ws.error") {
+      assert.equal(errorEvents[0].error.code, "ws_closed_unexpectedly")
+    }
+
+    // Should have reconnected (eventually ready or responding)
+    const finalState = mgr.getState("conv_1")
+    assert.ok(finalState === "ready" || finalState === "responding", `Expected ready or responding, got ${finalState}`)
+  })
+
+  test("unexpected error triggers startReconnect", async () => {
+    const { mgr, client, events } = createHarness({
+      idleCloseMs: 100_000,
+      connectTimeoutMs: 100,
+      reconnectDelaysMs: [1],
+    })
+    await mgr.connect("conv_1")
+    assert.equal(mgr.getState("conv_1"), "ready")
+
+    // Simulate error from ModelWsClient
+    client.emit({
+      type: "error",
+      error: { code: "ws_protocol_error", message: "Something went wrong", retryable: true },
+    })
+
+    // Wait for reconnect attempt
+    await new Promise((resolve) => setTimeout(resolve, 10))
+
+    // Should have reconnected (eventually ready or disconnected if all attempts failed)
+    const finalState = mgr.getState("conv_1")
+    assert.ok(finalState !== "connecting" && finalState !== "reconnecting",
+      `Should have resolved to a terminal state, got ${finalState}`)
+  })
+
+  test("failing reconnect transitions to disconnected and emits ws_reconnect_failed", async () => {
+    const { mgr, client, events } = createHarness({
+      idleCloseMs: 100_000,
+      connectTimeoutMs: 1,
+      reconnectDelaysMs: [1, 2, 3],
+    })
+    await mgr.connect("conv_1")
+
+    // Make client fail
+    client.shouldFail = true
+
+    await mgr.startReconnect("conv_1")
+
+    assert.equal(mgr.getState("conv_1"), "disconnected")
+
+    const errorEvents = events.filter(
+      (e) => e.type === "ws.error" && e.error.code === "ws_reconnect_failed",
+    )
+    assert.equal(errorEvents.length, 1)
+  })
+})
+
+/* ------------------------------------------------------------------ */
 /*  closeSession                                                       */
 /* ------------------------------------------------------------------ */
 
