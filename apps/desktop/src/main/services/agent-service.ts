@@ -1134,12 +1134,8 @@ class ContextBuilderAdapter implements ContextBuilder {
               // If artifact cannot be read, skip — text content already included
             }
           } else {
-            // Historical turn: use file_ref instead of raw bytes
-            parts.push({
-              type: "file_ref",
-              artifactId: ref.id,
-              mime: ref.mimeType,
-            })
+            // Historical turn: provider does not support file_ref yet, so keep text metadata only.
+            parts.push({ type: "text", text: `Previous ${ref.mimeType.startsWith("image/") ? "image" : "audio"} artifact omitted: artifactId=${ref.id}, mime=${ref.mimeType}` })
           }
         }
         // Other types (tool-output, file-content) — skip, text is enough
@@ -1166,13 +1162,8 @@ class ContextBuilderAdapter implements ContextBuilder {
               // Skip if artifact cannot be read
             }
           } else {
-            // Historical turn: use file_ref for audio attachments too
-            parts.push({
-              type: "file_ref",
-              artifactId: att.artifact.id,
-              mime: att.mimeType,
-              name: att.label,
-            })
+            // Historical turn: provider does not support file_ref yet, so keep text metadata only.
+            parts.push({ type: "text", text: `Previous audio attachment omitted: artifactId=${att.artifact.id}, mime=${att.mimeType}, name=${att.label}` })
           }
         }
       }
@@ -1205,7 +1196,7 @@ class ContextBuilderAdapter implements ContextBuilder {
       for (let pi = 0; pi < content.length; pi++) {
         const part = content[pi]!
         if (part.type === "image" || part.type === "audio") {
-          const bytes = part.data.length
+          const bytes = Math.floor(part.data.length * 3 / 4)
           totalRawBytes += bytes
           parts.push({
             msgIdx: mi,
@@ -1218,7 +1209,18 @@ class ContextBuilderAdapter implements ContextBuilder {
       }
     }
 
-    if (totalRawBytes <= ContextBuilderAdapter.MAX_ARTIFACT_RAW_BYTES) return
+    if (totalRawBytes <= ContextBuilderAdapter.MAX_ARTIFACT_RAW_BYTES) {
+      for (const p of parts) {
+        if (p.bytes > ContextBuilderAdapter.MAX_ARTIFACT_RAW_BYTES) {
+          const content = modelMessages[p.msgIdx]!.content
+          content[p.partIdx] = {
+            type: "text",
+            text: `Raw artifact omitted because it exceeds request budget: artifactId=${p.artifactId}, mime=${p.mime}, bytes=${p.bytes}`,
+          }
+        }
+      }
+      return
+    }
 
     // Exceeded budget: replace earlier parts with file_ref, keep the last one
     // Keep the last artifact part inline, replace all others
@@ -1226,9 +1228,17 @@ class ContextBuilderAdapter implements ContextBuilder {
       const p = parts[i]!
       const content = modelMessages[p.msgIdx]!.content
       content[p.partIdx] = {
-        type: "file_ref",
-        artifactId: p.artifactId,
-        mime: p.mime,
+        type: "text",
+        text: `Raw artifact omitted because request budget was exceeded: artifactId=${p.artifactId}, mime=${p.mime}, bytes=${p.bytes}`,
+      }
+    }
+
+    const last = parts[parts.length - 1]
+    if (last && last.bytes > ContextBuilderAdapter.MAX_ARTIFACT_RAW_BYTES) {
+      const content = modelMessages[last.msgIdx]!.content
+      content[last.partIdx] = {
+        type: "text",
+        text: `Raw artifact omitted because it exceeds request budget: artifactId=${last.artifactId}, mime=${last.mime}, bytes=${last.bytes}`,
       }
     }
   }

@@ -127,6 +127,9 @@ class FakeProviderRuntime implements ProviderRuntime {
       if (item === "throw") {
         throw new Error("Fake provider error")
       }
+      if (item.type === "response.failed" && item.error.code === "ws_closed_unexpectedly") {
+        this._status = "closed"
+      }
       yield item
     }
 
@@ -147,6 +150,9 @@ class FakeProviderRuntime implements ProviderRuntime {
     for (const item of seq) {
       if (item === "throw") {
         throw new Error("Fake continuation error")
+      }
+      if (item.type === "response.failed" && item.error.code === "ws_closed_unexpectedly") {
+        this._status = "closed"
       }
       yield item
     }
@@ -1714,6 +1720,7 @@ describe("AssistantRuntime — retryable provider failure replay", () => {
 
     // Should have two create calls (initial + replay)
     assert.equal(provider.createCallCount, 2, "Should have replayed once")
+    assert.equal(provider.openCallCount, 1, "Should reopen provider before replay after WS close")
 
     // RemoteResponseId should be set to the second response
     assert.equal(store.getRemoteResponseId(conversationId), "resp_2")

@@ -90,7 +90,7 @@ export class MimoWsRuntime implements ProviderRuntime {
   private _conversationId: string | null = null
   private _remoteResponseId: string | null = null
   private _connectedAt: number | null = null
-  private _status: "disconnected" | "connecting" | "connected" | "closed" = "disconnected"
+  private _status: "disconnected" | "connecting" | "connected" | "closed" | "error" = "disconnected"
 
   private heartbeat: HeartbeatState = {
     timer: null,
@@ -170,6 +170,7 @@ export class MimoWsRuntime implements ProviderRuntime {
     conn.onError((_error) => {
       this.stopHeartbeat()
       this.stopIdleTimer()
+      this._status = "error"
     })
 
     await conn.connect(connectInput)

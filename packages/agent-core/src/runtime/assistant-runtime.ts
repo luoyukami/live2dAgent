@@ -629,6 +629,21 @@ export class AssistantRuntime {
             this.conversationStore.setRemoteResponseId(run.conversationId, null)
             run.remoteResponseId = null
 
+            const providerState = this.provider.getState()
+            if (providerState.status === "closed" || providerState.status === "disconnected" || providerState.status === "error") {
+              try {
+                await this.provider.open(run.conversationId)
+                this.emit({ type: "ws.ready", conversationId: run.conversationId })
+              } catch (err) {
+                const error = AssistantRuntimeErrors.providerError(
+                  err instanceof Error ? err.message : "Failed to reopen provider connection for replay",
+                  true,
+                )
+                this.failRun(run, error)
+                return
+              }
+            }
+
             // Rebuild input without remoteResponseId for full context
             const replayInput = this.contextBuilder.buildCreateInput({
               conversationId: run.conversationId,
