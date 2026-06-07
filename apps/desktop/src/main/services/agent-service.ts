@@ -14,6 +14,7 @@ import type { PromptService } from "./prompt-service.js"
 import type { SettingsService } from "./settings-service.js"
 import type { TraceService } from "./trace-service.js"
 import { AgentRuntimeEventBridge } from "../agent-runtime-event-bridge.js"
+import { resolveRuntimeMode } from "../runtime-mode.js"
 
 export interface AgentServiceDeps {
   settings: SettingsService
@@ -90,7 +91,12 @@ export class AgentService implements ToolRuntime {
     this.session = undefined
 
     const settings = this.deps.settings.get()
-    this.runtimeMode = settings.agent.runtimeMode ?? "ws"
+    const requestedMode = settings.agent.runtimeMode ?? "ws"
+    const resolution = resolveRuntimeMode(requestedMode, settings.openaiBaseUrl)
+    if (resolution.fallbackReason) {
+      console.warn(`[agent-service] ${resolution.fallbackReason}`)
+    }
+    this.runtimeMode = resolution.mode
 
     const definitions = this.deps.prompts.applyToolOverrides(createDefaultTools())
     const registry = new ToolRegistry()

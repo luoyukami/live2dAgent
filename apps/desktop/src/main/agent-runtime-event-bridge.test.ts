@@ -256,7 +256,7 @@ describe("AgentRuntimeEventBridge — run lifecycle", () => {
     assert.equal(events[0]!.type, "agent.idle")
   })
 
-  test("run.failed → agent.error + agent.idle", () => {
+  test("run.failed → agent.error + message.added (error bubble) + agent.idle", () => {
     const { bridge, events } = createHarness()
     bridge.process({
       type: "run.failed",
@@ -264,12 +264,22 @@ describe("AgentRuntimeEventBridge — run lifecycle", () => {
       runId: "run_1",
       error: { code: "provider_error", message: "Model error", retryable: true },
     })
-    assert.equal(events.length, 2)
+    assert.equal(events.length, 3)
     assert.equal(events[0]!.type, "agent.error")
-    assert.equal(events[1]!.type, "agent.idle")
     if (events[0]?.type === "agent.error") {
       assert.equal(events[0].error, "Model error")
     }
+    const bubble = events[1]
+    assert.equal(bubble?.type, "message.added")
+    if (bubble?.type === "message.added") {
+      assert.equal(bubble.message.role, "assistant")
+      assert.equal(typeof bubble.message.content, "string")
+      assert.match(bubble.message.content as string, /Model error/)
+      const err = bubble.message.extra?.error as { code?: string; message?: string } | undefined
+      assert.equal(err?.code, "provider_error")
+      assert.equal(err?.message, "Model error")
+    }
+    assert.equal(events[2]!.type, "agent.idle")
   })
 
   test("run.cancelled → agent.idle", () => {
@@ -407,19 +417,64 @@ describe("AgentRuntimeEventBridge — connection events", () => {
     assert.equal(events[0]!.type, "agent.idle")
   })
 
-  test("ws.closed → agent.error + agent.idle", () => {
+  test("ws.closed with abnormal reason → agent.error + error bubble + agent.idle", () => {
     const { bridge, events } = createHarness()
     bridge.process({
       type: "ws.closed",
       conversationId: "conv_1",
       reason: "connection lost",
     })
-    assert.equal(events.length, 2)
+    assert.equal(events.length, 3)
     assert.equal(events[0]!.type, "agent.error")
-    assert.equal(events[1]!.type, "agent.idle")
     if (events[0]?.type === "agent.error") {
       assert.match(events[0].error, /connection lost/i)
     }
+    const bubble = events[1]
+    assert.equal(bubble?.type, "message.added")
+    if (bubble?.type === "message.added") {
+      assert.equal(bubble.message.role, "assistant")
+      assert.equal(typeof bubble.message.content, "string")
+      assert.match(bubble.message.content as string, /connection lost/i)
+      const err = bubble.message.extra?.error as { code?: string } | undefined
+      assert.equal(err?.code, "WS_CLOSED")
+    }
+    assert.equal(events[2]!.type, "agent.idle")
+  })
+
+  test("ws.closed with empty reason is treated as abnormal (no false negatives)", () => {
+    const { bridge, events } = createHarness()
+    bridge.process({
+      type: "ws.closed",
+      conversationId: "conv_1",
+      reason: "",
+    })
+    // Empty reason should not silently disappear — surface as error.
+    assert.equal(events.length, 3)
+    assert.equal(events[0]!.type, "agent.error")
+    assert.equal(events[1]!.type, "message.added")
+    assert.equal(events[2]!.type, "agent.idle")
+  })
+
+  test("ws.closed with clean idle close reason → only agent.idle (no error bubble)", () => {
+    const { bridge, events } = createHarness()
+    bridge.process({
+      type: "ws.closed",
+      conversationId: "conv_1",
+      reason: "user_requested",
+    })
+    assert.equal(events.length, 1)
+    assert.equal(events[0]!.type, "agent.idle")
+  })
+
+  test("ws.closed with idle_close reason (alt phrasing) is treated as clean", () => {
+    const { bridge, events } = createHarness()
+    bridge.process({
+      type: "ws.closed",
+      conversationId: "conv_1",
+      reason: "idle_close:5m",
+    })
+    assert.equal(events.length, 1)
+    assert.equal(events[0]!.type, "agent.idle")
   })
 })
 

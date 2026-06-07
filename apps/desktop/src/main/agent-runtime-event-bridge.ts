@@ -74,8 +74,21 @@ export class AgentRuntimeEventBridge {
         break
 
       case "ws.closed":
-        this.emit({ type: "agent.error", error: `Connection closed: ${event.reason}` })
-        this.emit({ type: "agent.idle" })
+        {
+          const reason = event.reason ?? ""
+          // A clean idle close (e.g. "user_requested" emitted by
+          // WsSessionManager when the conversation goes quiet) should NOT
+          // surface as an assistant error bubble — that would be noise on
+          // every quiet period. Only forward non-clean closes.
+          if (isCleanCloseReason(reason)) {
+            this.emit({ type: "agent.idle" })
+          } else {
+            const text = `Connection closed: ${reason || "unknown reason"}`
+            this.emit({ type: "agent.error", error: text })
+            this.emitErrorMessage(text, "WS_CLOSED")
+            this.emit({ type: "agent.idle" })
+          }
+        }
         break
 
       /* ---- Run lifecycle ---- */
@@ -93,6 +106,7 @@ export class AgentRuntimeEventBridge {
 
       case "run.failed":
         this.emit({ type: "agent.error", error: event.error.message })
+        this.emitErrorMessage(event.error.message, event.error.code)
         this.emit({ type: "agent.idle" })
         break
 
@@ -199,11 +213,57 @@ export class AgentRuntimeEventBridge {
       }
     }
   }
+
+  /**
+   * Push a synthetic assistant message bubble for a runtime-level error.
+   * The renderer renders `extra.error` as a red error bubble, so emitting
+   * a `message.added` here makes the failure visible to the user instead
+   * of leaving the chat stuck on the user message.
+   *
+   * `code` is optional (e.g. "WS_CLOSED", "provider_error"). The renderer
+   * does not branch on it today, but keeping it on `extra.error.code`
+   * leaves room for future filtering.
+   */
+  private emitErrorMessage(message: string, code?: string): void {
+    const text = `⚠️ ${message}`
+    this.emit({
+      type: "message.added",
+      message: {
+        id: `msg_error_${Date.now()}_${Math.random().toString(36).slice(2, 9)}`,
+        role: "assistant",
+        content: text,
+        createdAt: Date.now(),
+        extra: {
+          error: { code: code ?? "RUNTIME_ERROR", message, recoverable: true },
+        },
+      },
+    })
+  }
 }
 
 /* ------------------------------------------------------------------ */
 /*  Helpers                                                             */
 /* ------------------------------------------------------------------ */
+
+/**
+ * Whether a `ws.closed` reason indicates a normal/idle close that should
+ * NOT surface to the user as an error. Matches the reasons emitted by
+ * WsSessionManager for clean shutdowns and the runtime's heartbeat/idle
+ * timers; anything else (network drop, 404, parse error, …) is treated
+ * as a real failure. An empty/undefined reason is treated as abnormal
+ * to avoid silently swallowing genuine failures.
+ */
+function isCleanCloseReason(reason: string): boolean {
+  const normalized = reason.trim().toLowerCase()
+  if (normalized === "") return false
+  return [
+    "user_requested",
+    "idle_close",
+    "shutdown",
+    "manual_close",
+    "client_closed",
+  ].some((token) => normalized === token || normalized.startsWith(`${token}:`))
+}
 
 function toolCallToAgentAction(toolCallId: string, name: string): AgentAction {
   return {
