@@ -42,6 +42,7 @@ export const DEFAULT_UI_SETTINGS: UiSettings = {
 
 export const DEFAULT_AGENT_SETTINGS: AgentSettings = {
   maxSteps: 20,
+  runtimeMode: "ws",
 }
 
 export const DEFAULT_PERMISSION_SETTINGS: PermissionSettings = {

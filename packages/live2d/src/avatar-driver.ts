@@ -66,6 +66,9 @@ export function mapEventToState(event: AgentEvent): AvatarState | null {
       return "error"
     /* Non-visual events — no state transition */
     case "message.added":
+    case "message.created":
+    case "message.delta":
+    case "message.completed":
     case "approval.approved":
     case "approval.denied":
     case "settings.updated":

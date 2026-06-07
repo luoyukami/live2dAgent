@@ -90,6 +90,23 @@ export type { ToolExecutionContext, ToolPermissionContext, RunControllerToolOpts
 export { ToolCallValidator, ToolOutputTruncator, processToolCalls } from "./tools/tool-runtime.js"
 export type { ArtifactMeta, ArtifactWriter, ValidationResult, TruncatedOutput, ToolCallProcessResult, ProcessToolCallsInput } from "./tools/tool-runtime.js"
 
+/* ---- AssistantRuntime (Phase 3) ---- */
+export { AssistantRuntime } from "./runtime/assistant-runtime.js"
+export type {
+  ConversationStore,
+  ContextBuilder,
+  ToolValidationResult,
+  ToolManager,
+} from "./runtime/assistant-runtime.js"
+export { AssistantRun } from "./runtime/assistant-run.js"
+export type { AssistantRunStatus } from "./runtime/assistant-run.js"
+export type { AssistantRuntimeEvent } from "./runtime/assistant-runtime-events.js"
+export type {
+  AssistantRuntimeError,
+  AssistantRuntimeErrorCode,
+} from "./runtime/runtime-errors.js"
+export { AssistantRuntimeErrors } from "./runtime/runtime-errors.js"
+
 /* ---- ContextManager (Phase 4) ---- */
 export { ContextManager, DefaultContextManager } from "./context/context-manager.js"
 export { estimateTokens, estimateMessageTokens } from "./context/token-budget.js"
@@ -101,3 +118,51 @@ export type {
   ModelInput,
 } from "./context/context-types.js"
 export { DEFAULT_CONTEXT_OPTIONS } from "./context/context-types.js"
+
+/* ---- Model Schema (Phase 1 — canonical types) ---- */
+export type {
+  ModelContentPart,
+  ModelMessage,
+} from "./model/model-message.js"
+export type {
+  ModelEvent,
+  TokenUsage,
+  ModelError,
+} from "./model/model-event.js"
+export type {
+  CanonicalToolDefinition,
+  CanonicalToolResult,
+  InternalToolDefinition,
+  ModelToolCall,
+  ValidatedToolCall,
+  ModelToolContext,
+  ToolExecutionResult,
+  JsonSchema,
+} from "./model/model-tool.js"
+export type {
+  ProviderRuntime,
+  ProviderRuntimeState,
+  CanonicalCreateInput,
+  CanonicalToolContinuationInput,
+} from "./model/model-runtime.js"
+export type {
+  ProviderRuntimeRegistry,
+  ProviderRuntimeFactory,
+  ProviderRuntimeFactoryInput,
+} from "./model/provider-runtime-registry.js"
+export { DefaultProviderRuntimeRegistry } from "./model/provider-runtime-registry.js"
+
+/* ---- Tool Schema Encoder (Phase 1) ---- */
+export { encodeToolSchemas } from "./tools/tool-schema.js"
+export type { ProviderToolSchema } from "./tools/tool-schema.js"
+
+/* ---- Tool Result Limiter (Phase 1) ---- */
+export { ToolResultLimiter } from "./tools/tool-result-limiter.js"
+export type {
+  LimitedOutput,
+  ToolResultLimiterOptions,
+} from "./tools/tool-result-limiter.js"
+
+/* ---- Doom Loop Detector (Phase 1) ---- */
+export { DoomLoopDetector, buildDoomLoopErrorOutput } from "./tools/doom-loop-detector.js"
+export type { DoomLoopResult } from "./tools/doom-loop-detector.js"

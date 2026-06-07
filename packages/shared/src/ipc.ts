@@ -15,6 +15,10 @@ export interface IpcSendUserMessageRequest {
    * by the main process / model adapter on demand.
    */
   attachments?: AudioContextAttachment[]
+  /** References to stored artifacts to include in the request. */
+  artifactRefs?: Array<{ id: string; kind: string; mimeType: string }>
+  /** Target conversation ID; defaults to activeConversationId when omitted. */
+  conversationId?: string
 }
 
 export interface IpcSaveAudioRecordingRequest {

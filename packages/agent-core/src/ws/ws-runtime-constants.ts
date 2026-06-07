@@ -8,11 +8,11 @@ export const WS_RUNTIME_CONSTANTS = {
   /** WS idle timeout in ms (240s). */
   IDLE_CLOSE_MS: 240_000,
 
-  /** Heartbeat ping interval in ms (20s). */
-  HEARTBEAT_INTERVAL_MS: 20_000,
+  /** Heartbeat ping interval in ms (30s). */
+  HEARTBEAT_INTERVAL_MS: 30_000,
 
   /** Time to wait for a pong after ping before considering the connection dead. */
-  PONG_TIMEOUT_MS: 8_000,
+  PONG_TIMEOUT_MS: 12_000,
 
   /** Connection establishment timeout in ms. */
   CONNECT_TIMEOUT_MS: 10_000,
@@ -47,8 +47,23 @@ export const WS_RUNTIME_CONSTANTS = {
   /** Max chars of tool result summary sent to model. */
   TOOL_RESULT_SUMMARY_CHAR_LIMIT: 1_200,
 
+  /** Chars from the head of a truncated tool result to include in the model output. */
+  TOOL_RESULT_HEAD_CHARS: 3_000,
+
+  /** Chars from the tail of a truncated tool result to include in the model output. */
+  TOOL_RESULT_TAIL_CHARS: 3_000,
+
+  /**
+   * Doom-loop detection threshold: same tool + identical args N times in a row
+   * is allowed; the (N+1)-th call is blocked.
+   */
+  DOOM_LOOP_THRESHOLD: 3,
+
   /** How often (ms) to flush accumulated assistant delta to conversation & IPC. */
   ASSISTANT_DELTA_FLUSH_INTERVAL_MS: 50,
+
+  /** Force-flush assistant delta when accumulated chars reach this threshold. */
+  ASSISTANT_DELTA_FORCE_FLUSH_CHARS: 512,
 
   /** Soft token limit — below this, send full window. */
   REQUEST_INPUT_SOFT_TOKEN_LIMIT: 48_000,

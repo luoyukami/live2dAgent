@@ -2,8 +2,8 @@ import { clipboard, desktopCapturer } from "electron"
 import { spawn } from "node:child_process"
 import { existsSync, mkdirSync, readFileSync, realpathSync, writeFileSync } from "node:fs"
 import { dirname, isAbsolute, resolve, relative } from "node:path"
-import { AgentSession, ContextManager, ConversationManager, EventBus, RunController, ToolRegistry, WsSessionManager, composeSystemPrompt, isEmotionPromptInjected, type AgentEvent, type AgentAction, type AgentRuntimeEvent, type ArtifactWriter, type ToolResult, type ToolRuntime, type ToolArtifact } from "@live2d-agent/agent-core"
-import { OpenAiCompatibleAdapter, OpenAiCompatibleWsClient } from "@live2d-agent/model-openai-compatible"
+import { AgentSession, AssistantRuntime, ContextManager, ConversationManager, DefaultProviderRuntimeRegistry, EventBus, RunController, ToolRegistry, WsSessionManager, composeSystemPrompt, isEmotionPromptInjected, ToolResultLimiter, type AgentEvent, type AgentAction, type AgentRuntimeEvent, type ArtifactWriter, type ToolResult, type ToolRuntime, type ToolArtifact, type ConversationStore, type ContextBuilder, type ToolManager, type ToolValidationResult, type CanonicalToolDefinition, type ModelToolCall, type ValidatedToolCall, type CanonicalToolResult, type CanonicalCreateInput, type CanonicalToolContinuationInput, type AssistantRuntimeEvent, type ProviderRuntime, type ModelMessage, type ModelContentPart } from "@live2d-agent/agent-core"
+import { OpenAiCompatibleAdapter, OpenAiCompatibleWsClient, MimoWsRuntime } from "@live2d-agent/model-openai-compatible"
 import { createDefaultTools, type RuntimeToolContext } from "@live2d-agent/tools"
 import type { ArtifactRef, AudioArtifactRef, AudioContextAttachment, DebugEmotionInfo, Emotion } from "@live2d-agent/shared"
 import type { EmotionSource } from "@live2d-agent/agent-core"
@@ -12,6 +12,7 @@ import type { PermissionService } from "./permission-service.js"
 import type { PromptService } from "./prompt-service.js"
 import type { SettingsService } from "./settings-service.js"
 import type { TraceService } from "./trace-service.js"
+import { AgentRuntimeEventBridge } from "../agent-runtime-event-bridge.js"
 
 export interface AgentServiceDeps {
   settings: SettingsService
@@ -34,7 +35,15 @@ export class AgentService implements ToolRuntime {
   private wsSessionManager?: WsSessionManager
   private runController?: RunController
   private session?: AgentSession
-  private useWsRuntime = true
+  /** New AssistantRuntime (Phase 3/4) — used when runtimeMode === "ws" */
+  private assistantRuntime?: AssistantRuntime
+  /** Bridge for AssistantRuntimeEvent → AgentEvent conversion */
+  private bridge = new AgentRuntimeEventBridge()
+  /** Unsubscribe from AssistantRuntime events */
+  private assistantRuntimeUnsub?: () => void
+  /** Unsubscribe from bridge events */
+  private bridgeUnsub?: () => void
+  private runtimeMode: "ws" | "http-legacy" = "ws"
   private events = new EventBus()
   private executors = new Map<string, (action: AgentAction) => Promise<ToolResult>>()
   private lastModelRequest?: unknown
@@ -70,15 +79,42 @@ export class AgentService implements ToolRuntime {
   }
 
   reconfigure(): void {
+    // Dispose old runtimes
     this.runController?.dispose()
     this.wsSessionManager?.dispose()
+    this.assistantRuntimeUnsub?.()
+    this.bridgeUnsub?.()
+    this.bridge.clear()
+    this.assistantRuntime = undefined
+    this.session = undefined
 
     const settings = this.deps.settings.get()
+    this.runtimeMode = settings.agent.runtimeMode ?? "ws"
+
     const definitions = this.deps.prompts.applyToolOverrides(createDefaultTools())
     const registry = new ToolRegistry()
     registry.register(...definitions)
     this.deps.permissions.setToolDefinitions(definitions)
 
+    this.executors = this.createExecutors()
+    this.conversationManager = new ConversationManager()
+    this.activeConversationId = this.conversationManager.createConversation("Default").id
+
+    if (this.runtimeMode === "http-legacy") {
+      this.setupHttpLegacy(settings, registry, definitions)
+    } else {
+      this.setupWsRuntime(settings, registry)
+    }
+  }
+
+  /**
+   * Set up the old HTTP-legacy path: AgentSession + OpenAiCompatibleAdapter.
+   */
+  private setupHttpLegacy(
+    settings: import("@live2d-agent/shared").AppSettings,
+    registry: ToolRegistry,
+    definitions: import("@live2d-agent/agent-core").ToolDefinition[],
+  ): void {
     const model = new OpenAiCompatibleAdapter({
       baseUrl: settings.openaiBaseUrl.replace(/\/$/, ""),
       apiKey: settings.openaiApiKey ?? "",
@@ -92,8 +128,6 @@ export class AgentService implements ToolRuntime {
       },
       audioInputEnabled: settings.voice.audioInputEnabled,
       audioReader: {
-        // Buffer extends Uint8Array; explicit cast keeps the adapter API
-        // platform-agnostic.
         readAudio: (ref) => this.deps.artifacts.readArtifact(ref) as Uint8Array,
       },
       onAudioSent: (info) => {
@@ -108,9 +142,6 @@ export class AgentService implements ToolRuntime {
       },
     })
 
-    this.executors = this.createExecutors()
-    this.conversationManager = new ConversationManager()
-    this.activeConversationId = this.conversationManager.createConversation("Default").id
     this.wsSessionManager = new WsSessionManager(() => new OpenAiCompatibleWsClient({
       baseUrl: settings.openaiBaseUrl.replace(/\/$/, ""),
       apiKey: settings.openaiApiKey ?? "",
@@ -119,8 +150,8 @@ export class AgentService implements ToolRuntime {
       onRawReceive: (response) => { this.lastModelResponse = response },
     }))
     this.runController = new RunController(
-      this.conversationManager,
-      this.wsSessionManager,
+      this.conversationManager!,
+      this.wsSessionManager!,
       {
         toolRegistry: registry,
         runtime: {
@@ -168,9 +199,79 @@ export class AgentService implements ToolRuntime {
     this.runController.onEvent((event) => this.captureRuntimeEvent(event))
     this.wsSessionManager.onEvent((event) => this.captureRuntimeEvent(event))
 
-    this.session = new AgentSession(model, registry, this, this.deps.permissions, this.deps.trace, this.events, {
+    const toolDefs = definitions.map((d) => ({
+      name: d.name,
+      description: d.description,
+      inputSchema: d.inputSchema,
+      permission: d.permission,
+    }))
+    const legacyRegistry = new ToolRegistry()
+    legacyRegistry.register(...toolDefs)
+    this.session = new AgentSession(model, legacyRegistry, this, this.deps.permissions, this.deps.trace, this.events, {
       maxSteps: settings.agent.maxSteps,
       emotion: settings.emotion,
+    })
+  }
+
+  /**
+   * Set up the default WS runtime path: AssistantRuntime + MimoWsRuntime.
+   */
+  private setupWsRuntime(
+    settings: import("@live2d-agent/shared").AppSettings,
+    registry: ToolRegistry,
+  ): void {
+    const systemPrompt = this.composeActiveSystemPrompt()
+
+    // Create ProviderRuntime via registry
+    // Note: MimoWsRuntimeConfig does not support onRawSend/onRawReceive hooks,
+    // so lastModelRequest/lastModelResponse will not be populated for the WS path.
+    // This is acceptable per plan §4 — hooks are best-effort diagnostics.
+    const providerRegistry = new DefaultProviderRuntimeRegistry()
+    providerRegistry.register("mimo", {
+      create: (input) => new MimoWsRuntime({
+        baseUrl: input.baseUrl,
+        apiKey: input.apiKey,
+        model: input.model,
+      }),
+    })
+    providerRegistry.register("openai-compatible", {
+      create: (input) => new MimoWsRuntime({
+        baseUrl: input.baseUrl,
+        apiKey: input.apiKey,
+        model: input.model,
+      }),
+    })
+
+    const provider = providerRegistry.create(
+      settings.openaiBaseUrl.includes("mimo") ? "mimo" : "openai-compatible",
+      {
+        providerId: settings.openaiBaseUrl.includes("mimo") ? "mimo" : "openai-compatible",
+        model: settings.openaiModel,
+        apiKey: settings.openaiApiKey ?? "",
+        baseUrl: settings.openaiBaseUrl.replace(/\/$/, ""),
+      },
+    )
+
+    // Create adapters
+    const store = new ConversationStoreAdapter(this.conversationManager!)
+    const contextBuilder = new ContextBuilderAdapter(systemPrompt, settings.openaiModel)
+    const toolManager = new ToolManagerAdapter(registry, this)
+
+    // Create AssistantRuntime
+    this.assistantRuntime = new AssistantRuntime({
+      provider,
+      conversationStore: store,
+      contextBuilder,
+      toolManager,
+      model: settings.openaiModel,
+      systemPrompt,
+    })
+
+    // Wire bridge
+    this.assistantRuntimeUnsub = this.assistantRuntime.onEvent((event) => this.bridge.process(event))
+    this.bridgeUnsub = this.bridge.subscribe((event) => {
+      this.deps.trace.append(event)
+      this.events.emit(event)
     })
   }
 
@@ -190,7 +291,7 @@ export class AgentService implements ToolRuntime {
     return composeSystemPrompt(base, settings.emotion)
   }
 
-  async sendUserMessage(input: string | { text: string; attachments?: AudioContextAttachment[] }): Promise<void> {
+  async sendUserMessage(input: string | { text: string; attachments?: AudioContextAttachment[]; artifactRefs?: Array<{ id: string; kind: string; mimeType: string }>; conversationId?: string }): Promise<void> {
     if (!this.deps.settings.get().openaiApiKey) {
       this.emit({
         type: "message.added",
@@ -204,19 +305,32 @@ export class AgentService implements ToolRuntime {
       })
       return
     }
-    if (this.useWsRuntime) {
-      if (!this.runController || !this.activeConversationId) this.reconfigure()
-      const text = typeof input === "string" ? input : input.text
-      this.emit({
-        type: "message.added",
-        message: { id: `msg_user_${Date.now()}`, role: "user", content: text, createdAt: Date.now(), attachments: typeof input === "string" ? undefined : input.attachments },
-      })
-      await this.runController?.enqueueUserMessage(this.activeConversationId!, text)
+
+    const text = typeof input === "string" ? input : input.text
+    const attachments = typeof input === "object" ? input.attachments : undefined
+    const conversationId = (typeof input === "object" && input.conversationId) || this.activeConversationId!
+
+    // Emit user message added event (consistent for both paths)
+    this.emit({
+      type: "message.added",
+      message: {
+        id: `msg_user_${Date.now()}`,
+        role: "user",
+        content: text,
+        createdAt: Date.now(),
+        attachments,
+      },
+    })
+
+    if (this.runtimeMode === "http-legacy") {
+      if (!this.session) this.reconfigure()
+      await this.session?.runUserMessage(input)
       return
     }
 
-    if (!this.session) this.reconfigure()
-    await this.session?.runUserMessage(input)
+    // Default WS runtime path
+    if (!this.assistantRuntime) this.reconfigure()
+    await this.assistantRuntime?.sendUserMessage(conversationId, text)
   }
 
   async executeMany(actions: AgentAction[]): Promise<ToolResult[]> {
@@ -701,6 +815,226 @@ function createLimitedCollector(maxBytes = 64 * 1024): { append(chunk: Buffer): 
       const content = Buffer.concat(chunks).toString("utf8")
       return truncatedBytes > 0 ? `${content}\n\n[... truncated ${truncatedBytes} bytes ...]` : content
     },
+  }
+}
+
+/* ------------------------------------------------------------------ */
+/*  Adapter classes for AssistantRuntime (Phase 3/4)                    */
+/* ------------------------------------------------------------------ */
+
+/**
+ * Adapts ConversationManager → ConversationStore interface.
+ */
+class ConversationStoreAdapter implements ConversationStore {
+  constructor(private readonly mgr: ConversationManager) {}
+
+  appendUserMessage(conversationId: string, text: string): { id: string } {
+    const msg = this.mgr.appendUserMessage(conversationId, text)
+    if (!msg) throw new Error(`Conversation not found: ${conversationId}`)
+    return msg
+  }
+
+  appendAssistantMessage(conversationId: string): { id: string } | null {
+    const msg = this.mgr.appendAssistantMessage(conversationId)
+    return msg ? { id: msg.id } : null
+  }
+
+  appendToolResultMessage(
+    conversationId: string,
+    toolCallId: string,
+    toolName: string,
+    output: string,
+  ): void {
+    // ConversationManager doesn't have a dedicated tool message append.
+    // Append as a user message with tool call metadata for now.
+    const conv = (this.mgr as any).getConversation(conversationId)
+    if (!conv) return
+    conv.messages.push({
+      id: `msg_tool_${Date.now()}_${Math.random().toString(36).slice(2, 9)}`,
+      role: "tool" as const,
+      content: output,
+      createdAt: Date.now(),
+    })
+  }
+
+  updateAssistantMessage(conversationId: string, messageId: string, content: string): boolean {
+    return this.mgr.updateAssistantMessage(conversationId, messageId, content)
+  }
+
+  setRemoteResponseId(conversationId: string, responseId: string | null): void {
+    this.mgr.setLastRemoteContextId(conversationId, responseId)
+  }
+
+  getRemoteResponseId(conversationId: string): string | null {
+    const conv = (this.mgr as any).getConversation(conversationId)
+    return conv?.lastRemoteContextId ?? null
+  }
+
+  getConversationMessages(
+    conversationId: string,
+  ): Array<{ id: string; role: string; content: string }> {
+    return this.mgr.getMessages(conversationId)
+  }
+
+  hasConversation(conversationId: string): boolean {
+    return this.mgr.getConversation(conversationId) !== undefined
+  }
+}
+
+/**
+ * Simple ContextBuilder that wraps system prompt + messages into canonical model input.
+ *
+ * Phase 4: Text-only messages. Attachments are preserved in the parameter structure
+ * but not encoded (audio returns unsupported error per plan §8.3).
+ */
+class ContextBuilderAdapter implements ContextBuilder {
+  constructor(
+    private readonly systemPrompt: string,
+    private readonly model: string,
+  ) {}
+
+  buildCreateInput(params: {
+    conversationId: string
+    runId: string
+    systemPrompt: string
+    userText: string
+    messages: Array<{ id: string; role: string; content: string }>
+    tools: CanonicalToolDefinition[]
+    remoteResponseId?: string | null
+  }): CanonicalCreateInput {
+    const messages: ModelMessage[] = []
+
+    // System message
+    messages.push({
+      role: "system",
+      content: [{ type: "text", text: params.systemPrompt }],
+    })
+
+    // Conversation messages (exclude system - already handled)
+    for (const msg of params.messages) {
+      if (msg.role === "system") continue
+      const role = msg.role as "user" | "assistant" | "tool"
+      messages.push({
+        role,
+        content: [{ type: "text", text: msg.content }],
+      })
+    }
+
+    // Current user text — avoid duplicate if the last message in the
+    // conversation history is already a user message with the same text
+    // (AssistantRuntime appends the user message to the store before
+    // calling buildCreateInput, so params.messages already contains it).
+    if (params.userText) {
+      const lastMsg = params.messages[params.messages.length - 1]
+      const alreadyIncluded = lastMsg?.role === "user" && lastMsg.content === params.userText
+      if (!alreadyIncluded) {
+        messages.push({
+          role: "user",
+          content: [{ type: "text", text: params.userText }],
+        })
+      }
+    }
+
+    return {
+      conversationId: params.conversationId,
+      runId: params.runId,
+      model: this.model,
+      remoteResponseId: params.remoteResponseId ?? null,
+      messages,
+      tools: params.tools,
+      toolChoice: "auto",
+      parallelToolCalls: false,
+      maxOutputTokens: 8000,
+    }
+  }
+
+  buildContinuationInput(params: {
+    conversationId: string
+    runId: string
+    systemPrompt: string
+    toolResult: CanonicalToolResult
+    tools: CanonicalToolDefinition[]
+    previousResponseId: string | null
+  }): CanonicalToolContinuationInput {
+    return {
+      conversationId: params.conversationId,
+      runId: params.runId,
+      model: this.model,
+      previousResponseId: params.previousResponseId,
+      toolResult: params.toolResult,
+      tools: params.tools,
+      parallelToolCalls: false,
+      maxOutputTokens: 8000,
+    }
+  }
+}
+
+/**
+ * ToolManager backed by ToolRegistry + AgentService execution.
+ */
+class ToolManagerAdapter implements ToolManager {
+  constructor(
+    private readonly registry: ToolRegistry,
+    private readonly agent: AgentService,
+  ) {}
+
+  getEnabledTools(): CanonicalToolDefinition[] {
+    return this.registry.getDefinitions().map((def) => ({
+      name: def.name,
+      description: def.description,
+      parameters: def.inputSchema as any,
+    }))
+  }
+
+  validateToolCall(call: ModelToolCall): ToolValidationResult {
+    const def = this.registry.get(call.name)
+    if (!def) {
+      return { valid: false, error: `Unknown tool: ${call.name}` }
+    }
+    // Basic JSON schema validation — check required params exist
+    const schema = def.inputSchema as Record<string, unknown>
+    const required = (schema as any)?.required as string[] | undefined
+    if (required && Array.isArray(required)) {
+      const args = call.arguments || {}
+      for (const key of required) {
+        if (args[key] === undefined || args[key] === null) {
+          return { valid: false, error: `Missing required parameter: ${key}` }
+        }
+      }
+    }
+    return { valid: true }
+  }
+
+  async executeToolCall(call: ValidatedToolCall): Promise<CanonicalToolResult> {
+    const action: AgentAction = {
+      id: call.callId,
+      providerToolCallId: call.callId,
+      tool: call.name,
+      args: call.arguments,
+      source: "llm",
+      createdAt: Date.now(),
+    }
+
+    const results = await this.agent.executeMany([action])
+    const result = results[0]
+
+    if (result) {
+      return {
+        callId: call.callId,
+        name: call.name,
+        status: result.ok ? "ok" : "error",
+        output: result.content,
+        summary: result.ok ? `Executed ${call.name}` : result.content,
+      }
+    }
+
+    return {
+      callId: call.callId,
+      name: call.name,
+      status: "error",
+      output: "Tool execution returned no result",
+      summary: "Tool execution returned no result",
+    }
   }
 }
 

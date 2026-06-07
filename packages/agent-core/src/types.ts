@@ -104,6 +104,17 @@ export type AgentEvent =
   | { type: "agent.idle" }
   | { type: "agent.thinking" }
   | { type: "message.added"; message: AgentMessage }
+  | {
+      type: "message.created"
+      message: {
+        id: string
+        role: "assistant" | "user"
+        content?: string
+        createdAt: number
+      }
+    }
+  | { type: "message.delta"; messageId: string; delta: string }
+  | { type: "message.completed"; messageId: string }
   | { type: "approval.pending"; actions: AgentAction[] }
   | { type: "approval.approved"; actionIds: string[] }
   | { type: "approval.denied"; actionIds: string[]; reason?: string }

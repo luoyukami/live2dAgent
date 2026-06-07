@@ -174,6 +174,8 @@ export interface UiSettings {
 /** Agent runtime settings */
 export interface AgentSettings {
   maxSteps: number
+  /** Runtime mode: "ws" uses AssistantRuntime+MimoWsRuntime; "http-legacy" uses old AgentSession+OpenAiCompatibleAdapter */
+  runtimeMode: "ws" | "http-legacy"
 }
 
 /** Tool permission settings */

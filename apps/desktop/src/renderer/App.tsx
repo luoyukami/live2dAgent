@@ -132,7 +132,31 @@ export function App(): JSX.Element {
     return window.petAgent.onAgentEvent((event: AgentEvent) => {
       const nextState = mapEventToState(event)
       if (nextState) setStatus(nextState)
-      if (event.type === "message.added") setMessages((items) => [...items, event.message])
+      if (event.type === "message.created") {
+        setMessages((items) => {
+          if (items.some((m) => m.id === event.message.id)) return items
+          return [...items, {
+            id: event.message.id,
+            role: event.message.role,
+            content: event.message.content ?? "",
+            createdAt: event.message.createdAt,
+          } satisfies AgentMessage]
+        })
+      }
+      if (event.type === "message.delta") {
+        setMessages((items) => items.map((m) =>
+          m.id === event.messageId
+            ? { ...m, content: m.content + event.delta }
+            : m,
+        ))
+      }
+      // message.completed is a no-op — content is already final via deltas
+      if (event.type === "message.added") {
+        setMessages((items) => {
+          if (items.some((m) => m.id === event.message.id)) return items
+          return [...items, event.message]
+        })
+      }
       if (event.type === "approval.pending") setPending(event.actions)
       if (event.type === "approval.approved" || event.type === "approval.denied") setPending([])
       if (event.type === "emotion.set") {
