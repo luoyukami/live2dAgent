@@ -6,6 +6,8 @@ export const IPC_CHANNELS = {
   APPROVE_ACTION: "agent:approve-action",
   /** User denies a pending tool action */
   DENY_ACTION: "agent:deny-action",
+  /** Clear visible messages and reset the active agent context */
+  CLEAR_CONTEXT: "agent:clear-context",
   /** Change agent mode (manual / confirm / auto) */
   SET_AGENT_MODE: "agent:set-mode",
   /** Subscribe to agent events from renderer */

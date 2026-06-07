@@ -7,6 +7,7 @@ const api = {
   /* ---- Agent ---- */
   sendUserMessage: (input: string | IpcSendUserMessageRequest) =>
     ipcRenderer.invoke(IPC_CHANNELS.SEND_USER_MESSAGE, input),
+  clearContext: (): Promise<void> => ipcRenderer.invoke(IPC_CHANNELS.CLEAR_CONTEXT),
   approveAction: (actionId: string) => ipcRenderer.invoke(IPC_CHANNELS.APPROVE_ACTION, actionId),
   denyAction: (actionId: string, reason?: string) =>
     ipcRenderer.invoke(IPC_CHANNELS.DENY_ACTION, actionId, reason),

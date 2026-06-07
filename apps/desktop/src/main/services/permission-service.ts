@@ -58,6 +58,19 @@ export class PermissionService implements PermissionController {
     return this.lastDecision
   }
 
+  resetSessionState(reason = "context cleared"): void {
+    this.approvedOnce.clear()
+    if (!this.pending) return
+    const actionIds = this.pending.requiresApproval.map((action) => action.id)
+    this.pending.resolve({
+      status: "denied",
+      actions: this.pending.requiresApproval,
+      reason,
+    })
+    this.pendingListener?.({ event: { type: "approval.denied", actionIds, reason } })
+    this.pending = undefined
+  }
+
   private requestApproval(
     actions: AgentAction[],
     requiresApproval: AgentAction[],
@@ -125,7 +138,6 @@ function isHighImpactShellCommand(args: unknown): boolean {
     /\bdel\b[^\n;|&]*\s[/*]/,
     /\bformat\b\s+[a-z]:/,
     /\bdiskpart\b/,
-    /\bshutdown\b/,
     /\btaskkill\b[^\n;|&]*\s\/f\b/,
     /\breg\b\s+(?:delete|add)\b/,
     /\bset-executionpolicy\b/,

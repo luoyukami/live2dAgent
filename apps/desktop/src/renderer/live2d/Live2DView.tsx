@@ -346,12 +346,12 @@ export function Live2DView({ modelPath, avatarState, emotion, emotionProfile }: 
     const mw = model.width || 1
     const mh = model.height || 1
 
-    const scale = Math.min(cw / mw, ch / mh) * 0.95
+    const scale = Math.min(cw / mw, ch / mh) * 1.15
     model.scale.set(scale)
-    model.position.set(app.screen.width / 2, app.screen.height / 2)
+    model.position.set(app.screen.width / 2, app.screen.height * 0.92)
 
     if (typeof model.anchor?.set === "function") {
-      model.anchor.set(0.5, 0.5)
+      model.anchor.set(0.5, 0.88)
     }
   }
 

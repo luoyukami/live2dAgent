@@ -216,19 +216,18 @@ export function App(): JSX.Element {
     }
   }, [status])
 
-  /* Fallback: return temporary emotion tags to the normal idle emotion after inactivity. */
+  /* Fallback: return temporary emotion tags to the configured default emotion after inactivity. */
   useEffect(() => {
     if (settings?.emotion?.enabled === false) return
-    if (currentEmotion === null || currentEmotion === IDLE_EMOTION) return
-    if (status !== "idle") return
+    const defaultEmotion = settings?.emotion?.defaultEmotion ?? IDLE_EMOTION
+    if (currentEmotion === null || currentEmotion === defaultEmotion) return
 
     const timer = setTimeout(() => {
-      setStatus("idle")
-      setCurrentEmotion(IDLE_EMOTION)
+      setCurrentEmotion(defaultEmotion)
     }, EMOTION_IDLE_REVERT_MS)
 
     return () => clearTimeout(timer)
-  }, [currentEmotion, settings?.emotion?.enabled, status])
+  }, [currentEmotion, settings?.emotion?.defaultEmotion, settings?.emotion?.enabled])
 
   /* Emotion system disabled ⇒ renderer must not apply a fallback emotion to Live2D. */
   useEffect(() => {
@@ -424,8 +423,12 @@ export function App(): JSX.Element {
     }
   }
 
-  function clearVisibleMessages(): void {
+  async function clearVisibleMessages(): Promise<void> {
     setMessages([])
+    setPending([])
+    setStatus("idle")
+    setCurrentEmotion(settings?.emotion?.defaultEmotion ?? IDLE_EMOTION)
+    await window.petAgent.clearContext()
   }
 
   async function saveSettings(): Promise<void> {

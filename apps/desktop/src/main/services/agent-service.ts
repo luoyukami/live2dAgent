@@ -350,6 +350,18 @@ export class AgentService implements ToolRuntime {
     })
   }
 
+  clearActiveContext(): void {
+    this.deps.permissions.resetSessionState()
+    this.reconfigure()
+    this.avatarState = "idle"
+    this.emit({
+      type: "emotion.set",
+      emotion: this.deps.settings.get().emotion.defaultEmotion,
+      source: "fallback",
+      messageId: `context_clear_${Date.now()}`,
+    })
+  }
+
   async executeMany(actions: AgentAction[]): Promise<ToolResult[]> {
     const results: ToolResult[] = []
     for (const action of actions) {

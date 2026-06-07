@@ -59,6 +59,10 @@ export function registerIpcHandlers(services: IpcServices): void {
     await services.agent.sendUserMessage(textOrInput)
   })
 
+  ipcMain.handle(IPC_CHANNELS.CLEAR_CONTEXT, async () => {
+    services.agent.clearActiveContext()
+  })
+
   /* ---- Permission actions ---- */
   ipcMain.handle(IPC_CHANNELS.APPROVE_ACTION, async (_event, actionId: string) => {
     services.permissions.approve(actionId)
