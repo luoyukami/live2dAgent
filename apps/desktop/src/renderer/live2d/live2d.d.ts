@@ -2,6 +2,21 @@
 declare module "pixi-live2d-display-lipsyncpatch" {
   import { Sprite } from "pixi.js"
 
+  /**
+   * Minimal surface of the internal Cubism core model. Only the APIs we
+   * actually call from the renderer are declared; see
+   * `node_modules/.../pixi-live2d-display-lipsyncpatch/dist/cubism4.es.js`
+   * for the full reference.
+   */
+  interface CubismCoreLike {
+    /**
+     * Directly set a Cubism parameter to `value` (with optional `weight`).
+     * Persists into `coreModel._parameterValues` and is rendered on the next
+     * frame's `model.update()`, bypassing the expression / motion queues.
+     */
+    setParameterValueById(parameterId: string, value: number, weight?: number): void
+  }
+
   export class Live2DModel extends Sprite {
     static from(modelUrl: string): Promise<Live2DModel>
     static fromSync(modelUrl: string): Live2DModel
@@ -10,6 +25,8 @@ declare module "pixi-live2d-display-lipsyncpatch" {
       motionManager: {
         startMotion(group: string, index: number, priority: number): Promise<void>
       }
+      /** Underlying Cubism model. Exposed for `setParameterValueById` quirks. */
+      coreModel: CubismCoreLike
     }
 
     motion(group: string, index?: number): Promise<boolean>

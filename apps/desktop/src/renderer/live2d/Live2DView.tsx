@@ -40,19 +40,37 @@ let cubismCoreScript: HTMLScriptElement | null = null
  *
  * 注意：这里的 expression 名称来自 .exp3.json 的文件名（不含扩展名），
  * 与 Live2D ModelSettings.Expressions 列表的 Name 字段保持一致。
+ *
+ * 关于 `parameterPins`：
+ *   一些 quirk 表情使用 Add blend 配方（如 Param6=1.0 关闭提示层）。
+ *   这类表情一旦被新的 expression() 调用覆盖，会被 expression queue
+ *   fade out，Param6 就会回到 base=0.0，提示层重新出现。仅靠
+ *   "加载时触发一次" 是不够的——还需要在每次 model.expression() /
+ *   model.motion() 之后，用 Cubism 的 setParameterValueById 把相关
+ *   参数强行 pin 到目标值。这个字段就是给这种情况用的。
  */
 const MODEL_LOAD_QUIRKS: ReadonlyArray<{
   /** model3.json 的文件名（含 .model3.json 后缀），按 basename 匹配。 */
   modelFile: string
   /** 加载完成后自动触发一次的表情名（对应 .exp3.json 的文件名）。 */
   expression: string
+  /**
+   * 模型加载后需要持续 pin 住的参数。在每次 expression / motion 调用
+   * 之后都会重新写入 coreModel._parameterValues，确保不被新的 expression
+   * 队列 fade out 抹掉。
+   */
+  parameterPins?: ReadonlyArray<{ id: string; value: number }>
 }> = [
   {
     // 玳瑁猫 v1（VTS 版本）默认带一个 Param6 控制的内置提示层，
     // 必须激活 `关闭提示.exp3.json`（Param6=1.0, Add blend）才能隐藏。
     // 每次冷加载都得触发一次，否则首帧会出现提示文字。
+    // 之后还要把 Param6 持续 pin 在 1.0，否则任何一次 emotion / avatarState
+    // 切换都会让 expression queue 把"关闭提示" fade out 掉，提示层
+    // 重新出现。详见本文件 applyParameterPins()。
     modelFile: "玳瑁猫v1_vts.model3.json",
     expression: "关闭提示",
+    parameterPins: [{ id: "Param6", value: 1.0 }],
   },
 ]
 
@@ -64,10 +82,15 @@ function basename(path: string): string {
 }
 
 /** 在 MODEL_LOAD_QUIRKS 里查找当前 modelPath 对应的加载期特殊规则。 */
-function findLoadQuirk(modelPath: string): { expression: string } | null {
+function findLoadQuirk(modelPath: string): {
+  expression: string
+  parameterPins: ReadonlyArray<{ id: string; value: number }>
+} | null {
   const base = basename(modelPath)
   const hit = MODEL_LOAD_QUIRKS.find((q) => q.modelFile === base)
-  return hit ? { expression: hit.expression } : null
+  return hit
+    ? { expression: hit.expression, parameterPins: hit.parameterPins ?? [] }
+    : null
 }
 
 /* ------------------------------------------------------------------ */
@@ -130,6 +153,12 @@ export function Live2DView({ modelPath, avatarState, emotion, emotionProfile }: 
   const containerRef = useRef<HTMLDivElement>(null)
   const appRef = useRef<PIXI.Application | null>(null)
   const modelRef = useRef<InstanceType<any> | null>(null)
+  /**
+   * 加载时命中的 quirk 规则所要求的"持续 pin 住"的参数。
+   * 见 MODEL_LOAD_QUIRKS.parameterPins。每次 model.expression() /
+   * model.motion() 之后都会按这张表重新写一次 coreModel。
+   */
+  const activeQuirksRef = useRef<ReadonlyArray<{ id: string; value: number }>>([])
   const [loadError, setLoadError] = useState<string | null>(null)
   const [modelEpoch, setModelEpoch] = useState(0)
 
@@ -276,7 +305,12 @@ export function Live2DView({ modelPath, avatarState, emotion, emotionProfile }: 
       // 某些模型（比如 玳瑁猫v1_vts）默认会显示内置提示层，
       // 必须激活一次对应的 exp3.json 才能关掉。这里在渲染前先发一次，
       // 保证首帧就是干净状态；后续 emotion / avatarState 切换不会重复触发。
+      // 如果该 quirk 还声明了 parameterPins（例如把 Param6 持续 pin 在 1.0），
+      // 也要写到 activeQuirksRef 里，让后续的 playMotion / trySetExpression
+      // 在每次调用后自动重新写入核心参数，避免 expression queue fade out
+      // 把 quirk 表情抹掉。
       const quirk = findLoadQuirk(path)
+      activeQuirksRef.current = quirk?.parameterPins ?? []
       if (quirk) {
         trySetExpression(model, quirk.expression)
       }
@@ -337,6 +371,41 @@ export function Live2DView({ modelPath, avatarState, emotion, emotionProfile }: 
       }
       modelRef.current = null
     }
+    // 清空 quirk 引用，避免新模型继承上一任的 parameterPins。
+    activeQuirksRef.current = []
+  }
+
+  /**
+   * 把当前 activeQuirksRef 里的参数强行写回 coreModel。
+   *
+   * 背景：Cubism 的 expression queue 在调用 model.expression() 时会把旧
+   * 表情 fade out（cubism4.es.js:4266 startMotion 内的 fadeOut 循环）。
+   * 一些 quirk 表情用 Add blend（如 Param6=1.0）作为"加载即触发一次"的
+   * 副作用；一旦被后续 emotion / avatarState 切换覆盖，相关参数权重
+   * 就会淡回 0，副作用消失。这里在每次 expression / motion 之后用
+   * CubismModel.setParameterValueById 直接写 _parameterValues，绕过
+   * expression queue，强制把参数 pin 住。
+   *
+   * 因为 CoreModel 的 update 顺序是 motion → save → expression → ... →
+   * model.update() → loadParameters()（见 cubism4.es.js:10867-10901），
+   * 这里的写入在下一帧会被 saveParameters 拍下，渲染也以这时的值为准，
+   * 随后 loadParameters 又会从 _savedParameters 复位——所以下一帧
+   * 直接以写入后的值起步，效果是持续生效的。
+   */
+  function applyParameterPins(model: InstanceType<any>): void {
+    const pins = activeQuirksRef.current
+    if (pins.length === 0) return
+    const core = model?.internalModel?.coreModel
+    if (!core || typeof core.setParameterValueById !== "function") return
+    for (const pin of pins) {
+      try {
+        core.setParameterValueById(pin.id, pin.value)
+      } catch (err) {
+        // 切到没有该参数 ID 的模型时（例如不同 base），不应炸；
+        // 静默忽略，下一次 emotion 切换时仍会尝试。
+        console.warn(`[Live2DView] parameter pin failed: ${pin.id}`, err)
+      }
+    }
   }
 
   function playMotion(model: InstanceType<any>, group: string, index?: number): void {
@@ -349,6 +418,7 @@ export function Live2DView({ modelPath, avatarState, emotion, emotionProfile }: 
     } catch (err) {
       console.warn(`[Live2DView] motion failed: ${group}`, err)
     }
+    applyParameterPins(model)
   }
 
   function trySetExpression(model: InstanceType<any>, name: string): void {
@@ -357,6 +427,7 @@ export function Live2DView({ modelPath, avatarState, emotion, emotionProfile }: 
     } catch (err) {
       console.warn(`[Live2DView] expression failed: ${name}`, err)
     }
+    applyParameterPins(model)
   }
 
   /* ---- Render ---- */
