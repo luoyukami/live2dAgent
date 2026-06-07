@@ -284,16 +284,16 @@ export function Live2DView({ modelPath, avatarState, emotion, emotionProfile }: 
       } else {
         model.motion?.(group)
       }
-    } catch {
-      /* silently fail – model may not have this motion */
+    } catch (err) {
+      console.warn(`[Live2DView] motion failed: ${group}`, err)
     }
   }
 
   function trySetExpression(model: InstanceType<any>, name: string): void {
     try {
       model.expression?.(name)
-    } catch {
-      /* silently fail – model may not have this expression */
+    } catch (err) {
+      console.warn(`[Live2DView] expression failed: ${name}`, err)
     }
   }
 

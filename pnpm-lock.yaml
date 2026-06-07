@@ -68,6 +68,9 @@ importers:
       vite:
         specifier: ^5.3.5
         version: 5.4.21(@types/node@20.19.41)(terser@5.48.0)
+      ws:
+        specifier: ^8.21.0
+        version: 8.21.0
     devDependencies:
       '@types/react':
         specifier: ^18.3.3

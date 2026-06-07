@@ -1,5 +1,5 @@
 import { app, net, protocol } from "electron"
-import { existsSync, realpathSync } from "node:fs"
+import { existsSync, readFileSync, realpathSync } from "node:fs"
 import { isAbsolute, relative } from "node:path"
 import { pathToFileURL } from "node:url"
 import { WindowManager } from "./window-manager.js"
@@ -10,6 +10,7 @@ import { PermissionService } from "./services/permission-service.js"
 import { PromptService } from "./services/prompt-service.js"
 import { SettingsService } from "./services/settings-service.js"
 import { TraceService } from "./services/trace-service.js"
+import { patchLive2DModelJsonFileReferences } from "./services/live2d-model-json.js"
 
 // 增加mcp调试的默认端口暴露
 const devtoolsPort = process.env.ELECTRON_REMOTE_DEBUGGING_PORT ?? "9222"
@@ -50,6 +51,16 @@ function registerLive2DLocalProtocol(settings: SettingsService): void {
     const allowedRoots = settings.getAllowedLive2DRoots()
     if (!allowedRoots.some((root) => isInside(root, realTarget))) {
       return new Response("Forbidden", { status: 403 })
+    }
+
+    if (realTarget.endsWith(".model3.json")) {
+      try {
+        const rawModelJson = JSON.parse(readFileSync(realTarget, "utf8"))
+        const patchedModelJson = patchLive2DModelJsonFileReferences(rawModelJson, realTarget)
+        return Response.json(patchedModelJson)
+      } catch {
+        return new Response("Invalid model3.json", { status: 500 })
+      }
     }
 
     return net.fetch(pathToFileURL(realTarget).toString())

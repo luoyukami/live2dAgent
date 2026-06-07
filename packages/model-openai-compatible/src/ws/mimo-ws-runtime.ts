@@ -412,6 +412,7 @@ export class MimoWsRuntime implements ProviderRuntime {
       .replace(/^http:/, "ws:")
       .replace(/^https:/, "wss:")
       .replace(/\/+$/, "")
+      .replace(/\/chat\/completions$/i, "")
 
     return wsUrl.endsWith("/responses") ? wsUrl : `${wsUrl}/responses`
   }

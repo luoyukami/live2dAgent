@@ -216,6 +216,20 @@ describe("MimoWsRuntime", () => {
     await runtime.close("test done")
   })
 
+  test("REST chat completions baseUrl is normalized before resolving WS URL", async () => {
+    const port = await setupServer()
+
+    runtime = new MimoWsRuntime({
+      baseUrl: `http://localhost:${port}/v1/chat/completions`,
+      model: "test-model",
+      apiKey: "test-key",
+    })
+
+    await runtime.open("conv_rest_base_url")
+    assert.equal(server.upgradeUrl, "/v1/responses")
+    await runtime.close("test done")
+  })
+
   /* ================================================================ */
   /*  3. Tools encoded in provider format, no internal fields          */
   /* ================================================================ */
