@@ -888,6 +888,9 @@ export function App(): JSX.Element {
             onFillInput={fillInput}
             onSendMessage={sendFromPreset}
             onClose={() => setShowDebug(false)}
+            activeEmotion={currentEmotion}
+            onSimulateEmotion={(emotion) => setCurrentEmotion(emotion)}
+            onClearEmotion={() => setCurrentEmotion(null)}
           />
         )}
 

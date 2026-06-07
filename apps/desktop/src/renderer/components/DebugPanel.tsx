@@ -1,11 +1,13 @@
 import { useState } from "react"
 import type { DebugSnapshot } from "@live2d-agent/shared"
 import type { AgentEvent } from "@live2d-agent/agent-core"
+import type { Emotion } from "@live2d-agent/shared"
 import { TraceViewer } from "./TraceViewer"
 import { ManualActionInjector } from "./ManualActionInjector"
 import { ScenarioPresets } from "./ScenarioPresets"
+import { EmotionTester } from "./EmotionTester"
 
-type Tab = "overview" | "trace" | "manual" | "presets"
+type Tab = "overview" | "trace" | "manual" | "emotion" | "presets"
 
 interface Props {
   snapshot: DebugSnapshot | null
@@ -24,6 +26,9 @@ interface Props {
   onSendMessage: (text: string) => void
   onOpenAudioFolder: () => void
   onClose: () => void
+  activeEmotion: Emotion | null
+  onSimulateEmotion: (emotion: Emotion) => void
+  onClearEmotion: () => void
 }
 
 function formatBytes(n: number): string {
@@ -53,6 +58,9 @@ export function DebugPanel({
   onSendMessage,
   onOpenAudioFolder,
   onClose,
+  activeEmotion,
+  onSimulateEmotion,
+  onClearEmotion,
 }: Props): JSX.Element {
   const [tab, setTab] = useState<Tab>("overview")
 
@@ -89,6 +97,7 @@ export function DebugPanel({
           <button className={`ghost-btn ${tab === "overview" ? "active" : ""}`} onClick={() => setTab("overview")}>概览</button>
           <button className={`ghost-btn ${tab === "trace" ? "active" : ""}`} onClick={() => setTab("trace")}>Trace</button>
           <button className={`ghost-btn ${tab === "manual" ? "active" : ""}`} onClick={() => setTab("manual")}>手动执行</button>
+          <button className={`ghost-btn ${tab === "emotion" ? "active" : ""}`} onClick={() => setTab("emotion")}>情绪测试</button>
           <button className={`ghost-btn ${tab === "presets" ? "active" : ""}`} onClick={() => setTab("presets")}>场景预设</button>
         </div>
         <div className="debug-actions">
@@ -248,6 +257,16 @@ export function DebugPanel({
 
         {tab === "manual" && (
           <ManualActionInjector onRun={onRunManualAction} lastResult={lastManualResult} />
+        )}
+
+        {tab === "emotion" && (
+          <EmotionTester
+            activeEmotion={activeEmotion}
+            profile={snapshot?.settings?.live2d?.emotionProfile}
+            onSimulate={onSimulateEmotion}
+            onClear={onClearEmotion}
+            onResetToNeutral={() => onSimulateEmotion("neutral")}
+          />
         )}
 
         {tab === "presets" && (
