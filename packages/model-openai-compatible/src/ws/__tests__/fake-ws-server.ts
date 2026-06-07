@@ -10,7 +10,7 @@
  * Reference: docs/mimo_ws_runtime_refactor_plan.md §15.1
  */
 
-import { createServer, type Server as HttpServer } from "node:http"
+import { createServer, type IncomingMessage, type Server as HttpServer } from "node:http"
 import { WebSocketServer, WebSocket } from "ws"
 import type { AddressInfo } from "node:net"
 import { setTimeout as sleep } from "node:timers/promises"
@@ -67,6 +67,7 @@ export class FakeWsServer {
   private connectionPromise: Promise<void> | null = null
   private resolveConnection: (() => void) | null = null
   private currentWs: WebSocket | null = null
+  private lastUpgradeReq: IncomingMessage | null = null
 
   get port(): number {
     return this._port
@@ -76,13 +77,22 @@ export class FakeWsServer {
     return this._connected
   }
 
+  get upgradeHeaders(): IncomingMessage["headers"] | undefined {
+    return this.lastUpgradeReq?.headers
+  }
+
+  get upgradeUrl(): string | undefined {
+    return this.lastUpgradeReq?.url
+  }
+
   /** Start the server and return the actual port. */
   async start(options?: FakeWsServerOptions): Promise<number> {
     return new Promise<number>((resolve) => {
       this.httpServer = createServer()
       this.wss = new WebSocketServer({ server: this.httpServer })
 
-      this.wss.on("connection", (ws) => {
+      this.wss.on("connection", (ws, req) => {
+        this.lastUpgradeReq = req
         this._connected = true
         this.currentWs = ws
         this.resolveConnection?.()
@@ -252,6 +262,7 @@ export class FakeWsServer {
     this.connectionPromise = null
     this.resolveConnection = null
     this.currentWs = null
+    this.lastUpgradeReq = null
   }
 
   private async sendFramesWithDelay(

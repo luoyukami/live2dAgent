@@ -15,7 +15,8 @@
  */
 import type { ModelEvent, TokenUsage } from "@live2d-agent/agent-core"
 import type { ProviderToolSchema } from "./mimo-tool-schema-encoder.js"
-import type { ProviderContentPart } from "./mimo-content-encoder.js"
+import type { ModelMessage } from "@live2d-agent/agent-core"
+import { encodeContent, type ProviderContentPart } from "./mimo-content-encoder.js"
 import {
   decodeFrame,
   ToolCallArgumentAggregator,
@@ -66,7 +67,11 @@ export interface MimoCreateRequest {
  * An item in the `input` array of a response.create request.
  */
 export type ProviderInputItem =
-  | ProviderContentPart
+  | {
+      type: "message"
+      role: "system" | "user" | "assistant"
+      content: ProviderContentPart[]
+    }
   | { type: "function_call_output"; call_id: string; output: string }
 
 /* ------------------------------------------------------------------ */
@@ -100,17 +105,33 @@ export class MimoWsProtocol {
     input: ProviderInputItem[],
     tools: ProviderToolSchema[],
     maxOutputTokens = 8_000,
+    previousResponseId?: string | null,
   ): MimoCreateRequest {
     return {
       type: "response.create",
       model,
       store: false,
+      ...(previousResponseId ? { previous_response_id: previousResponseId } : {}),
       input,
       tools,
       tool_choice: "auto",
       parallel_tool_calls: false,
       max_output_tokens: maxOutputTokens,
     }
+  }
+
+  /** Encode canonical messages into provider message input items while preserving roles. */
+  encodeMessages(messages: ModelMessage[]): ProviderInputItem[] {
+    const items: ProviderInputItem[] = []
+    for (const message of messages) {
+      if (message.role === "tool") continue
+      items.push({
+        type: "message",
+        role: message.role,
+        content: encodeContent(message.content),
+      })
+    }
+    return items
   }
 
   /**

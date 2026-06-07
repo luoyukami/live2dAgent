@@ -94,6 +94,7 @@ export type { ArtifactMeta, ArtifactWriter, ValidationResult, TruncatedOutput, T
 export { AssistantRuntime } from "./runtime/assistant-runtime.js"
 export type {
   ConversationStore,
+  ConversationStoreMessage,
   ContextBuilder,
   ToolValidationResult,
   ToolManager,

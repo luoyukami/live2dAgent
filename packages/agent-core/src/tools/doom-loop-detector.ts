@@ -2,11 +2,16 @@
  * DoomLoopDetector — prevents same tool + args from repeating excessively.
  *
  * Rule (per run):
- *   - Consecutive identical tool+args are allowed up to `threshold` times.
- *   - The (threshold + 1)-th consecutive identical call is blocked.
- *   - Any different tool or different args resets the counter for that tool.
+ *   - Only consecutive identical tool+args are counted.
+ *   - The first call is always allowed (count = 1).
+ *   - Subsequent identical tool+args increment the count.
+ *   - Any different tool OR different args **resets** the consecutive count to 1.
+ *   - When count exceeds `threshold`, the call is blocked.
  *
  * "Identical args" means deep-strict equality of the parsed arguments object.
+ *
+ * This is a **truly consecutive** detector — A, B, A does NOT count
+ * the second A as a continuation of the first A.
  *
  * See docs/mimo_ws_runtime_refactor_plan.md §9.7.
  */
@@ -31,26 +36,42 @@ export interface DoomLoopResult {
 /* ------------------------------------------------------------------ */
 
 /**
- * Tracks tool call repetition within a single run.
+ * Tracks consecutive tool call repetition within a single run.
+ *
+ * Only **consecutive** same tool + same args increment the counter.
+ * Any break (different tool or different args) resets back to 1.
  *
  * Usage:
  * ```ts
  * const detector = new DoomLoopDetector()
- * detector.check("file.read", { path: "/tmp/x" }) // { allowed: true }
- * detector.check("file.read", { path: "/tmp/x" }) // { allowed: true }
- * detector.check("file.read", { path: "/tmp/x" }) // { allowed: true }
- * detector.check("file.read", { path: "/tmp/x" }) // { allowed: false, reason: "..." }
+ * detector.check("file.read", { path: "/tmp/x" }) // { allowed: true }  count=1
+ * detector.check("file.read", { path: "/tmp/x" }) // { allowed: true }  count=2
+ * detector.check("file.read", { path: "/tmp/x" }) // { allowed: true }  count=3
+ * detector.check("file.read", { path: "/tmp/x" }) // { allowed: false, reason: "..." } count=4 >3
+ *
+ * // Non-consecutive (interleaved with different tool) resets:
+ * detector.check("file.read", { path: "/tmp/x" }) // { allowed: true }  count=1
+ * detector.check("shell.run",  { command: "ls" }) // { allowed: true }  count=1 (different tool resets)
+ * detector.check("file.read", { path: "/tmp/x" }) // { allowed: true }  count=1 (resets again)
+ * detector.check("file.read", { path: "/tmp/x" }) // { allowed: true }  count=2
+ * detector.check("file.read", { path: "/tmp/x" }) // { allowed: true }  count=3
+ * detector.check("file.read", { path: "/tmp/x" }) // { allowed: false } count=4 >3
  * ```
  *
- * A call with different args resets the count for that tool:
+ * Different args also reset:
  * ```ts
- * detector.check("file.read", { path: "/tmp/y" }) // { allowed: true } count=1 again
+ * detector.check("file.read", { path: "/tmp/x" }) // { allowed: true }  count=1
+ * detector.check("file.read", { path: "/tmp/y" }) // { allowed: true }  count=1 (different args reset)
  * ```
  */
 export class DoomLoopDetector {
   private readonly threshold: number
-  /** Map: toolName → { argsKey → consecutiveCount } */
-  private readonly callCounts = new Map<string, Map<string, number>>()
+  /** The last tool name seen — used to detect consecutive breaks. */
+  private lastTool: string | null = null
+  /** The last args key seen — used to detect consecutive breaks. */
+  private lastArgsKey: string | null = null
+  /** Current consecutive count for the (tool, args) pair above. */
+  private count = 0
 
   constructor(threshold: number = WS_RUNTIME_CONSTANTS.DOOM_LOOP_THRESHOLD) {
     this.threshold = threshold
@@ -59,6 +80,10 @@ export class DoomLoopDetector {
   /**
    * Check whether a tool call should be allowed.
    *
+   * Only increments the count when the new call matches both the
+   * previous tool name AND the previous arguments.  Any mismatch
+   * resets the consecutive count to 1.
+   *
    * @param toolName - Name of the tool being called.
    * @param args     - Parsed arguments object.
    * @returns DoomLoopResult with `allowed` flag.
@@ -66,21 +91,21 @@ export class DoomLoopDetector {
   check(toolName: string, args: Record<string, unknown>): DoomLoopResult {
     const argsKey = this.argsToKey(args)
 
-    let toolCounts = this.callCounts.get(toolName)
-    if (!toolCounts) {
-      toolCounts = new Map()
-      this.callCounts.set(toolName, toolCounts)
+    // Consecutive same tool + same args → increment
+    // Anything else → reset
+    if (toolName === this.lastTool && argsKey === this.lastArgsKey) {
+      this.count += 1
+    } else {
+      this.count = 1
+      this.lastTool = toolName
+      this.lastArgsKey = argsKey
     }
 
-    const currentCount = toolCounts.get(argsKey) ?? 0
-    const newCount = currentCount + 1
-    toolCounts.set(argsKey, newCount)
-
-    if (newCount > this.threshold) {
-      const blockedBy = newCount - 1 // the threshold count that was allowed
+    if (this.count > this.threshold) {
+      const blockedBy = this.threshold // the max allowed count
       return {
         allowed: false,
-        reason: `Doom loop blocked: tool "${toolName}" called with identical arguments ${newCount} times consecutively (allowed ${blockedBy}, blocked #${newCount}). Use the previous result or change arguments.`,
+        reason: `Doom loop blocked: tool "${toolName}" called with identical arguments ${this.count} times consecutively (allowed ${blockedBy}, blocked #${this.count}). Use the previous result or change arguments.`,
       }
     }
 
@@ -88,10 +113,12 @@ export class DoomLoopDetector {
   }
 
   /**
-   * Reset all counters (e.g., at the start of a new run).
+   * Reset all state (e.g., at the start of a new run).
    */
   reset(): void {
-    this.callCounts.clear()
+    this.lastTool = null
+    this.lastArgsKey = null
+    this.count = 0
   }
 
   /**

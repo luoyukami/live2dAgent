@@ -121,6 +121,11 @@ describe("MimoWsRuntime", () => {
     await runtime.open("conv_1")
 
     assert.equal(server.connected, true, "Server should have accepted the connection")
+    assert.equal(server.upgradeHeaders?.authorization, "Bearer test-api-key-12345")
+    const upgradeUrl = server.upgradeUrl ?? ""
+    assert.equal(upgradeUrl.includes("api_key="), false)
+    assert.equal(upgradeUrl.includes("key="), false)
+    assert.equal(upgradeUrl.includes("token="), false)
     await runtime.close("test done")
   })
 
@@ -139,6 +144,12 @@ describe("MimoWsRuntime", () => {
         assert.equal(msg.store, false)
         assert.ok(Array.isArray(msg.input), "input should be an array")
         assert.ok(Array.isArray(msg.tools), "tools should be an array")
+        const input = msg.input as Array<Record<string, unknown>>
+        assert.equal(input[0]!.type, "message")
+        assert.equal(input[0]!.role, "user")
+        const content = input[0]!.content as Array<Record<string, unknown>>
+        assert.equal(content[0]!.type, "input_text")
+        assert.equal(content[0]!.text, "Hello")
         return [
           { type: "response.created", response_id: "resp_shape_1" },
           { type: "response.completed", response_id: "resp_shape_1" },
@@ -164,6 +175,43 @@ describe("MimoWsRuntime", () => {
     assert.equal(events.length, 2)
     assert.equal(events[0]!.type, "response.created")
     assert.equal(events[1]!.type, "response.completed")
+    await runtime.close("test done")
+  })
+
+  test("create with remoteResponseId sends user message input, not function_call_output", async () => {
+    const port = await setupServer()
+
+    server.stepHandlers = [{
+      handle(msg) {
+        assert.equal(msg.type, "response.create")
+        assert.equal(msg.previous_response_id, "resp_prev_1")
+        const input = msg.input as Array<Record<string, unknown>>
+        assert.equal(input.length, 1)
+        assert.equal(input[0]!.type, "message")
+        assert.equal(input[0]!.role, "user")
+        assert.notEqual(input[0]!.type, "function_call_output")
+        const content = input[0]!.content as Array<Record<string, unknown>>
+        assert.equal(content[0]!.type, "input_text")
+        assert.equal(content[0]!.text, "Next turn")
+        return [
+          { type: "response.created", response_id: "resp_next_1" },
+          { type: "response.completed", response_id: "resp_next_1" },
+        ]
+      },
+    }]
+
+    runtime = new MimoWsRuntime({
+      baseUrl: `http://localhost:${port}/v1`,
+      model: "test-model",
+      apiKey: "test-key",
+    })
+
+    await runtime.open("conv_remote_create")
+    await collectEvents(runtime.create(createInput({
+      remoteResponseId: "resp_prev_1",
+      messages: [{ role: "user", content: [{ type: "text", text: "Next turn" }] }],
+    })))
+    assert.equal(server.upgradeUrl, "/v1/responses")
     await runtime.close("test done")
   })
 
@@ -720,7 +768,7 @@ describe("MimoWsRuntime", () => {
 
     const request = protocol.encodeCreateRequest(
       "test-model",
-      [{ type: "input_text", text: "Hello" }],
+      [{ type: "message", role: "user", content: [{ type: "input_text", text: "Hello" }] }],
       tools,
     )
 

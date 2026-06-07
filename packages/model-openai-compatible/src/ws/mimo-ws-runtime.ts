@@ -33,7 +33,6 @@ import type {
 import type { NodeWsConnection, WsConnectInput } from "./node-ws-connection.js"
 import { MimoWsProtocol } from "./mimo-ws-protocol.js"
 import { encodeTools, type ProviderToolSchema } from "./mimo-tool-schema-encoder.js"
-import { encodeContent, type ProviderContentPart } from "./mimo-content-encoder.js"
 
 /* ------------------------------------------------------------------ */
 /*  MimoWsRuntime                                                      */
@@ -180,39 +179,19 @@ export class MimoWsRuntime implements ProviderRuntime {
   async *create(input: CanonicalCreateInput): AsyncGenerator<ModelEvent> {
     this.ensureConnected()
 
-    // Encode content parts from messages
-    const encodedInput: (ProviderContentPart | { type: "function_call_output"; call_id: string; output: string })[] = []
-
-    // Flatten all messages into content parts
-    for (const msg of input.messages) {
-      if (msg.role === "user" || msg.role === "system") {
-        const parts = encodeContent(msg.content)
-        for (const part of parts) {
-          encodedInput.push(part)
-        }
-      }
-      // assistant role messages with tool_calls are handled via previous_response_id
-    }
+    const encodedInput = this.protocol.encodeMessages(input.messages)
 
     // Encode tools
     const encodedTools = encodeTools(input.tools)
 
     // Build the request
-    const request = input.remoteResponseId
-      ? this.protocol.encodeContinuationRequest(
-          input.model,
-          input.remoteResponseId,
-          "",    // no call_id for continuation without tool result
-          "",
-          encodedTools,
-          input.maxOutputTokens,
-        )
-      : this.protocol.encodeCreateRequest(
-          input.model,
-          encodedInput,
-          encodedTools,
-          input.maxOutputTokens,
-        )
+    const request = this.protocol.encodeCreateRequest(
+      input.model,
+      encodedInput,
+      encodedTools,
+      input.maxOutputTokens,
+      input.remoteResponseId ?? null,
+    )
 
     // Send and stream events
     yield* this.sendAndStream(request)
@@ -383,20 +362,12 @@ export class MimoWsRuntime implements ProviderRuntime {
   }
 
   private resolveWsUrl(baseUrl: string): string {
-    // Convert http(s) to ws(s)
     const wsUrl = baseUrl
       .replace(/^http:/, "ws:")
       .replace(/^https:/, "wss:")
-      // Append /realtime if not already present
       .replace(/\/+$/, "")
 
-    // For MiMo/OpenAI-compatible, the WS endpoint is typically at /realtime
-    // Try to detect if the URL already looks like a WS path
-    if (wsUrl.includes("/realtime") || wsUrl.includes("/ws") || wsUrl.includes("/v1") || wsUrl.includes("/api")) {
-      return wsUrl
-    }
-
-    return `${wsUrl}/realtime`
+    return wsUrl.endsWith("/responses") ? wsUrl : `${wsUrl}/responses`
   }
 
   /* ---- Heartbeat ---- */

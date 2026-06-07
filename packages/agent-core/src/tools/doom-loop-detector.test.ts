@@ -6,7 +6,8 @@
  *   - Consecutive identical calls up to threshold are allowed
  *   - (threshold + 1)-th identical call is blocked
  *   - Different args for same tool resets the count
- *   - Different tool is always allowed
+ *   - Different tool resets the count (truly consecutive tracking)
+ *   - Non-consecutive pattern A,B,A,C,A,A — no false positives
  *   - reset() clears all counters
  *   - Custom threshold works
  *   - buildDoomLoopErrorOutput produces valid JSON
@@ -48,32 +49,61 @@ describe("DoomLoopDetector", () => {
   test("different args for same tool resets the count", () => {
     const detector = new DoomLoopDetector(3)
 
-    detector.check("file.read", { path: "/tmp/x" }) // 1st
-    detector.check("file.read", { path: "/tmp/x" }) // 2nd
-    detector.check("file.read", { path: "/tmp/x" }) // 3rd — still allowed
-    // Different args
-    detector.check("file.read", { path: "/tmp/y" }) // 1st again (different args)
-    assert.equal(detector.check("file.read", { path: "/tmp/y" }).allowed, true) // 2nd with new args
-    assert.equal(detector.check("file.read", { path: "/tmp/y" }).allowed, true) // 3rd with new args
-    // 4th with identical new args should be blocked
+    // Build consecutive count for args /tmp/x
+    detector.check("file.read", { path: "/tmp/x" }) // count=1
+    detector.check("file.read", { path: "/tmp/x" }) // count=2
+    detector.check("file.read", { path: "/tmp/x" }) // count=3 — still allowed
+
+    // Different args resets count to 1
+    assert.equal(detector.check("file.read", { path: "/tmp/y" }).allowed, true) // count=1 (different args → reset)
+    assert.equal(detector.check("file.read", { path: "/tmp/y" }).allowed, true) // count=2
+    assert.equal(detector.check("file.read", { path: "/tmp/y" }).allowed, true) // count=3
+    // 4th with same y-args should be blocked
     const result = detector.check("file.read", { path: "/tmp/y" })
     assert.equal(result.allowed, false)
+
+    // Switching back to /tmp/x also resets (last was /tmp/y)
+    assert.equal(detector.check("file.read", { path: "/tmp/x" }).allowed, true) // count=1 (reset!)
+    assert.equal(detector.check("file.read", { path: "/tmp/x" }).allowed, true) // count=2
   })
 
-  test("different tool is always allowed independently", () => {
+  test("different tool resets the consecutive count", () => {
     const detector = new DoomLoopDetector(3)
 
-    // Make 4 identical calls to file.read — should block on 4th
-    detector.check("file.read", { path: "/tmp/x" })
-    detector.check("file.read", { path: "/tmp/x" })
-    detector.check("file.read", { path: "/tmp/x" })
-    assert.equal(detector.check("file.read", { path: "/tmp/x" }).allowed, false)
+    // Build up a consecutive count of 3 for file.read
+    detector.check("file.read", { path: "/tmp/x" }) // count=1
+    detector.check("file.read", { path: "/tmp/x" }) // count=2
+    detector.check("file.read", { path: "/tmp/x" }) // count=3 (still allowed)
 
-    // But different tool is still allowed
-    assert.equal(detector.check("shell.run", { command: "ls" }).allowed, true)
-    assert.equal(detector.check("shell.run", { command: "ls" }).allowed, true)
-    assert.equal(detector.check("shell.run", { command: "ls" }).allowed, true)
-    assert.equal(detector.check("shell.run", { command: "ls" }).allowed, false) // 4th blocked
+    // Switching to a different tool resets — shell.run starts at count=1
+    assert.equal(detector.check("shell.run", { command: "ls" }).allowed, true) // count=1
+    assert.equal(detector.check("shell.run", { command: "ls" }).allowed, true) // count=2
+    assert.equal(detector.check("shell.run", { command: "ls" }).allowed, true) // count=3
+    assert.equal(detector.check("shell.run", { command: "ls" }).allowed, false) // count=4 — blocked
+
+    // Switching BACK to file.read resets again (was interrupted by different tool)
+    assert.equal(detector.check("file.read", { path: "/tmp/x" }).allowed, true) // count=1 (reset!)
+    assert.equal(detector.check("file.read", { path: "/tmp/x" }).allowed, true) // count=2
+    assert.equal(detector.check("file.read", { path: "/tmp/x" }).allowed, true) // count=3
+    assert.equal(detector.check("file.read", { path: "/tmp/x" }).allowed, false) // count=4 — blocked
+  })
+
+  test("non-consecutive A,B,A,C,A,A does not accumulate across interruptions", () => {
+    const detector = new DoomLoopDetector(3)
+
+    // Sequence: A, B, A, C, A, A
+    //          (file.read /tmp/x)(shell.run ls)(file.read /tmp/x)(shell.run pwd)(file.read /tmp/x)(file.read /tmp/x)
+    // Every time a different tool appears, counts reset.
+    assert.equal(detector.check("file.read", { path: "/tmp/x" }).allowed, true)  // A: count=1
+    assert.equal(detector.check("shell.run", { command: "ls" }).allowed, true)   // B: count=1 (different tool)
+    assert.equal(detector.check("file.read", { path: "/tmp/x" }).allowed, true)  // A: count=1 (reset — last was B)
+    assert.equal(detector.check("shell.run", { command: "pwd" }).allowed, true)  // C: count=1 (different tool)
+    assert.equal(detector.check("file.read", { path: "/tmp/x" }).allowed, true)  // A: count=1 (reset — last was C)
+    assert.equal(detector.check("file.read", { path: "/tmp/x" }).allowed, true)  // A: count=2 (consecutive now)
+    // 3rd consecutive A still allowed
+    assert.equal(detector.check("file.read", { path: "/tmp/x" }).allowed, true)  // A: count=3
+    // 4th consecutive A should be blocked
+    assert.equal(detector.check("file.read", { path: "/tmp/x" }).allowed, false) // A: count=4 > 3
   })
 
   test("reset clears all counters", () => {

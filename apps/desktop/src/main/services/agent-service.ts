@@ -2,11 +2,12 @@ import { clipboard, desktopCapturer } from "electron"
 import { spawn } from "node:child_process"
 import { existsSync, mkdirSync, readFileSync, realpathSync, writeFileSync } from "node:fs"
 import { dirname, isAbsolute, resolve, relative } from "node:path"
-import { AgentSession, AssistantRuntime, ContextManager, ConversationManager, DefaultProviderRuntimeRegistry, EventBus, RunController, ToolRegistry, WsSessionManager, composeSystemPrompt, isEmotionPromptInjected, ToolResultLimiter, type AgentEvent, type AgentAction, type AgentRuntimeEvent, type ArtifactWriter, type ToolResult, type ToolRuntime, type ToolArtifact, type ConversationStore, type ContextBuilder, type ToolManager, type ToolValidationResult, type CanonicalToolDefinition, type ModelToolCall, type ValidatedToolCall, type CanonicalToolResult, type CanonicalCreateInput, type CanonicalToolContinuationInput, type AssistantRuntimeEvent, type ProviderRuntime, type ModelMessage, type ModelContentPart } from "@live2d-agent/agent-core"
+import { AgentSession, AssistantRuntime, ContextManager, ConversationManager, DefaultProviderRuntimeRegistry, EventBus, RunController, ToolRegistry, WsSessionManager, composeSystemPrompt, isEmotionPromptInjected, ToolResultLimiter, WS_RUNTIME_CONSTANTS, estimateTokens, type AgentEvent, type AgentAction, type AgentRuntimeEvent, type ArtifactWriter, type ToolResult, type ToolRuntime, type ToolArtifact, type ConversationStore, type ConversationStoreMessage, type ContextBuilder, type ToolManager, type ToolValidationResult, type CanonicalToolDefinition, type ModelToolCall, type ValidatedToolCall, type CanonicalToolResult, type CanonicalCreateInput, type CanonicalToolContinuationInput, type AssistantRuntimeEvent, type ProviderRuntime, type ModelMessage, type ModelContentPart } from "@live2d-agent/agent-core"
 import { OpenAiCompatibleAdapter, OpenAiCompatibleWsClient, MimoWsRuntime } from "@live2d-agent/model-openai-compatible"
 import { createDefaultTools, type RuntimeToolContext } from "@live2d-agent/tools"
 import type { ArtifactRef, AudioArtifactRef, AudioContextAttachment, DebugEmotionInfo, Emotion } from "@live2d-agent/shared"
 import type { EmotionSource } from "@live2d-agent/agent-core"
+import type { ArtifactRef as ArtifactRefType } from "@live2d-agent/shared"
 import type { ArtifactStore } from "./artifact-store.js"
 import type { PermissionService } from "./permission-service.js"
 import type { PromptService } from "./prompt-service.js"
@@ -254,8 +255,8 @@ export class AgentService implements ToolRuntime {
 
     // Create adapters
     const store = new ConversationStoreAdapter(this.conversationManager!)
-    const contextBuilder = new ContextBuilderAdapter(systemPrompt, settings.openaiModel)
-    const toolManager = new ToolManagerAdapter(registry, this)
+    const contextBuilder = new ContextBuilderAdapter(systemPrompt, settings.openaiModel, this.deps.artifacts)
+    const toolManager = new ToolManagerAdapter(registry, this, this.deps.permissions)
 
     // Create AssistantRuntime
     this.assistantRuntime = new AssistantRuntime({
@@ -291,7 +292,7 @@ export class AgentService implements ToolRuntime {
     return composeSystemPrompt(base, settings.emotion)
   }
 
-  async sendUserMessage(input: string | { text: string; attachments?: AudioContextAttachment[]; artifactRefs?: Array<{ id: string; kind: string; mimeType: string }>; conversationId?: string }): Promise<void> {
+  async sendUserMessage(input: string | { text: string; attachments?: AudioContextAttachment[]; artifactRefs?: ArtifactRefType[]; conversationId?: string }): Promise<void> {
     if (!this.deps.settings.get().openaiApiKey) {
       this.emit({
         type: "message.added",
@@ -330,7 +331,15 @@ export class AgentService implements ToolRuntime {
 
     // Default WS runtime path
     if (!this.assistantRuntime) this.reconfigure()
-    await this.assistantRuntime?.sendUserMessage(conversationId, text)
+
+    const artifactRefs = typeof input === "object" ? input.artifactRefs : undefined
+
+    // Pass full text, attachments, and artifactRefs to AssistantRuntime
+    await this.assistantRuntime?.sendUserMessage(conversationId, {
+      text,
+      attachments: attachments as any,
+      artifactRefs: artifactRefs as any,
+    })
   }
 
   async executeMany(actions: AgentAction[]): Promise<ToolResult[]> {
@@ -828,9 +837,30 @@ function createLimitedCollector(maxBytes = 64 * 1024): { append(chunk: Buffer): 
 class ConversationStoreAdapter implements ConversationStore {
   constructor(private readonly mgr: ConversationManager) {}
 
-  appendUserMessage(conversationId: string, text: string): { id: string } {
+  appendUserMessage(
+    conversationId: string,
+    text: string,
+    attachments?: Array<{ id: string; type: "audio"; label: string; artifact: { id: string; kind: string; path: string; mimeType: string; size: number; createdAt: number }; mimeType: string; durationMs: number; createdAt: number }>,
+    artifactRefs?: Array<{ id: string; kind: string; path: string; mimeType: string; size: number; createdAt: number }>,
+  ): { id: string } {
     const msg = this.mgr.appendUserMessage(conversationId, text)
     if (!msg) throw new Error(`Conversation not found: ${conversationId}`)
+
+    // Store attachments and artifactRefs on the ConversationManager message
+    // via the underlying Conversation object's messages array.
+    const conv = (this.mgr as any).getConversation(conversationId)
+    if (conv) {
+      const storedMsg = conv.messages.find((m: { id: string }) => m.id === msg.id)
+      if (storedMsg) {
+        if (attachments && attachments.length > 0) {
+          storedMsg.attachments = attachments
+        }
+        if (artifactRefs && artifactRefs.length > 0) {
+          storedMsg.extra = { ...(storedMsg.extra || {}), artifactRefs }
+        }
+      }
+    }
+
     return msg
   }
 
@@ -872,8 +902,23 @@ class ConversationStoreAdapter implements ConversationStore {
 
   getConversationMessages(
     conversationId: string,
-  ): Array<{ id: string; role: string; content: string }> {
-    return this.mgr.getMessages(conversationId)
+  ): ConversationStoreMessage[] {
+    const msgs = this.mgr.getMessages(conversationId)
+    const conv = (this.mgr as any).getConversation(conversationId)
+    if (!conv) return msgs
+    return msgs.map((m: { id: string; role: "user" | "assistant"; content: string; createdAt: number }) => {
+      const stored = conv.messages.find((s: { id: string }) => s.id === m.id)
+      if (stored && (stored.attachments || stored.extra)) {
+        return {
+          id: m.id,
+          role: m.role,
+          content: m.content,
+          attachments: stored.attachments,
+          extra: stored.extra,
+        }
+      }
+      return { id: m.id, role: m.role, content: m.content }
+    })
   }
 
   hasConversation(conversationId: string): boolean {
@@ -882,15 +927,53 @@ class ConversationStoreAdapter implements ConversationStore {
 }
 
 /**
- * Simple ContextBuilder that wraps system prompt + messages into canonical model input.
+ * ContextBuilder that wraps system prompt + messages into canonical model input
+ * with budget enforcement, message limiting, and artifact size tracking.
  *
- * Phase 4: Text-only messages. Attachments are preserved in the parameter structure
- * but not encoded (audio returns unsupported error per plan §8.3).
+ * Multimodal support:
+ *   - Image artifactRefs from extra.artifactRefs → ModelContentPart image
+ *   - Audio artifacts → ModelContentPart audio (encoder will throw
+ *     UnsupportedInputPartError per plan §8.3 — no text placeholders)
+ *   - AudioContextAttachment attachments → ModelContentPart audio
+ *
+ * Budget rules (applied to buildCreateInput):
+ *   1. System prompt is always included first.
+ *   2. Summary placeholder (fixed string) is added when messages are trimmed.
+ *   3. Up to 16 most recent text messages are included (system-filtered).
+ *   4. Token estimation uses exported `estimateTokens` (chars / 3.5 heuristic).
+ *   5. Estimated tokens > 48 000 → shrink to last 8 messages.
+ *   6. Estimated tokens > 64 000 → throw `context_hard_limit_exceeded`.
+ *   7. Artifact raw byte budget: 12 MB per request (WS_RUNTIME_CONSTANTS.MAX_RAW_ARTIFACT_BYTES_PER_REQUEST).
+ *      When inline image/audio data would exceed this budget, the last sendable
+ *      image is kept and earlier raw artifacts are replaced with artifactRefs.
  */
 class ContextBuilderAdapter implements ContextBuilder {
+  /** Max conversation text messages to include (before token-based shrinking). */
+  private static readonly MAX_TEXT_MESSAGES = 16
+  /** Smaller window when soft token limit is exceeded. */
+  private static readonly SHRUNK_TEXT_MESSAGES = 8
+
+  /** Soft token limit — above this, shrink to SHRUNK_TEXT_MESSAGES. */
+  private static readonly TOKEN_SOFT_LIMIT = 48_000
+  /** Hard token limit — above this, refuse the request. */
+  private static readonly TOKEN_HARD_LIMIT = 64_000
+
+  /**
+   * Fixed summary placeholder used when messages are trimmed.
+   * Per spec: may be empty or a fixed placeholder.
+   */
+  private static readonly SUMMARY_PLACEHOLDER = "[Previous conversation context omitted]"
+
+  /**
+   * Maximum total bytes of inline raw artifact data (image, audio) per single request.
+   */
+  private static readonly MAX_ARTIFACT_RAW_BYTES =
+    WS_RUNTIME_CONSTANTS.MAX_RAW_ARTIFACT_BYTES_PER_REQUEST
+
   constructor(
     private readonly systemPrompt: string,
     private readonly model: string,
+    private readonly artifactStore: ArtifactStore,
   ) {}
 
   buildCreateInput(params: {
@@ -898,25 +981,72 @@ class ContextBuilderAdapter implements ContextBuilder {
     runId: string
     systemPrompt: string
     userText: string
-    messages: Array<{ id: string; role: string; content: string }>
+    messages: ConversationStoreMessage[]
     tools: CanonicalToolDefinition[]
     remoteResponseId?: string | null
   }): CanonicalCreateInput {
-    const messages: ModelMessage[] = []
+    const modelMessages = this._buildModelMessages(params)
 
-    // System message
-    messages.push({
+    return {
+      conversationId: params.conversationId,
+      runId: params.runId,
+      model: this.model,
+      remoteResponseId: params.remoteResponseId ?? null,
+      messages: modelMessages,
+      tools: params.tools,
+      toolChoice: "auto",
+      parallelToolCalls: false,
+      maxOutputTokens: 8000,
+    }
+  }
+
+  /**
+   * Core message-building logic with budget enforcement and multimodal content.
+   *
+   * 1. System prompt
+   * 2. Summary placeholder (if trimming occurred)
+   * 3. Up to MAX_TEXT_MESSAGES messages (exclude system)
+   * 4. Current user text (deduplicate against last message)
+   * 5. Token estimation → shrink or throw as needed
+   * 6. Artifact raw byte budget enforcement
+   */
+  private _buildModelMessages(
+    params: {
+      systemPrompt: string
+      userText: string
+      messages: ConversationStoreMessage[]
+    },
+  ): ModelMessage[] {
+    // ── Step 1: Filter and limit conversation messages ──────────────
+    let convMessages = params.messages.filter((m) => m.role !== "system")
+    const wasTrimmed = convMessages.length > ContextBuilderAdapter.MAX_TEXT_MESSAGES
+    if (wasTrimmed) {
+      convMessages = convMessages.slice(-ContextBuilderAdapter.MAX_TEXT_MESSAGES)
+    }
+
+    // ── Step 2: Build the message list ───────────────────────────────
+    const modelMessages: ModelMessage[] = []
+
+    // System prompt
+    modelMessages.push({
       role: "system",
       content: [{ type: "text", text: params.systemPrompt }],
     })
 
-    // Conversation messages (exclude system - already handled)
-    for (const msg of params.messages) {
-      if (msg.role === "system") continue
+    // Summary placeholder if messages were trimmed
+    if (wasTrimmed) {
+      modelMessages.push({
+        role: "system",
+        content: [{ type: "text", text: ContextBuilderAdapter.SUMMARY_PLACEHOLDER }],
+      })
+    }
+
+    // Conversation messages with multimodal content parts
+    for (const msg of convMessages) {
       const role = msg.role as "user" | "assistant" | "tool"
-      messages.push({
+      modelMessages.push({
         role,
-        content: [{ type: "text", text: msg.content }],
+        content: this._buildContentParts(msg),
       })
     }
 
@@ -928,24 +1058,239 @@ class ContextBuilderAdapter implements ContextBuilder {
       const lastMsg = params.messages[params.messages.length - 1]
       const alreadyIncluded = lastMsg?.role === "user" && lastMsg.content === params.userText
       if (!alreadyIncluded) {
-        messages.push({
+        modelMessages.push({
           role: "user",
           content: [{ type: "text", text: params.userText }],
         })
       }
     }
 
-    return {
-      conversationId: params.conversationId,
-      runId: params.runId,
-      model: this.model,
-      remoteResponseId: params.remoteResponseId ?? null,
-      messages,
-      tools: params.tools,
-      toolChoice: "auto",
-      parallelToolCalls: false,
-      maxOutputTokens: 8000,
+    // ── Step 3: Token estimation and budget enforcement ──────────────
+    const totalTokens = this._estimateMessagesTokens(modelMessages)
+
+    if (totalTokens > ContextBuilderAdapter.TOKEN_HARD_LIMIT) {
+      const shrunk = this._shrinkToLastN(params, 8)
+      const shrunkTokens = this._estimateMessagesTokens(shrunk)
+      if (shrunkTokens > ContextBuilderAdapter.TOKEN_HARD_LIMIT) {
+        throw new Error(
+          `context_hard_limit_exceeded: estimated ${shrunkTokens} tokens exceeds hard limit of ${ContextBuilderAdapter.TOKEN_HARD_LIMIT}`,
+        )
+      }
+      return shrunk
     }
+
+    if (totalTokens > ContextBuilderAdapter.TOKEN_SOFT_LIMIT) {
+      return this._shrinkToLastN(params, ContextBuilderAdapter.SHRUNK_TEXT_MESSAGES)
+    }
+
+    // ── Step 4: Artifact raw byte budget ─────────────────────────────
+    this._enforceArtifactByteBudget(modelMessages)
+
+    return modelMessages
+  }
+
+  /**
+   * Build content parts for a message:
+   * - Text content → text part
+   * - Image artifactRefs → image part (read from ArtifactStore)
+   * - Audio attachments/artifactRefs → audio part (encoder may reject)
+   * - No text placeholders for non-text content
+   */
+  private _buildContentParts(msg: ConversationStoreMessage): ModelContentPart[] {
+    const parts: ModelContentPart[] = []
+
+    // Always include text content
+    parts.push({ type: "text", text: msg.content })
+
+    // Handle artifactRefs from extra (screenshots, images, etc.)
+    const artifactRefs = msg.extra?.artifactRefs
+    if (artifactRefs && artifactRefs.length > 0) {
+      for (const ref of artifactRefs) {
+        if (ref.mimeType.startsWith("image/")) {
+          try {
+            const buffer = this.artifactStore.readArtifact(ref as ArtifactRefType)
+            const data = buffer.toString("base64")
+            parts.push({
+              type: "image",
+              mime: ref.mimeType,
+              data,
+              source: "artifact",
+              artifactId: ref.id,
+            })
+          } catch {
+            // If artifact cannot be read, skip — text content already included
+          }
+        } else if (ref.mimeType.startsWith("audio/")) {
+          // Generate audio part; the encoder will throw UnsupportedInputPartError
+          // per plan §8.3 — no text placeholders
+          try {
+            const buffer = this.artifactStore.readArtifact(ref as ArtifactRefType)
+            const data = buffer.toString("base64")
+            parts.push({
+              type: "audio",
+              mime: ref.mimeType,
+              data,
+              source: "artifact",
+              artifactId: ref.id,
+            })
+          } catch {
+            // Skip if artifact cannot be read
+          }
+        }
+        // Other types (tool-output, file-content) — skip, text is enough
+      }
+    }
+
+    // Handle audio attachments
+    const attachments = msg.attachments
+    if (attachments && attachments.length > 0) {
+      for (const att of attachments) {
+        if (att.type === "audio") {
+          try {
+            const buffer = this.artifactStore.readArtifact(att.artifact as ArtifactRefType)
+            const data = buffer.toString("base64")
+            parts.push({
+              type: "audio",
+              mime: att.mimeType,
+              data,
+              source: "artifact",
+              artifactId: att.artifact.id,
+            })
+          } catch {
+            // Skip if artifact cannot be read
+          }
+        }
+      }
+    }
+
+    return parts
+  }
+
+  /**
+   * Enforce artifact raw byte budget: total inline image/audio bytes
+   * must not exceed MAX_ARTIFACT_RAW_BYTES. If exceeded, replace earlier
+   * raw artifacts with file_ref parts, keeping the last one inline.
+   */
+  private _enforceArtifactByteBudget(modelMessages: ModelMessage[]): void {
+    let totalRawBytes = 0
+
+    // Collect all image/audio parts with their positions
+    interface ArtifactPart {
+      msgIdx: number
+      partIdx: number
+      bytes: number
+      artifactId: string
+      mime: string
+    }
+
+    const parts: ArtifactPart[] = []
+
+    for (let mi = 0; mi < modelMessages.length; mi++) {
+      const content = modelMessages[mi]!.content
+      for (let pi = 0; pi < content.length; pi++) {
+        const part = content[pi]!
+        if (part.type === "image" || part.type === "audio") {
+          const bytes = part.data.length
+          totalRawBytes += bytes
+          parts.push({
+            msgIdx: mi,
+            partIdx: pi,
+            bytes,
+            artifactId: part.artifactId ?? "",
+            mime: part.mime,
+          })
+        }
+      }
+    }
+
+    if (totalRawBytes <= ContextBuilderAdapter.MAX_ARTIFACT_RAW_BYTES) return
+
+    // Exceeded budget: replace earlier parts with file_ref, keep the last one
+    // Keep the last artifact part inline, replace all others
+    for (let i = 0; i < parts.length - 1; i++) {
+      const p = parts[i]!
+      const content = modelMessages[p.msgIdx]!.content
+      content[p.partIdx] = {
+        type: "file_ref",
+        artifactId: p.artifactId,
+        mime: p.mime,
+      }
+    }
+  }
+
+  /**
+   * Rebuild messages with only the last N conversation messages.
+   */
+  private _shrinkToLastN(
+    params: {
+      systemPrompt: string
+      userText: string
+      messages: ConversationStoreMessage[]
+    },
+    n: number,
+  ): ModelMessage[] {
+    const modelMessages: ModelMessage[] = []
+
+    // System prompt
+    modelMessages.push({
+      role: "system",
+      content: [{ type: "text", text: params.systemPrompt }],
+    })
+
+    // Summary placeholder (always present when shrinking)
+    modelMessages.push({
+      role: "system",
+      content: [{ type: "text", text: ContextBuilderAdapter.SUMMARY_PLACEHOLDER }],
+    })
+
+    // Last N non-system messages with multimodal content
+    const lastN = params.messages
+      .filter((m) => m.role !== "system")
+      .slice(-n)
+    for (const msg of lastN) {
+      const role = msg.role as "user" | "assistant" | "tool"
+      modelMessages.push({
+        role,
+        content: this._buildContentParts(msg),
+      })
+    }
+
+    // Current user text
+    if (params.userText) {
+      const lastMsg = params.messages[params.messages.length - 1]
+      const alreadyIncluded = lastMsg?.role === "user" && lastMsg.content === params.userText
+      if (!alreadyIncluded) {
+        modelMessages.push({
+          role: "user",
+          content: [{ type: "text", text: params.userText }],
+        })
+      }
+    }
+
+    return modelMessages
+  }
+
+  /**
+   * Estimate total tokens for an array of ModelMessage objects.
+   * Uses the exported `estimateTokens` (chars / 3.5 heuristic) plus
+   * a small per-message overhead for role/metadata framing.
+   */
+  private _estimateMessagesTokens(messages: ModelMessage[]): number {
+    let total = 0
+    for (const msg of messages) {
+      for (const part of msg.content) {
+        if (part.type === "text") {
+          total += estimateTokens(part.text)
+        } else if (part.type === "image" || part.type === "audio") {
+          // Rough estimate: ~2 tokens per byte for base64 data
+          total += Math.ceil(part.data.length / 2)
+        }
+        // file_ref parts are negligible
+      }
+      // Per-message framing overhead (~4 tokens)
+      total += 4
+    }
+    return total
   }
 
   buildContinuationInput(params: {
@@ -970,12 +1315,19 @@ class ContextBuilderAdapter implements ContextBuilder {
 }
 
 /**
- * ToolManager backed by ToolRegistry + AgentService execution.
+ * ToolManager backed by ToolRegistry + AgentService execution + PermissionService.
+ *
+ * executeToolCall() flow:
+ *   1. Construct AgentAction
+ *   2. Call PermissionService.check([action])
+ *   3. Denied → return CanonicalToolResult with status="denied", output/summary containing reason
+ *   4. Approved → execute only the approved actions via AgentService.executeMany
  */
 class ToolManagerAdapter implements ToolManager {
   constructor(
     private readonly registry: ToolRegistry,
     private readonly agent: AgentService,
+    private readonly permissions: PermissionService,
   ) {}
 
   getEnabledTools(): CanonicalToolDefinition[] {
@@ -1015,7 +1367,23 @@ class ToolManagerAdapter implements ToolManager {
       createdAt: Date.now(),
     }
 
-    const results = await this.agent.executeMany([action])
+    // 1. Check permission via PermissionService
+    const decision = await this.permissions.check([action])
+
+    // 2. Denied → return denied result
+    if (decision.status === "denied") {
+      const reason = decision.reason ?? "Tool execution denied by permission policy"
+      return {
+        callId: call.callId,
+        name: call.name,
+        status: "denied",
+        output: JSON.stringify({ status: "denied", summary: reason, reason }),
+        summary: reason,
+      }
+    }
+
+    // 3. Approved → execute only the approved actions
+    const results = await this.agent.executeMany(decision.actions)
     const result = results[0]
 
     if (result) {

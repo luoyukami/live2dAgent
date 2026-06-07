@@ -30,6 +30,7 @@ import type {
 } from "../model/model-tool.js"
 import type {
   ProviderRuntime,
+  ProviderRuntimeState,
   CanonicalCreateInput,
   CanonicalToolContinuationInput,
 } from "../model/model-runtime.js"
@@ -41,6 +42,48 @@ import type { AssistantRuntimeEvent } from "./assistant-runtime-events.js"
 import { AssistantRuntimeErrors } from "./runtime-errors.js"
 import type { AssistantRuntimeError } from "./runtime-errors.js"
 
+/* ---- External types used in interfaces ---- */
+
+/**
+ * Minimal attachment reference for audio context.
+ * Matches the shape from @live2d-agent/shared without requiring the full package.
+ */
+export interface AudioContextAttachmentLike {
+  id: string
+  type: "audio"
+  label: string
+  artifact: { id: string; kind: string; path: string; mimeType: string; size: number; createdAt: number }
+  mimeType: string
+  durationMs: number
+  createdAt: number
+}
+
+/** Lightweight artifact reference used in conversation messages. */
+export interface ArtifactRefLike {
+  id: string
+  kind: string
+  path: string
+  mimeType: string
+  size: number
+  createdAt: number
+}
+
+/* ------------------------------------------------------------------ */
+/*  ConversationStoreMessage                                           */
+/* ------------------------------------------------------------------ */
+
+/**
+ * Message shape returned by getConversationMessages.
+ * Extended to carry attachments and artifact refs for multimodal support.
+ */
+export interface ConversationStoreMessage {
+  id: string
+  role: string
+  content: string
+  attachments?: AudioContextAttachmentLike[]
+  extra?: { artifactRefs?: ArtifactRefLike[] }
+}
+
 /* ------------------------------------------------------------------ */
 /*  ConversationStore — minimal storage interface                       */
 /* ------------------------------------------------------------------ */
@@ -50,7 +93,12 @@ import type { AssistantRuntimeError } from "./runtime-errors.js"
  * The existing ConversationManager can be adapted by wrapping its methods.
  */
 export interface ConversationStore {
-  appendUserMessage(conversationId: string, text: string): { id: string }
+  appendUserMessage(
+    conversationId: string,
+    text: string,
+    attachments?: AudioContextAttachmentLike[],
+    artifactRefs?: ArtifactRefLike[],
+  ): { id: string }
   appendAssistantMessage(conversationId: string): { id: string } | null
   appendToolResultMessage(
     conversationId: string,
@@ -63,7 +111,7 @@ export interface ConversationStore {
   getRemoteResponseId(conversationId: string): string | null
   getConversationMessages(
     conversationId: string,
-  ): Array<{ id: string; role: string; content: string }>
+  ): ConversationStoreMessage[]
   hasConversation(conversationId: string): boolean
 }
 
@@ -75,6 +123,8 @@ export interface ConversationStore {
  * Simplified context builder interface.
  * Transforms raw conversation state into canonical ModelMessage[] and tools.
  * Can wrap the existing ContextManager or provide its own logic.
+ *
+ * Messages now carry optional attachments/artifactRefs for multimodal support.
  */
 export interface ContextBuilder {
   buildCreateInput(params: {
@@ -82,7 +132,7 @@ export interface ContextBuilder {
     runId: string
     systemPrompt: string
     userText: string
-    messages: Array<{ id: string; role: string; content: string }>
+    messages: ConversationStoreMessage[]
     tools: CanonicalToolDefinition[]
     remoteResponseId?: string | null
   }): CanonicalCreateInput
@@ -135,6 +185,8 @@ interface QueuedMessage {
   conversationId: string
   runId: string
   text: string
+  attachments?: AudioContextAttachmentLike[]
+  artifactRefs?: ArtifactRefLike[]
 }
 
 /* ------------------------------------------------------------------ */
@@ -154,13 +206,6 @@ export class AssistantRuntime {
   private readonly runs = new Map<string, AssistantRun>()
   private readonly queues = new Map<string, QueuedMessage[]>()
   private readonly eventListeners = new Set<(event: AssistantRuntimeEvent) => void>()
-
-  /**
-   * Tracks which conversations have had provider.open() called.
-   * Ensures open() is invoked exactly once per conversation before the
-   * first create() call, enabling the provider to establish its connection.
-   */
-  private readonly openedConversationIds = new Set<string>()
 
   /* ---- Tool result limiter (shared instance) ---- */
   private readonly limiter = new ToolResultLimiter()
@@ -205,23 +250,37 @@ export class AssistantRuntime {
   /**
    * Send a user message for processing.
    *
+   * Accepts either a plain string (backward-compatible text-only) or an extended
+   * input object with optional attachments and artifact refs for multimodal support.
+   *
    * If there is an active (non-terminal) run for the conversation, the message
    * is queued. If the queue is full, an error is thrown.
    * Returns the run ID.
    */
-  async sendUserMessage(conversationId: string, text: string): Promise<string> {
+  async sendUserMessage(
+    conversationId: string,
+    textOrInput: string | {
+      text: string
+      attachments?: AudioContextAttachmentLike[]
+      artifactRefs?: ArtifactRefLike[]
+    },
+  ): Promise<string> {
     if (!this.conversationStore.hasConversation(conversationId)) {
       throw AssistantRuntimeErrors.conversationNotFound(conversationId)
     }
 
+    const text = typeof textOrInput === "string" ? textOrInput : textOrInput.text
+    const attachments = typeof textOrInput === "object" ? textOrInput.attachments : undefined
+    const artifactRefs = typeof textOrInput === "object" ? textOrInput.artifactRefs : undefined
+
     // Check for active run
     const activeRun = this.getActiveRun(conversationId)
     if (activeRun) {
-      return this.enqueueMessage(conversationId, text)
+      return this.enqueueMessage(conversationId, text, attachments, artifactRefs)
     }
 
     // Start immediately
-    return this.startRun(conversationId, text)
+    return this.startRun(conversationId, text, attachments, artifactRefs)
   }
 
   /**
@@ -266,7 +325,12 @@ export class AssistantRuntime {
 
   /* ---- Queue management ---- */
 
-  private enqueueMessage(conversationId: string, text: string): string {
+  private enqueueMessage(
+    conversationId: string,
+    text: string,
+    attachments?: AudioContextAttachmentLike[],
+    artifactRefs?: ArtifactRefLike[],
+  ): string {
     const queue = this.getOrCreateQueue(conversationId)
 
     if (queue.length >= WS_RUNTIME_CONSTANTS.MAX_QUEUED_USER_MESSAGES_PER_CONVERSATION) {
@@ -278,7 +342,7 @@ export class AssistantRuntime {
     run.status = "queued"
     this.runs.set(runId, run)
 
-    queue.push({ conversationId, runId, text })
+    queue.push({ conversationId, runId, text, attachments, artifactRefs })
 
     this.emit({ type: "run.queued", conversationId, runId })
 
@@ -308,7 +372,7 @@ export class AssistantRuntime {
     }
 
     try {
-      await this.startRun(conversationId, next.text)
+      await this.startRun(conversationId, next.text, next.attachments, next.artifactRefs)
     } catch {
       // Queue processing errors are logged but don't propagate
     }
@@ -320,12 +384,19 @@ export class AssistantRuntime {
    * Start a new run: append user message, create run state, call provider,
    * consume events.
    */
-  private async startRun(conversationId: string, text: string): Promise<string> {
-    // 0. Ensure provider is opened for this conversation (once per conversation)
-    if (!this.openedConversationIds.has(conversationId)) {
+  private async startRun(
+    conversationId: string,
+    text: string,
+    attachments?: AudioContextAttachmentLike[],
+    artifactRefs?: ArtifactRefLike[],
+  ): Promise<string> {
+    // 0. Ensure provider connection is healthy (idle close reopen support).
+    //    Check provider state before each startRun. If closed/disconnected/error,
+    //    reopen the connection. If already connected, just reuse.
+    const state = this.provider.getState()
+    if (state.status === "closed" || state.status === "disconnected" || state.status === "error") {
       try {
         await this.provider.open(conversationId)
-        this.openedConversationIds.add(conversationId)
         this.emit({ type: "ws.ready", conversationId })
       } catch (err) {
         const error = AssistantRuntimeErrors.providerError(
@@ -342,8 +413,8 @@ export class AssistantRuntime {
       }
     }
 
-    // 1. Append user message
-    const userMessage = this.conversationStore.appendUserMessage(conversationId, text)
+    // 1. Append user message (with attachments/artifactRefs)
+    const userMessage = this.conversationStore.appendUserMessage(conversationId, text, attachments, artifactRefs)
     const runId = this.generateId("run")
 
     // 2. Create run

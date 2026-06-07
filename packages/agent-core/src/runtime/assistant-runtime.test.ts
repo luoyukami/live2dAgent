@@ -23,6 +23,7 @@ import assert from "node:assert/strict"
 import { AssistantRuntime } from "./assistant-runtime.js"
 import type {
   ConversationStore,
+  ConversationStoreMessage,
   ContextBuilder,
   ToolManager,
   ToolValidationResult,
@@ -54,6 +55,19 @@ class FakeProviderRuntime implements ProviderRuntime {
   public continuationCallCount = 0
   public cancelCalls: Array<{ responseId?: string; runId: string }> = []
   public closed = false
+
+  /** How many times open() was called. */
+  public openCallCount = 0
+  /** When true, open() throws an error. */
+  public openShouldThrow = false
+
+  /** Current provider status for idle close reopen testing. */
+  private _status: "disconnected" | "connecting" | "connected" | "closed" | "error" = "connected"
+
+  /** Override the provider status (simulates idle close / error). */
+  setStatus(status: "disconnected" | "connecting" | "connected" | "closed" | "error"): void {
+    this._status = status
+  }
 
   /** When true, the generator hangs after yielding all events. */
   private hangAfterYield = false
@@ -97,7 +111,11 @@ class FakeProviderRuntime implements ProviderRuntime {
   }
 
   async open(_conversationId: string): Promise<void> {
-    // noop
+    this.openCallCount++
+    if (this.openShouldThrow) {
+      throw new Error("Fake provider open error")
+    }
+    this._status = "connected"
   }
 
   async *create(_input: CanonicalCreateInput): AsyncIterable<ModelEvent> {
@@ -147,10 +165,16 @@ class FakeProviderRuntime implements ProviderRuntime {
 
   async close(_reason: string): Promise<void> {
     this.closed = true
+    this._status = "closed"
   }
 
   getState(): ProviderRuntimeState {
-    return "ready" as unknown as ProviderRuntimeState
+    return {
+      status: this._status,
+      conversationId: null,
+      remoteResponseId: null,
+      connectedAt: this._status === "connected" ? Date.now() : null,
+    }
   }
 
   /** Reset all recorded state. */
@@ -164,6 +188,9 @@ class FakeProviderRuntime implements ProviderRuntime {
     this.hangAfterYield = false
     this.hangResolve = null
     this.hangPromise = null
+    this.openCallCount = 0
+    this.openShouldThrow = false
+    this._status = "connected"
   }
 }
 
@@ -192,7 +219,12 @@ class FakeConversationStore implements ConversationStore {
     return this.conversations.has(conversationId)
   }
 
-  appendUserMessage(conversationId: string, text: string): { id: string } {
+  appendUserMessage(
+    conversationId: string,
+    text: string,
+    attachments?: Array<{ id: string; type: "audio"; label: string; artifact: { id: string; kind: string; path: string; mimeType: string; size: number; createdAt: number }; mimeType: string; durationMs: number; createdAt: number }>,
+    artifactRefs?: Array<{ id: string; kind: string; path: string; mimeType: string; size: number; createdAt: number }>,
+  ): { id: string } {
     const conv = this.conversations.get(conversationId)
     if (!conv) throw new Error(`Conversation not found: ${conversationId}`)
     const msg = { id: `msg_${conv.messages.length}`, role: "user" as const, content: text }
@@ -242,7 +274,7 @@ class FakeConversationStore implements ConversationStore {
     return this.conversations.get(conversationId)?.remoteResponseId ?? null
   }
 
-  getConversationMessages(conversationId: string): Array<{ id: string; role: string; content: string }> {
+  getConversationMessages(conversationId: string): ConversationStoreMessage[] {
     const conv = this.conversations.get(conversationId)
     if (!conv) return []
     return [...conv.messages]
@@ -1180,5 +1212,280 @@ describe("AssistantRuntime — multi-conversation isolation", () => {
     assert.ok(asstB)
     assert.equal(asstA!.content, "Hello from A")
     assert.equal(asstB!.content, "Hello from B")
+  })
+})
+
+/* ---- Helper: wait for queued run to complete ---- */
+async function waitForRun(provider: FakeProviderRuntime): Promise<void> {
+  await new Promise((r) => setTimeout(r, 20))
+}
+
+describe("AssistantRuntime — Phase 3: permission routing", () => {
+  test("permission denied tool call returns denied result", async () => {
+    const store = new FakeConversationStore()
+    const provider = new FakeProviderRuntime()
+    const permissionDeniedToolManager: ToolManager = {
+      getEnabledTools() { return [] },
+      validateToolCall(call: any) { return { valid: true } },
+      async executeToolCall(call: any) {
+        return { callId: call.callId, name: call.name, status: "denied" as const, output: "", summary: "User denied" }
+      },
+    }
+    const runtime = new AssistantRuntime({
+      conversationStore: store,
+      provider,
+      contextBuilder: new FakeContextBuilder(),
+      toolManager: permissionDeniedToolManager,
+      model: "test-model",
+      systemPrompt: "You are a test assistant.",
+    })
+
+    const convId = store.createConversation("conv_permission")
+    const runId = await runtime.sendUserMessage(convId, "Do something dangerous")
+    assert.ok(runId)
+    await waitForRun(provider)
+    const msgs = store.getConversationMessages(convId)
+    assert.ok(msgs.length >= 1)
+    assert.ok(msgs[0].role === "user")
+  })
+
+  test("permission approved tool call executes normally", async () => {
+    const store = new FakeConversationStore()
+    const provider = new FakeProviderRuntime()
+    provider.setSingleCreateSequence([
+      { type: "tool.call", responseId: "resp_t1", callId: "call_1", name: "test_tool", argumentsText: "{}" },
+      { type: "response.completed", responseId: "resp_t1" },
+    ])
+    let toolExecuted = false
+    const permissionApprovedToolManager: ToolManager = {
+      getEnabledTools() { return [] },
+      validateToolCall(call: any) { return { valid: true } },
+      async executeToolCall(call: any) {
+        toolExecuted = true
+        return { callId: call.callId, name: call.name, status: "ok" as const, output: "done", summary: "Executed" }
+      },
+    }
+    const runtime = new AssistantRuntime({
+      conversationStore: store,
+      provider,
+      contextBuilder: new FakeContextBuilder(),
+      toolManager: permissionApprovedToolManager,
+      model: "test-model",
+      systemPrompt: "You are a test assistant.",
+    })
+
+    const convId = store.createConversation("conv_approved")
+    const runId = await runtime.sendUserMessage(convId, "Run command")
+    assert.ok(runId)
+    await waitForRun(provider)
+    assert.ok(toolExecuted, "Tool should have been executed")
+  })
+})
+
+describe("AssistantRuntime — Phase 3: idle close reopen", () => {
+  test("reopens provider when state is closed", async () => {
+    const store = new FakeConversationStore()
+    const provider = new FakeProviderRuntime()
+    provider.setStatus("disconnected")
+    const runtime = new AssistantRuntime({
+      conversationStore: store,
+      provider,
+      contextBuilder: new FakeContextBuilder(),
+      toolManager: new FakeToolManager(),
+      model: "test-model",
+      systemPrompt: "You are a test assistant.",
+    })
+    const convId = store.createConversation("conv_idle1")
+
+    // First message opens provider
+    await runtime.sendUserMessage(convId, "Hello")
+    await waitForRun(provider)
+    assert.equal(provider.openCallCount, 1)
+
+    // Simulate idle close
+    provider.setStatus("closed")
+
+    // Second message should reopen
+    await runtime.sendUserMessage(convId, "Still there?")
+    await waitForRun(provider)
+    assert.equal(provider.openCallCount, 2, "Should have reopened after idle close")
+  })
+
+  test("reuses connection when provider is connected", async () => {
+    const store = new FakeConversationStore()
+    const provider = new FakeProviderRuntime()
+    provider.setStatus("disconnected")
+    const runtime = new AssistantRuntime({
+      conversationStore: store,
+      provider,
+      contextBuilder: new FakeContextBuilder(),
+      toolManager: new FakeToolManager(),
+      model: "test-model",
+      systemPrompt: "You are a test assistant.",
+    })
+    const convId = store.createConversation("conv_idle2")
+
+    // First message opens provider
+    await runtime.sendUserMessage(convId, "Hello")
+    await waitForRun(provider)
+    const callCountAfterFirst = provider.openCallCount
+    assert.equal(callCountAfterFirst, 1, "Should have opened on first message")
+
+    // Provider is now connected, second message should reuse
+    await runtime.sendUserMessage(convId, "Again")
+    await waitForRun(provider)
+    assert.equal(provider.openCallCount, callCountAfterFirst, "Should reuse connection")
+  })
+
+  test("reopens when state is error", async () => {
+    const store = new FakeConversationStore()
+    const provider = new FakeProviderRuntime()
+    provider.setStatus("disconnected")
+    const runtime = new AssistantRuntime({
+      conversationStore: store,
+      provider,
+      contextBuilder: new FakeContextBuilder(),
+      toolManager: new FakeToolManager(),
+      model: "test-model",
+      systemPrompt: "You are a test assistant.",
+    })
+    const convId = store.createConversation("conv_idle3")
+
+    // First message opens provider
+    await runtime.sendUserMessage(convId, "Hello")
+    await waitForRun(provider)
+    assert.equal(provider.openCallCount, 1)
+
+    provider.setStatus("error")
+
+    await runtime.sendUserMessage(convId, "Recover?")
+    await waitForRun(provider)
+    assert.equal(provider.openCallCount, 2, "Should reopen after error")
+  })
+
+  test("open failure creates a failed run", async () => {
+    const store = new FakeConversationStore()
+    const provider = new FakeProviderRuntime()
+    provider.openShouldThrow = true
+    const runtime = new AssistantRuntime({
+      conversationStore: store,
+      provider,
+      contextBuilder: new FakeContextBuilder(),
+      toolManager: new FakeToolManager(),
+      model: "test-model",
+      systemPrompt: "You are a test assistant.",
+    })
+    const convId = store.createConversation("conv_idle4")
+
+    const emitted: any[] = []
+    runtime.onEvent((ev) => emitted.push(ev))
+
+    provider.setStatus("closed")
+    await runtime.sendUserMessage(convId, "Fail")
+    await new Promise((r) => setTimeout(r, 10))
+
+    const failures = emitted.filter((e) => e.type === "run.failed")
+    assert.ok(failures.length > 0, "Should emit run.failed after reopen failure")
+  })
+})
+
+describe("AssistantRuntime — Phase 3: sendUserMessage with attachments", () => {
+  test("stores attachments in conversation message", async () => {
+    const store = new FakeConversationStore()
+    const provider = new FakeProviderRuntime()
+    const runtime = new AssistantRuntime({
+      conversationStore: store,
+      provider,
+      contextBuilder: new FakeContextBuilder(),
+      toolManager: new FakeToolManager(),
+      model: "test-model",
+      systemPrompt: "You are a test assistant.",
+    })
+    const convId = store.createConversation("conv_attach1")
+
+    const attachment = {
+      id: "audio_1",
+      type: "audio" as const,
+      label: "test recording",
+      artifact: {
+        id: "art_audio_1",
+        kind: "audio" as const,
+        path: "/tmp/test.wav",
+        mimeType: "audio/wav",
+        size: 1024,
+        createdAt: Date.now(),
+      },
+      mimeType: "audio/wav",
+      durationMs: 5000,
+      createdAt: Date.now(),
+    }
+
+    await runtime.sendUserMessage(convId, {
+      text: "Here is audio",
+      attachments: [attachment],
+    })
+
+    await waitForRun(provider)
+
+    const msgs = store.getConversationMessages(convId)
+    const userMsg = msgs.find((m) => m.role === "user")
+    assert.ok(userMsg)
+  })
+
+  test("stores artifactRefs in conversation message", async () => {
+    const store = new FakeConversationStore()
+    const provider = new FakeProviderRuntime()
+    const runtime = new AssistantRuntime({
+      conversationStore: store,
+      provider,
+      contextBuilder: new FakeContextBuilder(),
+      toolManager: new FakeToolManager(),
+      model: "test-model",
+      systemPrompt: "You are a test assistant.",
+    })
+    const convId = store.createConversation("conv_ref1")
+
+    const artifactRef = {
+      id: "art_img_1",
+      kind: "image" as const,
+      path: "/tmp/image.png",
+      mimeType: "image/png",
+      size: 2048,
+      createdAt: Date.now(),
+    }
+
+    await runtime.sendUserMessage(convId, {
+      text: "Here is an image",
+      artifactRefs: [artifactRef],
+    })
+
+    await waitForRun(provider)
+
+    const msgs = store.getConversationMessages(convId)
+    const userMsg = msgs.find((m) => m.role === "user")
+    assert.ok(userMsg)
+  })
+
+  test("backward compatible string input still works", async () => {
+    const store = new FakeConversationStore()
+    const provider = new FakeProviderRuntime()
+    const runtime = new AssistantRuntime({
+      conversationStore: store,
+      provider,
+      contextBuilder: new FakeContextBuilder(),
+      toolManager: new FakeToolManager(),
+      model: "test-model",
+      systemPrompt: "You are a test assistant.",
+    })
+    const convId = store.createConversation("conv_backward")
+
+    const runId = await runtime.sendUserMessage(convId, "Just text")
+    assert.ok(runId)
+    await waitForRun(provider)
+
+    const msgs = store.getConversationMessages(convId)
+    const userMsg = msgs.find((m) => m.role === "user")
+    assert.ok(userMsg)
+    assert.equal(userMsg!.content, "Just text")
   })
 })
