@@ -19,6 +19,58 @@ let cubismCorePromise: Promise<void> | null = null
 let cubismCoreScript: HTMLScriptElement | null = null
 
 /* ------------------------------------------------------------------ */
+/*  Model-specific load quirks                                         */
+/* ------------------------------------------------------------------ */
+
+/**
+ * 某些 Live2D 模型（多为 VTuber 社区二次配布的 model）会在加载时自带一个
+ * 提示/水印 overlay，需要手动激活一次特定 .exp3.json 才能关掉。
+ *
+ * 为了不污染 Agent Core（详见 AGENTS.md "Live2D 开发约定"），我们把这类
+ * "加载即触发一次" 的表情规则集中维护在 renderer 侧的一张表里。
+ *
+ * 匹配方式：按 model3.json 的 basename 精确匹配（避免目录名 / 绝对路径
+ * 差异导致漏匹配）。命中后会在模型加载完成、首次渲染前自动调用一次
+ * model.expression(name)，让用户看到的第一帧就是"干净"状态。
+ *
+ * 新增规则：
+ *   1. 把 .exp3.json 放到模型目录里；
+ *   2. 在 MODEL_LOAD_QUIRKS 里追加一条 { modelFile, expression }；
+ *   3. 跑一次 `corepack pnpm typecheck` 确认引用闭合。
+ *
+ * 注意：这里的 expression 名称来自 .exp3.json 的文件名（不含扩展名），
+ * 与 Live2D ModelSettings.Expressions 列表的 Name 字段保持一致。
+ */
+const MODEL_LOAD_QUIRKS: ReadonlyArray<{
+  /** model3.json 的文件名（含 .model3.json 后缀），按 basename 匹配。 */
+  modelFile: string
+  /** 加载完成后自动触发一次的表情名（对应 .exp3.json 的文件名）。 */
+  expression: string
+}> = [
+  {
+    // 玳瑁猫 v1（VTS 版本）默认带一个 Param6 控制的内置提示层，
+    // 必须激活 `关闭提示.exp3.json`（Param6=1.0, Add blend）才能隐藏。
+    // 每次冷加载都得触发一次，否则首帧会出现提示文字。
+    modelFile: "玳瑁猫v1_vts.model3.json",
+    expression: "关闭提示",
+  },
+]
+
+/** 从任意路径里提取 basename（兼容 Windows/Unix 反斜杠）。 */
+function basename(path: string): string {
+  const norm = path.replace(/\\/g, "/")
+  const slash = norm.lastIndexOf("/")
+  return slash >= 0 ? norm.substring(slash + 1) : norm
+}
+
+/** 在 MODEL_LOAD_QUIRKS 里查找当前 modelPath 对应的加载期特殊规则。 */
+function findLoadQuirk(modelPath: string): { expression: string } | null {
+  const base = basename(modelPath)
+  const hit = MODEL_LOAD_QUIRKS.find((q) => q.modelFile === base)
+  return hit ? { expression: hit.expression } : null
+}
+
+/* ------------------------------------------------------------------ */
 /*  Helpers                                                            */
 /* ------------------------------------------------------------------ */
 
@@ -219,6 +271,16 @@ export function Live2DView({ modelPath, avatarState, emotion, emotionProfile }: 
 
       centerModel(model)
       setLoadError(null)
+
+      // ---- 模型加载完成：触发一次性"特殊规则" ----
+      // 某些模型（比如 玳瑁猫v1_vts）默认会显示内置提示层，
+      // 必须激活一次对应的 exp3.json 才能关掉。这里在渲染前先发一次，
+      // 保证首帧就是干净状态；后续 emotion / avatarState 切换不会重复触发。
+      const quirk = findLoadQuirk(path)
+      if (quirk) {
+        trySetExpression(model, quirk.expression)
+      }
+
       // Bump the epoch *after* the model is fully loaded so the emotion
       // effect's `if (!model) return` guard always sees a live model ref.
       // This re-applies the current emotion to the freshly loaded model.
