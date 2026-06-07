@@ -1,2 +1,6 @@
 export type { OpenAiCompatibleAdapterConfig } from "./openai-compatible-adapter.js"
 export { OpenAiCompatibleAdapter } from "./openai-compatible-adapter.js"
+export type { OpenAiCompatibleWsClientConfig, MinimalWebSocketConstructor } from "./ws/openai-compatible-ws-client.js"
+export { OpenAiCompatibleWsClient } from "./ws/openai-compatible-ws-client.js"
+export type { OpenAiCompatibleWsProtocol, OpenAiCompatibleWsOutboundMessage } from "./ws/openai-compatible-ws-protocol.js"
+export { JsonModelWsProtocol } from "./ws/openai-compatible-ws-protocol.js"
