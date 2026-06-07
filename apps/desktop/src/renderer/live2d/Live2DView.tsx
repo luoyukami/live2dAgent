@@ -246,7 +246,13 @@ export function Live2DView({ modelPath, avatarState, emotion, emotionProfile }: 
     // Missing binding (not even neutral) ⇒ leave the current pose alone.
     if (!binding) return
     if (binding.motion) playMotion(model, binding.motion, binding.motionIndex)
-    if (binding.expression) trySetExpression(model, binding.expression)
+    if (binding.expression) {
+      trySetExpression(model, binding.expression)
+    } else if (emotion === "neutral") {
+      // Returning to the normal idle emotion should also clear any transient
+      // expression that was applied by the previous emotion tag.
+      trySetExpression(model, "idle")
+    }
   }, [emotion, modelEpoch, emotionProfile])
 
   /* ---- Internal helpers ---- */

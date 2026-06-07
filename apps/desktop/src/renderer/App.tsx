@@ -32,6 +32,9 @@ interface SettingsForm {
 const HOTKEY_HINT =
   "v0 快捷键仅在窗口聚焦时生效。当前实现固定为 Ctrl/Cmd + Alt + V，设置中保存的字符串仅用于显示和未来扩展。"
 
+const EMOTION_IDLE_REVERT_MS = 20_000
+const IDLE_EMOTION: Emotion = "neutral"
+
 const RISK_TEXT: Record<string, string> = {
   safe: "安全操作",
   workspace_read: "读取工作区文件",
@@ -207,6 +210,20 @@ export function App(): JSX.Element {
       return () => clearTimeout(timer)
     }
   }, [status])
+
+  /* Fallback: return temporary emotion tags to the normal idle emotion after inactivity. */
+  useEffect(() => {
+    if (settings?.emotion?.enabled === false) return
+    if (currentEmotion === null || currentEmotion === IDLE_EMOTION) return
+    if (status !== "idle") return
+
+    const timer = setTimeout(() => {
+      setStatus("idle")
+      setCurrentEmotion(IDLE_EMOTION)
+    }, EMOTION_IDLE_REVERT_MS)
+
+    return () => clearTimeout(timer)
+  }, [currentEmotion, settings?.emotion?.enabled, status])
 
   /* Emotion system disabled ⇒ renderer must not apply a fallback emotion to Live2D. */
   useEffect(() => {
