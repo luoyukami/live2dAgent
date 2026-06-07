@@ -84,3 +84,8 @@ export type { RuntimeEventCallback, RuntimeEventUnsubscribe, WsSessionManagerOpt
 
 /* ---- RunController ---- */
 export { RunController } from "./runtime/run-controller.js"
+export type { ToolExecutionContext, ToolPermissionContext, RunControllerToolOpts } from "./runtime/run-controller.js"
+
+/* ---- Tool Runtime (Phase 2) ---- */
+export { ToolCallValidator, ToolOutputTruncator, processToolCalls } from "./tools/tool-runtime.js"
+export type { ArtifactMeta, ArtifactWriter, ValidationResult, TruncatedOutput, ToolCallProcessResult, ProcessToolCallsInput } from "./tools/tool-runtime.js"

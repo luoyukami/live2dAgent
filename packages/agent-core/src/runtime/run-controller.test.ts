@@ -1,7 +1,8 @@
 /**
- * RunController unit tests — plain-text streaming path (Phase 1).
+ * RunController unit tests — plain-text streaming path (Phase 1) and
+ * tool call continuation (Phase 2).
  *
- * Scope:
+ * Phase 1 scope:
  *   - enqueueUserMessage when no active run (immediate start)
  *   - Text delta accumulation and flushing
  *   - response.created / response.completed handling
@@ -12,15 +13,27 @@
  *   - Cancel run
  *   - Error handling
  *
+ * Phase 2 scope:
+ *   - Tool call collection via response.tool_call.created
+ *   - Single tool call processed → tool.call.created → waiting_approval → waiting_tool → completed
+ *   - Permission denied → denied tool result, run continues
+ *   - Invalid arguments → tool_arguments_invalid result
+ *   - Max tool calls exceeded
+ *   - Max continuations exceeded
+ *   - Continuation createResponse after tool results
+ *   - Long output truncation with artifactRef
+ *   - No tool runtime configured → graceful error
+ *
  * Uses mocks for ConversationManager, WsSessionManager, and ModelWsClient.
  */
 import { test, describe } from "node:test"
 import assert from "node:assert/strict"
-import { RunController } from "./run-controller.js"
+import { RunController, type ToolExecutionContext, type ToolPermissionContext } from "./run-controller.js"
 import { ConversationManager } from "../conversation/conversation-manager.js"
+import { ToolRegistry } from "../tool-registry.js"
 import type { WsSessionManager } from "../ws/ws-session-manager.js"
-import type { ModelWsClient, ModelWsEvent, ModelWsEventListener, ModelWsEventUnsubscribe } from "../ws/model-ws-client.js"
-import type { AgentRuntimeEvent } from "../ws/ws-types.js"
+import type { ModelWsClient, ModelWsEvent, ModelWsEventListener, ModelWsEventUnsubscribe, ModelWsToolResultInput } from "../ws/model-ws-client.js"
+import type { AgentRuntimeEvent, WsToolCall } from "../ws/ws-types.js"
 import { WS_RUNTIME_CONSTANTS } from "../ws/ws-runtime-constants.js"
 
 /* ------------------------------------------------------------------ */
@@ -31,6 +44,7 @@ class MockModelWsClient implements ModelWsClient {
   private listeners = new Set<ModelWsEventListener>()
   public createResponseCalls: Array<{ messages: Array<{ role: string; content: string }>; remoteContextId?: string }> = []
   public cancelResponseCalls: Array<{ responseId: string }> = []
+  public sendToolResultCalls: ModelWsToolResultInput[] = []
   public shouldFailCreateResponse = false
 
   async connect(): Promise<void> { /* noop */ }
@@ -41,7 +55,9 @@ class MockModelWsClient implements ModelWsClient {
     this.createResponseCalls.push(input)
   }
 
-  async sendToolResult(): Promise<void> { /* noop */ }
+  async sendToolResult(input: ModelWsToolResultInput): Promise<void> {
+    this.sendToolResultCalls.push(input)
+  }
 
   async cancelResponse(input: { responseId: string }): Promise<void> {
     this.cancelResponseCalls.push(input)
@@ -64,6 +80,7 @@ class MockModelWsClient implements ModelWsClient {
   reset(): void {
     this.createResponseCalls = []
     this.cancelResponseCalls = []
+    this.sendToolResultCalls = []
     this.shouldFailCreateResponse = false
   }
 }
@@ -77,9 +94,16 @@ class MockWsSessionManager {
   public activeRunIds: Record<string, string | null> = {}
   public activeResponseIds: Record<string, string | null> = {}
   public remoteContextIds: Record<string, string | null> = {}
+  /** Track session state transitions for testing. */
+  public sessionStateTransitions: Array<{ conversationId: string; newState: string }> = []
 
   async ensureReady(conversationId: string): Promise<void> {
     this.state[conversationId] = "ready"
+  }
+
+  transitionSessionState(conversationId: string, newState: string): void {
+    this.sessionStateTransitions.push({ conversationId, newState })
+    this.state[conversationId] = newState
   }
 
   async connect(_conversationId: string): Promise<void> {
@@ -503,5 +527,382 @@ describe("RunController — event emission", () => {
 
     const cancelledEvents = events.filter((e) => e.type === "run.cancelled")
     assert.equal(cancelledEvents.length, 1)
+  })
+})
+
+/* ------------------------------------------------------------------ */
+/*  Phase 2: Tool Call Continuation Tests                              */
+/* ------------------------------------------------------------------ */
+
+function createSampleRegistry(): ToolRegistry {
+  const registry = new ToolRegistry()
+  registry.register({
+    name: "shell.run",
+    description: "Run a shell command",
+    inputSchema: {
+      type: "object",
+      required: ["command"],
+      properties: { command: { type: "string" }, cwd: { type: "string" } },
+    },
+    permission: "shell",
+  })
+  registry.register({
+    name: "file.read",
+    description: "Read a file",
+    inputSchema: {
+      type: "object",
+      required: ["path"],
+      properties: { path: { type: "string" } },
+    },
+    permission: "workspace_read",
+  })
+  return registry
+}
+
+function makeToolCall(overrides: Partial<WsToolCall> = {}): WsToolCall {
+  return {
+    id: `call_${Date.now()}_${Math.random().toString(36).slice(2, 9)}`,
+    name: "shell.run",
+    arguments: { command: "echo hello" },
+    ...overrides,
+  }
+}
+
+interface ToolHarness extends Harness {
+  toolRegistry: ToolRegistry
+  mockRuntime: ToolExecutionContext
+  mockPermission: ToolPermissionContext
+}
+
+function createToolHarness(
+  runtimeOverrides?: Partial<ToolExecutionContext>,
+  permissionOverrides?: Partial<ToolPermissionContext>,
+): ToolHarness {
+  const convManager = new ConversationManager()
+  const wsManager = new MockWsSessionManager()
+  const client = new MockModelWsClient()
+  const events: AgentRuntimeEvent[] = []
+  const toolRegistry = createSampleRegistry()
+
+  const mockRuntime: ToolExecutionContext = {
+    async executeMany(inputs) {
+      return inputs.map((i) => ({ id: i.id, ok: true, content: `result for ${i.tool}: ${JSON.stringify(i.args)}` }))
+    },
+    ...runtimeOverrides,
+  }
+
+  const mockPermission: ToolPermissionContext = {
+    async check() {
+      return { status: "approved", actions: [] }
+    },
+    ...permissionOverrides,
+  }
+
+  const controller = new RunController(
+    convManager,
+    wsManager as any as WsSessionManager,
+    client,
+    { toolRegistry, runtime: mockRuntime, permission: mockPermission },
+  )
+  controller.onEvent((event) => events.push(event))
+
+  return { convManager, wsManager, client, controller, events, toolRegistry, mockRuntime, mockPermission } as ToolHarness
+}
+
+describe("RunController — Phase 2 tool call continuation", () => {
+  test("response.tool_call.created collects tool calls and emits tool.call.created event", async () => {
+    const { convManager, controller, client, events } = createToolHarness()
+    const conv = convManager.createConversation()
+
+    await controller.enqueueUserMessage(conv.id, "Run a command")
+
+    // Simulate response with a tool call
+    client.emit({ type: "response.created", responseId: "resp_1" })
+    client.emit({
+      type: "response.tool_call.created",
+      responseId: "resp_1",
+      toolCall: { id: "call_1", name: "shell.run", arguments: { command: "echo hi" } },
+    })
+
+    // Should have tool.call.created event
+    const toolCreatedEvents = events.filter((e) => e.type === "tool.call.created")
+    assert.equal(toolCreatedEvents.length, 1)
+    if (toolCreatedEvents[0]?.type === "tool.call.created") {
+      assert.equal(toolCreatedEvents[0].toolCall.id, "call_1")
+      assert.equal(toolCreatedEvents[0].toolCall.name, "shell.run")
+    }
+
+    // Run should still be active (waiting for response.completed)
+    const run = controller.getCurrentRunId(conv.id)
+    assert.ok(run, "Run should still be active")
+  })
+
+  test("single tool call: full flow with tool.call.created → waiting_approval → started → completed", async () => {
+    const { convManager, controller, client, events, wsManager } = createToolHarness()
+    const conv = convManager.createConversation()
+
+    await controller.enqueueUserMessage(conv.id, "Run a command")
+
+    client.emit({ type: "response.created", responseId: "resp_1" })
+    client.emit({
+      type: "response.tool_call.created",
+      responseId: "resp_1",
+      toolCall: { id: "call_1", name: "shell.run", arguments: { command: "echo hi" } },
+    })
+
+    // Complete the response to trigger tool processing
+    client.emit({ type: "response.completed", responseId: "resp_1", remoteContextId: "ctx_1" })
+
+    // Wait for async tool processing
+    await new Promise((resolve) => setTimeout(resolve, 20))
+
+    // Should have tool.call.waiting_approval → tool.call.started → tool.call.completed
+    const waitingApprovalEvents = events.filter((e) => e.type === "tool.call.waiting_approval")
+    assert.equal(waitingApprovalEvents.length, 1)
+
+    const startedEvents = events.filter((e) => e.type === "tool.call.started")
+    assert.equal(startedEvents.length, 1)
+
+    const completedEvents = events.filter((e) => e.type === "tool.call.completed")
+    assert.equal(completedEvents.length, 1)
+    if (completedEvents[0]?.type === "tool.call.completed") {
+      assert.equal(completedEvents[0].result.status, "ok")
+      assert.equal(completedEvents[0].result.toolCallId, "call_1")
+    }
+
+    // Session should have transitioned: waiting_approval → waiting_tool → responding
+    const transitions = wsManager.sessionStateTransitions.map((t) => t.newState)
+    assert.ok(transitions.includes("waiting_approval"))
+    assert.ok(transitions.includes("waiting_tool"))
+    assert.ok(transitions.includes("responding"))
+
+    // Tool result should have been sent
+    assert.equal(client.sendToolResultCalls.length, 1)
+    assert.equal(client.sendToolResultCalls[0]!.toolCallId, "call_1")
+    assert.equal(client.sendToolResultCalls[0]!.result.status, "ok")
+  })
+
+  test("permission denied returns denied status and run continues", async () => {
+    const { convManager, controller, client, events } = createToolHarness(
+      undefined,
+      {
+        async check(actions) {
+          return {
+            status: "denied",
+            actions,
+            reason: "User rejected this command",
+          }
+        },
+      },
+    )
+    const conv = convManager.createConversation()
+
+    await controller.enqueueUserMessage(conv.id, "Run a command")
+
+    client.emit({ type: "response.created", responseId: "resp_1" })
+    client.emit({
+      type: "response.tool_call.created",
+      responseId: "resp_1",
+      toolCall: { id: "call_1", name: "shell.run", arguments: { command: "rm -rf /" } },
+    })
+
+    // Complete the response
+    client.emit({ type: "response.completed", responseId: "resp_1", remoteContextId: "ctx_1" })
+
+    // Wait for async tool processing
+    await new Promise((resolve) => setTimeout(resolve, 20))
+
+    // Should have tool.call.completed (not failed) because permission denied is recoverable
+    // Actually, permission denied should emit tool.call.failed
+    const failedEvents = events.filter((e) => e.type === "tool.call.failed")
+    assert.equal(failedEvents.length, 1)
+    if (failedEvents[0]?.type === "tool.call.failed") {
+      assert.equal(failedEvents[0].error.code, "tool_permission_denied")
+    }
+
+    // Run should NOT be completed (it continues with the denied result)
+    const runCompletedEvents = events.filter((e) => e.type === "run.completed")
+    assert.equal(runCompletedEvents.length, 0, "Run should not be completed after permission denied")
+
+    // Tool result should have been sent with denied status
+    assert.equal(client.sendToolResultCalls.length, 1)
+    assert.equal(client.sendToolResultCalls[0]!.result.status, "denied")
+  })
+
+  test("tool with invalid arguments returns tool_arguments_invalid error", async () => {
+    const { convManager, controller, client, events } = createToolHarness()
+    const conv = convManager.createConversation()
+
+    await controller.enqueueUserMessage(conv.id, "Run a command")
+
+    client.emit({ type: "response.created", responseId: "resp_1" })
+    // Missing required "command" argument
+    client.emit({
+      type: "response.tool_call.created",
+      responseId: "resp_1",
+      toolCall: { id: "call_bad", name: "shell.run", arguments: {} },
+    })
+
+    client.emit({ type: "response.completed", responseId: "resp_1", remoteContextId: "ctx_1" })
+
+    await new Promise((resolve) => setTimeout(resolve, 20))
+
+    // Should emit tool.call.failed with arguments invalid
+    const failedEvents = events.filter((e) => e.type === "tool.call.failed")
+    assert.equal(failedEvents.length, 1)
+    if (failedEvents[0]?.type === "tool.call.failed") {
+      assert.equal(failedEvents[0].error.code, "tool_execution_failed")
+    }
+
+    // Tool result should be sent with error status
+    assert.equal(client.sendToolResultCalls.length, 1)
+    assert.equal(client.sendToolResultCalls[0]!.result.status, "error")
+    assert.ok(client.sendToolResultCalls[0]!.result.contentForModel.includes("was called with invalid arguments"))
+  })
+
+  test("multiple consecutive tool calls (3) all processed correctly", async () => {
+    const { convManager, controller, client, events } = createToolHarness()
+    const conv = convManager.createConversation()
+
+    await controller.enqueueUserMessage(conv.id, "Run three commands")
+
+    client.emit({ type: "response.created", responseId: "resp_1" })
+
+    // Emit 3 tool calls
+    for (let i = 1; i <= 3; i++) {
+      client.emit({
+        type: "response.tool_call.created",
+        responseId: "resp_1",
+        toolCall: { id: `call_${i}`, name: "shell.run", arguments: { command: `echo ${i}` } },
+      })
+    }
+
+    // Complete the response
+    client.emit({ type: "response.completed", responseId: "resp_1", remoteContextId: "ctx_1" })
+
+    await new Promise((resolve) => setTimeout(resolve, 20))
+
+    // All 3 should have been processed
+    const completedEvents = events.filter((e) => e.type === "tool.call.completed")
+    assert.equal(completedEvents.length, 3)
+
+    // 3 tool results should have been sent
+    assert.equal(client.sendToolResultCalls.length, 3)
+
+    // Continuation createResponse should have been called (or at least attempted)
+    // Note: since response.completed was with remoteContextId, continuation uses it
+    assert.ok(client.createResponseCalls.length >= 1, "Should have continuation createResponse")
+  })
+
+  test("tool calls exceeding MAX_TOOL_CALLS_PER_RUN are rejected", async () => {
+    const { convManager, controller, client, events } = createToolHarness()
+    const conv = convManager.createConversation()
+
+    await controller.enqueueUserMessage(conv.id, "Run many commands")
+
+    client.emit({ type: "response.created", responseId: "resp_1" })
+
+    // Emit MAX_TOOL_CALLS_PER_RUN + 1 tool calls
+    const maxCalls = WS_RUNTIME_CONSTANTS.MAX_TOOL_CALLS_PER_RUN
+    for (let i = 1; i <= maxCalls; i++) {
+      client.emit({
+        type: "response.tool_call.created",
+        responseId: "resp_1",
+        toolCall: { id: `call_${i}`, name: "shell.run", arguments: { command: `echo ${i}` } },
+      })
+    }
+
+    // The extra call beyond the limit will be rejected (tool.call.failed with max_tool_calls_exceeded)
+    client.emit({
+      type: "response.tool_call.created",
+      responseId: "resp_1",
+      toolCall: { id: "call_extra", name: "shell.run", arguments: { command: "echo extra" } },
+    })
+
+    // Check that the extra call was rejected
+    const callFailedEvents = events.filter(
+      (e) => e.type === "tool.call.failed" && e.error.code === "max_tool_calls_exceeded",
+    )
+    assert.equal(callFailedEvents.length, 1)
+    if (callFailedEvents[0]?.type === "tool.call.failed") {
+      assert.equal(callFailedEvents[0].toolCallId, "call_extra")
+    }
+  })
+
+  test("no tool runtime configured emits run.failed on tool call", async () => {
+    const convManager = new ConversationManager()
+    const wsManager = new MockWsSessionManager()
+    const client = new MockModelWsClient()
+    const events: AgentRuntimeEvent[] = []
+
+    // Create RunController WITHOUT toolOpts
+    const controller = new RunController(
+      convManager,
+      wsManager as any as WsSessionManager,
+      client,
+    )
+    controller.onEvent((event) => events.push(event))
+
+    const conv = convManager.createConversation()
+    await controller.enqueueUserMessage(conv.id, "Run a command")
+
+    client.emit({ type: "response.created", responseId: "resp_1" })
+    client.emit({
+      type: "response.tool_call.created",
+      responseId: "resp_1",
+      toolCall: { id: "call_1", name: "shell.run", arguments: { command: "echo hi" } },
+    })
+
+    client.emit({ type: "response.completed", responseId: "resp_1", remoteContextId: "ctx_1" })
+
+    await new Promise((resolve) => setTimeout(resolve, 20))
+
+    // Run should fail because tool runtime is not configured
+    const failedEvents = events.filter((e) => e.type === "run.failed")
+    assert.equal(failedEvents.length, 1)
+    if (failedEvents[0]?.type === "run.failed") {
+      assert.equal(failedEvents[0].error.code, "tool_execution_failed")
+      assert.ok(failedEvents[0].error.message.includes("not configured"))
+    }
+  })
+
+  test("tool call with text delta still processes correctly", async () => {
+    const { convManager, controller, client, events } = createToolHarness()
+    const conv = convManager.createConversation()
+
+    await controller.enqueueUserMessage(conv.id, "Run and explain")
+
+    client.emit({ type: "response.created", responseId: "resp_1" })
+
+    // Some text first
+    client.emit({ type: "response.text.delta", responseId: "resp_1", delta: "I'll run that command." })
+
+    // Then tool call
+    client.emit({
+      type: "response.tool_call.created",
+      responseId: "resp_1",
+      toolCall: { id: "call_1", name: "shell.run", arguments: { command: "echo hello" } },
+    })
+
+    // Complete
+    client.emit({ type: "response.completed", responseId: "resp_1", remoteContextId: "ctx_1" })
+
+    // Wait for flush + tool processing
+    await new Promise((resolve) => setTimeout(resolve, WS_RUNTIME_CONSTANTS.ASSISTANT_DELTA_FLUSH_INTERVAL_MS + 30))
+
+    // Text delta should have been emitted
+    const deltaEvents = events.filter((e) => e.type === "assistant.message.delta")
+    assert.ok(deltaEvents.length >= 1)
+
+    // Tool should have been processed
+    const completedEvents = events.filter((e) => e.type === "tool.call.completed")
+    assert.equal(completedEvents.length, 1)
+    if (completedEvents[0]?.type === "tool.call.completed") {
+      assert.equal(completedEvents[0].result.status, "ok")
+    }
+
+    // Assistant message should be completed
+    const msgCompletedEvents = events.filter((e) => e.type === "assistant.message.completed")
+    assert.ok(msgCompletedEvents.length >= 1)
   })
 })

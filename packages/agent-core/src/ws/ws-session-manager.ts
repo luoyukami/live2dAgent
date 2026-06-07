@@ -233,6 +233,16 @@ export class WsSessionManager {
     session.activeResponseId = null
   }
 
+  /**
+   * Transition the session to a new state.
+   * Used by RunController for tool call lifecycle (responding → waiting_approval → waiting_tool → responding).
+   */
+  transitionSessionState(conversationId: string, newState: WsSessionState): void {
+    const session = this.sessions.get(conversationId)
+    if (!session) return
+    this.transition(session, newState)
+  }
+
   getActiveResponseId(conversationId: string): string | null {
     return this.sessions.get(conversationId)?.activeResponseId ?? null
   }

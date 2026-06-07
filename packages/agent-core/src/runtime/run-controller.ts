@@ -1,14 +1,12 @@
 /**
  * RunController — orchestrates a single user-message → model-response cycle.
  *
- * Phase 1 scope: plain-text streaming only.
- *   - enqueueUserMessage: queue or start a run.
- *   - createResponse via ModelWsClient.
- *   - Accumulate text deltas, flush on interval / completion.
- *   - Update conversation messages and remoteContextId.
- *   - Emit AgentRuntimeEvent for each milestone.
- *
- * Tool calls, cancellation, and ContextManager integration are Phase 2+.
+ * Phase 1: plain-text streaming support.
+ * Phase 2: tool call continuation.
+ *   - Collects tool calls from ModelWsEvent.response.tool_call.created
+ *   - Processes them through permission check, execution, truncation
+ *   - Sends results back to model and triggers continuation
+ *   - Enforces MAX_TOOL_CALLS_PER_RUN (20) and MAX_MODEL_CONTINUATIONS_PER_RUN (30)
  *
  * See docs/ws_model_communication_architecture.md §3.1 (RunController), §10.
  */
@@ -16,14 +14,18 @@ import type {
   AgentRun,
   AgentRuntimeEvent,
   RuntimeErrorPayload,
+  WsToolCall,
+  WsToolResult,
 } from "../ws/ws-types.js"
 import type {
   ModelWsClient,
   ModelWsEvent,
 } from "../ws/model-ws-client.js"
+import type { ToolRegistry } from "../tool-registry.js"
 import type { ConversationManager } from "../conversation/conversation-manager.js"
 import type { WsSessionManager } from "../ws/ws-session-manager.js"
 import { WS_RUNTIME_CONSTANTS } from "../ws/ws-runtime-constants.js"
+import { processToolCalls, type ArtifactWriter, type ToolCallProcessResult } from "../tools/tool-runtime.js"
 
 /* ------------------------------------------------------------------ */
 /*  Types                                                              */
@@ -31,6 +33,31 @@ import { WS_RUNTIME_CONSTANTS } from "../ws/ws-runtime-constants.js"
 
 export type RuntimeEventCallback = (event: AgentRuntimeEvent) => void
 export type RuntimeEventUnsubscribe = () => void
+
+/**
+ * Input abstraction for tool execution that is compatible with processToolCalls.
+ * The host (Electron main process) provides a real implementation; tests provide mocks.
+ */
+export interface ToolExecutionContext {
+  executeMany(
+    calls: Array<{ id: string; tool: string; args: unknown }>,
+  ): Promise<Array<{ id: string; ok: boolean; content: string; data?: unknown }>>
+}
+
+/** Permission check abstraction compatible with processToolCalls. */
+export interface ToolPermissionContext {
+  check(
+    actions: Array<{ id: string; tool: string; args: unknown }>,
+  ): Promise<{ status: "approved" | "denied"; actions: Array<{ id: string; tool: string; args: unknown }>; reason?: string }>
+}
+
+/** Optional tool configuration for RunController. */
+export interface RunControllerToolOpts {
+  toolRegistry: ToolRegistry
+  runtime: ToolExecutionContext
+  permission: ToolPermissionContext
+  artifactWriter?: ArtifactWriter
+}
 
 /* ------------------------------------------------------------------ */
 /*  Queued message                                                     */
@@ -61,10 +88,18 @@ export class RunController {
 
   private modelWsUnsubscribe: (() => void) | null = null
 
+  /* ---- Phase 2: tool call state ---- */
+
+  /** Collected tool calls pending processing, keyed by run ID. */
+  private pendingToolCalls = new Map<string, WsToolCall[]>()
+  /** Continuation counter per run ID. */
+  private continuationCount = new Map<string, number>()
+
   constructor(
     private conversationManager: ConversationManager,
     private wsSessionManager: WsSessionManager,
     private modelWsClient: ModelWsClient,
+    private toolOpts?: RunControllerToolOpts,
   ) {
     // Subscribe to model WS events
     this.modelWsUnsubscribe = this.modelWsClient.onEvent((event) =>
@@ -151,6 +186,10 @@ export class RunController {
     run.completedAt = Date.now()
     run.updatedAt = Date.now()
 
+    // Clean up tool state
+    this.pendingToolCalls.delete(run.id)
+    this.continuationCount.delete(run.id)
+
     this.wsSessionManager.clearActiveRun(conversationId)
     this.wsSessionManager.clearActiveResponse(conversationId)
 
@@ -171,6 +210,8 @@ export class RunController {
     this.eventListeners.clear()
     this.queues.clear()
     this.runs.clear()
+    this.pendingToolCalls.clear()
+    this.continuationCount.clear()
     this.clearDeltaState()
   }
 
@@ -206,6 +247,9 @@ export class RunController {
       toolCallCount: 0,
     }
     this.runs.set(run.id, run)
+    // Initialize tool tracking for this run
+    this.pendingToolCalls.set(run.id, [])
+    this.continuationCount.set(run.id, 0)
     this.emit({ type: "run.started", conversationId, runId: run.id })
 
     // 3. Ensure WS ready
@@ -316,28 +360,13 @@ export class RunController {
         break
       }
 
+      case "response.tool_call.created": {
+        this.handleToolCallCreated(event)
+        break
+      }
+
       case "response.completed": {
-        if (!this.currentRunId) break
-        const run = this.runs.get(this.currentRunId)
-        if (!run) break
-
-        // Flush remaining delta
-        this.flushDelta()
-
-        // Save remote context
-        if (event.remoteContextId) {
-          this.conversationManager.setLastRemoteContextId(
-            run.conversationId,
-            event.remoteContextId,
-          )
-          this.wsSessionManager.setRemoteContextId(
-            run.conversationId,
-            event.remoteContextId,
-          )
-        }
-
-        // Complete the run
-        this.completeCurrentRun()
+        this.handleResponseCompleted(event)
         break
       }
 
@@ -354,6 +383,8 @@ export class RunController {
           conversationId: run.conversationId,
           runId: run.id,
         })
+        this.pendingToolCalls.delete(run.id)
+        this.continuationCount.delete(run.id)
         this.cleanupAfterRun(run.conversationId)
         break
       }
@@ -365,6 +396,313 @@ export class RunController {
         this.failCurrentRun(event.error)
         break
       }
+    }
+  }
+
+  /* ---- Phase 2: tool call handling ---- */
+
+  /**
+   * Handle a tool call created event from the model.
+   *
+   * Collects tool calls for processing when the response completes.
+   * Enforces MAX_TOOL_CALLS_PER_RUN limit.
+   */
+  private handleToolCallCreated(event: ModelWsEvent & { type: "response.tool_call.created" }): void {
+    if (!this.currentRunId) return
+    const run = this.runs.get(this.currentRunId)
+    if (!run) return
+
+    // Check tool call count limit
+    if (run.toolCallCount >= WS_RUNTIME_CONSTANTS.MAX_TOOL_CALLS_PER_RUN) {
+      // Emit failure and skip collecting — run will be failed at response.completed
+      this.emit({
+        type: "tool.call.failed",
+        conversationId: run.conversationId,
+        runId: run.id,
+        toolCallId: event.toolCall.id,
+        error: {
+          code: "max_tool_calls_exceeded",
+          message: `Tool call limit (${WS_RUNTIME_CONSTANTS.MAX_TOOL_CALLS_PER_RUN}) exceeded`,
+          retryable: false,
+        },
+      })
+      this.failRun(run, {
+        code: "max_tool_calls_exceeded",
+        message: `Tool call limit (${WS_RUNTIME_CONSTANTS.MAX_TOOL_CALLS_PER_RUN}) exceeded`,
+        retryable: false,
+      })
+      return
+    }
+
+    // Increment tool call count
+    run.toolCallCount += 1
+    run.updatedAt = Date.now()
+
+    // Emit tool.call.created
+    this.emit({
+      type: "tool.call.created",
+      conversationId: run.conversationId,
+      runId: run.id,
+      toolCall: event.toolCall,
+    })
+
+    // Collect for batch processing
+    const calls = this.pendingToolCalls.get(run.id) ?? []
+    calls.push(event.toolCall)
+    this.pendingToolCalls.set(run.id, calls)
+  }
+
+  /**
+   * Handle response completed event.
+   *
+   * If there are pending tool calls, process them instead of completing.
+   * Otherwise, complete the run normally.
+   */
+  private handleResponseCompleted(event: ModelWsEvent & { type: "response.completed" }): void {
+    if (!this.currentRunId) return
+    const run = this.runs.get(this.currentRunId)
+    if (!run) return
+
+    // Flush remaining delta
+    this.flushDelta()
+
+    // Save remote context
+    if (event.remoteContextId) {
+      this.conversationManager.setLastRemoteContextId(
+        run.conversationId,
+        event.remoteContextId,
+      )
+      this.wsSessionManager.setRemoteContextId(
+        run.conversationId,
+        event.remoteContextId,
+      )
+    }
+
+    // Check for pending tool calls
+    const pending = this.pendingToolCalls.get(run.id) ?? []
+
+    if (pending.length > 0) {
+      // Don't complete the run — process tool calls first
+
+      // Emit assistant.message.completed for the text portion (the response text is done)
+      if (this.currentMessageId) {
+        this.emit({
+          type: "assistant.message.completed",
+          conversationId: run.conversationId,
+          runId: run.id,
+          messageId: this.currentMessageId,
+        })
+      }
+
+      // Save the current run ID so failCurrentRun can still work after clearDeltaState
+      const runId = this.currentRunId
+
+      this.clearDeltaState() // Reset delta state (new message will be created for continuation)
+      this.wsSessionManager.transitionSessionState(run.conversationId, "waiting_approval")
+      run.status = "waiting_approval"
+      run.updatedAt = Date.now()
+
+      // Emit waiting_approval events
+      for (const call of pending) {
+        this.emit({
+          type: "tool.call.waiting_approval",
+          conversationId: run.conversationId,
+          runId: run.id,
+          toolCallId: call.id,
+        })
+      }
+
+      // Process the tool calls (asynchronous)
+      this.processPendingToolCalls(run, runId).catch((err) => {
+        console.error("[RunController] Tool processing failed:", err)
+        // Ensure failCurrentRun has a valid run ID
+        const prevRunId = this.currentRunId
+        if (!this.currentRunId && runId) this.currentRunId = runId
+        this.failCurrentRun({
+          code: "tool_execution_failed",
+          message: err instanceof Error ? err.message : "Tool processing failed",
+          retryable: false,
+          cause: err,
+        })
+        this.currentRunId = prevRunId
+      })
+    } else {
+      // No tool calls — complete normally
+      this.completeCurrentRun()
+    }
+  }
+
+  /**
+   * Process all pending tool calls for a run.
+   *
+   * Flow:
+   *   1. Run is in waiting_approval state
+   *   2. Process through processToolCalls (validate → permission → execute → truncate)
+   *   3. Emit tool.call.started / completed / failed events
+   *   4. Send results to the model via sendToolResult
+   *   5. Check MAX_MODEL_CONTINUATIONS_PER_RUN limit
+   *   6. Create continuation response via createResponse
+   */
+  private async processPendingToolCalls(run: AgentRun, savedRunId: string | null = null): Promise<void> {
+    const pending = this.pendingToolCalls.get(run.id) ?? []
+    if (pending.length === 0) {
+      // No tool calls — complete the run
+      run.status = "running"
+      run.updatedAt = Date.now()
+      this.wsSessionManager.transitionSessionState(run.conversationId, "responding")
+      return
+    }
+
+    // Verify tool options are configured
+    if (!this.toolOpts) {
+      // Tool calls received but no tool runtime configured — emit error for each
+      for (const call of pending) {
+        this.emit({
+          type: "tool.call.failed",
+          conversationId: run.conversationId,
+          runId: run.id,
+          toolCallId: call.id,
+          error: {
+            code: "tool_execution_failed",
+            message: "Tool runtime not configured",
+            retryable: false,
+          },
+        })
+      }
+      // Temporarily restore currentRunId so failCurrentRun can emit the event
+      const prevRunId = this.currentRunId
+      this.currentRunId = savedRunId ?? run.id
+      this.failCurrentRun({
+        code: "tool_execution_failed",
+        message: "Tool runtime not configured for RunController",
+        retryable: false,
+      })
+      this.currentRunId = prevRunId
+      return
+    }
+
+    // Transition to waiting_tool state
+    this.wsSessionManager.transitionSessionState(run.conversationId, "waiting_tool")
+    run.status = "waiting_tool"
+    run.updatedAt = Date.now()
+
+    // Emit tool.call.started for each pending call
+    for (const call of pending) {
+      this.emit({
+        type: "tool.call.started",
+        conversationId: run.conversationId,
+        runId: run.id,
+        toolCallId: call.id,
+      })
+    }
+
+    // Process through the tool pipeline
+    const processResults = await processToolCalls({
+      toolCalls: pending,
+      toolRegistry: this.toolOpts.toolRegistry,
+      runtime: this.toolOpts.runtime,
+      permission: this.toolOpts.permission,
+      artifactWriter: this.toolOpts.artifactWriter,
+    })
+
+    // Emit completion/failure events and send results
+    const responseId = this.wsSessionManager.getActiveResponseId(run.conversationId)
+
+    for (const pr of processResults) {
+      if (pr.result.status === "ok") {
+        this.emit({
+          type: "tool.call.completed",
+          conversationId: run.conversationId,
+          runId: run.id,
+          toolCallId: pr.toolCallId,
+          result: pr.result,
+        })
+      } else {
+        this.emit({
+          type: "tool.call.failed",
+          conversationId: run.conversationId,
+          runId: run.id,
+          toolCallId: pr.toolCallId,
+          error: {
+            code: pr.result.status === "denied" ? "tool_permission_denied" : "tool_execution_failed",
+            message: pr.result.summary,
+            retryable: pr.result.status === "denied", // Permission denied is recoverable
+          },
+        })
+      }
+
+      // Send tool result back to the model
+      if (responseId) {
+        try {
+          await this.modelWsClient.sendToolResult({
+            responseId,
+            toolCallId: pr.toolCallId,
+            result: pr.result,
+          })
+        } catch (err) {
+          console.error("[RunController] Failed to send tool result:", err)
+        }
+      }
+    }
+
+    // Clear pending tool calls for this run
+    this.pendingToolCalls.set(run.id, [])
+
+    // Check continuation limit
+    const contCount = (this.continuationCount.get(run.id) ?? 0) + 1
+    this.continuationCount.set(run.id, contCount)
+
+    if (contCount > WS_RUNTIME_CONSTANTS.MAX_MODEL_CONTINUATIONS_PER_RUN) {
+      this.failRun(run, {
+        code: "max_model_continuations_exceeded",
+        message: `Model continuation limit (${WS_RUNTIME_CONSTANTS.MAX_MODEL_CONTINUATIONS_PER_RUN}) exceeded`,
+        retryable: false,
+      })
+      return
+    }
+
+    // Transition back to responding
+    this.wsSessionManager.transitionSessionState(run.conversationId, "responding")
+    run.status = "running"
+    run.updatedAt = Date.now()
+
+    // Create continuation response
+    try {
+      const messages = this.conversationManager.getMessages(run.conversationId)
+      const modelMessages = messages.map((m) => ({
+        role: m.role as "user" | "assistant",
+        content: m.content,
+      }))
+
+      const remoteContextId = this.wsSessionManager.getRemoteContextId(run.conversationId)
+
+      // Create new assistant message placeholder for the continuation
+      const assistantMessage = this.conversationManager.appendAssistantMessage(run.conversationId)
+      if (assistantMessage) {
+        this.currentMessageId = assistantMessage.id
+        this.currentRunId = run.id
+        this.currentDelta = ""
+
+        this.emit({
+          type: "assistant.message.created",
+          conversationId: run.conversationId,
+          runId: run.id,
+          messageId: assistantMessage.id,
+        })
+      }
+
+      await this.modelWsClient.createResponse({
+        messages: modelMessages,
+        ...(remoteContextId ? { remoteContextId } : {}),
+      })
+    } catch (err) {
+      console.error("[RunController] Continuation createResponse failed:", err)
+      this.failRun(run, {
+        code: "ws_protocol_error",
+        message: err instanceof Error ? err.message : "Continuation createResponse failed",
+        retryable: true,
+        cause: err,
+      })
     }
   }
 
@@ -441,6 +779,11 @@ export class RunController {
     const run = this.runs.get(this.currentRunId)
     if (!run) return
 
+    this.failRun(run, error)
+  }
+
+  private failRun(run: AgentRun, error: RuntimeErrorPayload): void {
+
     // Flush any remaining delta before failing
     this.flushDelta()
 
@@ -455,10 +798,14 @@ export class RunController {
       error,
     })
 
+    this.pendingToolCalls.delete(run.id)
+    this.continuationCount.delete(run.id)
+
     this.cleanupAfterRun(run.conversationId)
   }
 
   private cleanupAfterRun(conversationId: string): void {
+    this.transitionSessionToReady(conversationId)
     this.clearDeltaState()
     this.wsSessionManager.clearActiveRun(conversationId)
     this.wsSessionManager.clearActiveResponse(conversationId)
@@ -474,6 +821,21 @@ export class RunController {
     if (this.deltaFlushTimer) {
       clearTimeout(this.deltaFlushTimer)
       this.deltaFlushTimer = null
+    }
+  }
+
+  private transitionSessionToReady(conversationId: string): void {
+    const state = this.wsSessionManager.getState(conversationId)
+    if (!state || state === "ready" || state === "closed" || state === "disconnected") return
+
+    try {
+      if (state === "waiting_tool" || state === "waiting_approval") {
+        this.wsSessionManager.transitionSessionState(conversationId, "responding")
+      }
+      this.wsSessionManager.transitionSessionState(conversationId, "ready")
+    } catch {
+      // State recovery should not hide the original run result. Phase 3
+      // reconnect handling will own abnormal connection repair.
     }
   }
 
@@ -537,5 +899,3 @@ export class RunController {
     return `${prefix}_${Date.now()}_${Math.random().toString(36).slice(2, 9)}`
   }
 }
-
-
