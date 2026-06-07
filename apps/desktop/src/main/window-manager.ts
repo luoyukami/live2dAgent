@@ -13,12 +13,12 @@ export class WindowManager {
     const { width, height } = display.workAreaSize
 
     this.win = new BrowserWindow({
-      width: 900,
+      width: 360,
       height: 720,
-      minWidth: 520,
-      minHeight: 420,
-      x: Math.max(0, width - 940),
-      y: Math.max(0, height - 760),
+      minWidth: 280,
+      minHeight: 480,
+      x: Math.max(0, width - 380),
+      y: Math.max(0, height - 740),
       transparent: true,
       frame: false,
       resizable: true,
