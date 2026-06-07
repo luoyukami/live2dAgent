@@ -80,7 +80,7 @@ export type { ConversationMessage, Conversation } from "./conversation/conversat
 
 /* ---- WsSessionManager ---- */
 export { WsSessionManager, ALLOWED_TRANSITIONS } from "./ws/ws-session-manager.js"
-export type { RuntimeEventCallback, RuntimeEventUnsubscribe, WsSessionManagerOptions } from "./ws/ws-session-manager.js"
+export type { RuntimeEventCallback, RuntimeEventUnsubscribe, WsSessionManagerOptions, ModelWsClientFactory, ModelEventCallback, ModelEventUnsubscribe } from "./ws/ws-session-manager.js"
 
 /* ---- RunController ---- */
 export { RunController } from "./runtime/run-controller.js"

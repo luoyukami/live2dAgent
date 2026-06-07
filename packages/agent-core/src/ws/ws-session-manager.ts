@@ -3,12 +3,13 @@
  *
  * Responsibilities:
  *   1. Maintain a WS session (state machine) per conversation.
- *   2. Connect → init → ready flow.
- *   3. Idle-close timer (auto-close after `IDLE_CLOSE_MS` of inactivity).
- *   4. Heartbeat skeleton (ping/pong).
- *   5. Reconnect skeleton (delay sequence).
- *   6. Track active run / response IDs per session.
- *   7. Emit AgentRuntimeEvent for WS lifecycle changes.
+ *   2. Manage one ModelWsClient per conversation via factory.
+ *   3. Connect → init → ready flow.
+ *   4. Idle-close timer (auto-close after `IDLE_CLOSE_MS` of inactivity).
+ *   5. Heartbeat skeleton (ping/pong).
+ *   6. Reconnect skeleton (delay sequence).
+ *   7. Track active run / response IDs per session.
+ *   8. Emit AgentRuntimeEvent for WS lifecycle changes + forward ModelWsEvent with conversationId.
  *
  * See docs/ws_model_communication_architecture.md §3.1 (WsSessionManager), §6, §7.
  */
@@ -29,6 +30,18 @@ import { RuntimeErrors } from "./ws-errors.js"
 
 export type RuntimeEventCallback = (event: AgentRuntimeEvent) => void
 export type RuntimeEventUnsubscribe = () => void
+
+/**
+ * Factory that creates (or returns) a ModelWsClient for a given conversation.
+ * Each conversation SHOULD get its own client instance for proper isolation.
+ * The factory MAY return the same client for all conversations (test compat),
+ * but events will be routed per-conversation via the subscription closure.
+ */
+export type ModelWsClientFactory = (conversationId: string) => ModelWsClient
+
+/** Callback for per-conversation model events forwarded from the client. */
+export type ModelEventCallback = (conversationId: string, event: ModelWsEvent) => void
+export type ModelEventUnsubscribe = () => void
 
 /** Options for testing: override timing constants. */
 export interface WsSessionManagerOptions {
@@ -63,7 +76,14 @@ const ALLOWED_TRANSITIONS: Record<WsSessionState, readonly WsSessionState[]> = {
 export class WsSessionManager {
   private sessions = new Map<string, WsSession>()
   private eventListeners = new Set<RuntimeEventCallback>()
-  private modelWsClient: ModelWsClient
+  private modelEventListeners = new Set<ModelEventCallback>()
+
+  /** Per-conversation ModelWsClient instances. */
+  private clients = new Map<string, ModelWsClient>()
+  /** Per-conversation unsubscription handles for the above clients. */
+  private clientUnsubs = new Map<string, () => void>()
+
+  private clientFactory: ModelWsClientFactory
 
   private idleCloseMs: number
   private heartbeatIntervalMs: number
@@ -78,19 +98,26 @@ export class WsSessionManager {
   /** Guard: set of conversation IDs currently reconnecting (prevents concurrent reconnect). */
   private reconnectingSessions = new Set<string>()
 
-  constructor(modelWsClient: ModelWsClient, options?: WsSessionManagerOptions) {
-    this.modelWsClient = modelWsClient
+  /**
+   * @param clientOrFactory  A single ModelWsClient (shared across all sessions for testing
+   *                         convenience) or a factory that returns per-conversation clients.
+   * @param options          Timing overrides.
+   */
+  constructor(clientOrFactory: ModelWsClient | ModelWsClientFactory, options?: WsSessionManagerOptions) {
+    // Normalise to factory: if a single client is passed, wrap it so every conversation
+    // gets the same instance. Events are still routed per-conversation via the closure.
+    this.clientFactory = typeof clientOrFactory === "function"
+      ? clientOrFactory
+      : () => clientOrFactory
+
     this.idleCloseMs = options?.idleCloseMs ?? WS_RUNTIME_CONSTANTS.IDLE_CLOSE_MS
     this.heartbeatIntervalMs = options?.heartbeatIntervalMs ?? WS_RUNTIME_CONSTANTS.HEARTBEAT_INTERVAL_MS
     this.pongTimeoutMs = options?.pongTimeoutMs ?? WS_RUNTIME_CONSTANTS.PONG_TIMEOUT_MS
     this.connectTimeoutMs = options?.connectTimeoutMs ?? WS_RUNTIME_CONSTANTS.CONNECT_TIMEOUT_MS
     this.reconnectDelaysMs = options?.reconnectDelaysMs ?? WS_RUNTIME_CONSTANTS.RECONNECT_DELAYS_MS
-
-    // Subscribe to low-level model WS events for pong & close forwarding
-    this.modelWsClient.onEvent((event: ModelWsEvent) => this.handleModelWsEvent(event))
   }
 
-  /* ---- Event bus ---- */
+  /* ---- Event bus: AgentRuntimeEvent ---- */
 
   onEvent(callback: RuntimeEventCallback): RuntimeEventUnsubscribe {
     this.eventListeners.add(callback)
@@ -105,6 +132,30 @@ export class WsSessionManager {
         listener(event)
       } catch (err) {
         console.error("[WsSessionManager] listener error:", err)
+      }
+    }
+  }
+
+  /* ---- Event bus: ModelWsEvent (per-conversation) ---- */
+
+  /**
+   * Subscribe to raw ModelWsEvent forwarded from per-conversation clients.
+   * Each callback receives the conversationId so downstream (RunController)
+   * can route the event correctly without needing a global responseId→conv mapping.
+   */
+  onModelEvent(callback: ModelEventCallback): ModelEventUnsubscribe {
+    this.modelEventListeners.add(callback)
+    return () => {
+      this.modelEventListeners.delete(callback)
+    }
+  }
+
+  private emitModelEvent(conversationId: string, event: ModelWsEvent): void {
+    for (const listener of this.modelEventListeners) {
+      try {
+        listener(conversationId, event)
+      } catch (err) {
+        console.error("[WsSessionManager] model event listener error:", err)
       }
     }
   }
@@ -148,6 +199,8 @@ export class WsSessionManager {
    *
    * Flow:
    *   disconnected → connecting → ready
+   *
+   * Creates (or reuses) a ModelWsClient via the factory for this conversation.
    */
   async connect(conversationId: string): Promise<void> {
     const session = this.ensureSession(conversationId)
@@ -156,19 +209,27 @@ export class WsSessionManager {
     this.transition(session, "connecting")
 
     try {
-      // Phase 1: the real WS connect will happen inside ModelWsClient.
-      // We await the client here, then init the session.
-      await this.modelWsClient.connect({
+      // Clean up any previous client for this conversation
+      this.cleanupClient(conversationId)
+
+      // Create / obtain a client for this conversation via the factory
+      const client = this.clientFactory(conversationId)
+      const unsub = client.onEvent((event: ModelWsEvent) => this.handleClientEvent(conversationId, event))
+      this.clients.set(conversationId, client)
+      this.clientUnsubs.set(conversationId, unsub)
+
+      await client.connect({
         url: "ws://localhost",
         timeoutMs: this.connectTimeoutMs,
       })
-      await this.modelWsClient.initSession({})
+      await client.initSession({})
 
       this.transition(session, "ready")
       this.resetIdleTimer(conversationId)
       this.startHeartbeat(conversationId)
     } catch (err) {
       this.transition(session, "disconnected")
+      this.cleanupClient(conversationId)
       this.emit({
         type: "ws.error",
         conversationId,
@@ -187,6 +248,7 @@ export class WsSessionManager {
    * Gracefully close the session for a conversation.
    *
    * Flow: ready → closing → closed
+   * Only affects the client bound to this conversation.
    */
   async closeSession(conversationId: string, reason?: string): Promise<void> {
     const session = this.sessions.get(conversationId)
@@ -196,14 +258,28 @@ export class WsSessionManager {
     this.stopIdleTimer(conversationId)
     this.stopHeartbeat(conversationId)
 
-    try {
-      await this.modelWsClient.close({ reason: reason ?? "user_requested" })
-    } catch {
-      // Ignore close errors — we're closing anyway
+    const client = this.clients.get(conversationId)
+    if (client) {
+      try {
+        await client.close({ reason: reason ?? "user_requested" })
+      } catch {
+        // Ignore close errors — we're closing anyway
+      }
+      this.cleanupClient(conversationId)
     }
 
     this.transition(session, "closed")
     this.emit({ type: "ws.closed", conversationId, reason: reason ?? "user_requested" })
+  }
+
+  /* ---- Per-conversation client access ---- */
+
+  /**
+   * Get the ModelWsClient bound to a conversation, if one exists.
+   * Called by RunController to perform createResponse / sendToolResult / cancelResponse.
+   */
+  getClient(conversationId: string): ModelWsClient | undefined {
+    return this.clients.get(conversationId)
   }
 
   /* ---- Run tracking ---- */
@@ -439,47 +515,57 @@ export class WsSessionManager {
     }
   }
 
-  /* ---- ModelWS event handler ---- */
+  /* ---- Per-conversation ModelWS event handler ---- */
 
-  private handleModelWsEvent(event: ModelWsEvent): void {
+  /**
+   * Handle events from a single conversation's ModelWsClient.
+   *
+   * Because the handler is bound per-client via closure, it knows which
+   * conversationId the event belongs to.  No global responseId→conv mapping needed.
+   */
+  private handleClientEvent(conversationId: string, event: ModelWsEvent): void {
+    // Forward to downstream (RunController) so it can process model-level events
+    this.emitModelEvent(conversationId, event)
+
+    // Handle lifecycle events that WsSessionManager owns
     switch (event.type) {
-      case "pong":
-        for (const session of this.sessions.values()) {
-          session.lastPongAt = Date.now()
-        }
+      case "pong": {
+        const session = this.sessions.get(conversationId)
+        if (session) session.lastPongAt = Date.now()
         break
+      }
 
-      case "closed":
-        // Unexpected close — trigger reconnect for active sessions
-        for (const session of this.sessions.values()) {
-          // Skip sessions already closed, disconnected, or in closing state
-          if (
-            session.state === "closed" ||
-            session.state === "disconnected" ||
-            session.state === "closing"
-          ) continue
-          // Unexpected close for this session
-          this.emit({
-            type: "ws.error",
-            conversationId: session.conversationId,
-            error: RuntimeErrors.wsClosedUnexpectedly(),
-          })
-          this.startReconnect(session.conversationId)
-        }
+      case "closed": {
+        // Unexpected close — trigger reconnect for this session
+        const session = this.sessions.get(conversationId)
+        if (
+          !session ||
+          session.state === "closed" ||
+          session.state === "disconnected" ||
+          session.state === "closing"
+        ) break
+        this.emit({
+          type: "ws.error",
+          conversationId,
+          error: RuntimeErrors.wsClosedUnexpectedly(),
+        })
+        this.startReconnect(conversationId)
         break
+      }
 
-      case "error":
-        // WS error — trigger reconnect for all active sessions
-        for (const session of this.sessions.values()) {
-          if (
-            session.state === "closed" ||
-            session.state === "disconnected" ||
-            session.state === "closing" ||
-            session.state === "reconnecting"
-          ) continue
-          this.startReconnect(session.conversationId)
-        }
+      case "error": {
+        // WS error — trigger reconnect for this session
+        const session = this.sessions.get(conversationId)
+        if (
+          !session ||
+          session.state === "closed" ||
+          session.state === "disconnected" ||
+          session.state === "closing" ||
+          session.state === "reconnecting"
+        ) break
+        this.startReconnect(conversationId)
         break
+      }
     }
   }
 
@@ -526,18 +612,30 @@ export class WsSessionManager {
     return session
   }
 
+  /** Clean up the per-conversation client and its event subscription. */
+  private cleanupClient(conversationId: string): void {
+    const unsub = this.clientUnsubs.get(conversationId)
+    if (unsub) {
+      unsub()
+      this.clientUnsubs.delete(conversationId)
+    }
+    this.clients.delete(conversationId)
+  }
+
   private delay(ms: number): Promise<void> {
     return new Promise((resolve) => setTimeout(resolve, ms))
   }
 
-  /** Dispose all sessions and timers (for testing / cleanup). */
+  /** Dispose all sessions, clients, and timers (for testing / cleanup). */
   dispose(): void {
     for (const convId of this.sessions.keys()) {
       this.stopIdleTimer(convId)
       this.stopHeartbeat(convId)
+      this.cleanupClient(convId)
     }
     this.sessions.clear()
     this.eventListeners.clear()
+    this.modelEventListeners.clear()
     this.reconnectingSessions.clear()
   }
 }

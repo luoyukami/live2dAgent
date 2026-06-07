@@ -22,11 +22,16 @@ import type { WsSessionState, AgentRuntimeEvent } from "./ws-types.js"
 /* ------------------------------------------------------------------ */
 
 class MockModelWsClient implements ModelWsClient {
+  public id: string
   private listeners = new Set<ModelWsEventListener>()
   public connectCalls: Array<{ url: string }> = []
   public initSessionCalls: number = 0
   public closeCalls: Array<{ reason?: string }> = []
   public shouldFail = false
+
+  constructor(id?: string) {
+    this.id = id ?? "default"
+  }
 
   async connect(config: { url: string; apiKey?: string; timeoutMs?: number }): Promise<void> {
     if (this.shouldFail) throw new Error("Connection failed")
@@ -74,6 +79,31 @@ class MockModelWsClient implements ModelWsClient {
     this.initSessionCalls = 0
     this.closeCalls = []
     this.shouldFail = false
+  }
+}
+
+/**
+ * A factory that creates a new MockModelWsClient per conversation.
+ * Each client tracks its own connect/close calls — great for multi-conv tests.
+ */
+class PerConvClientFactory {
+  private clients = new Map<string, MockModelWsClient>()
+
+  getFactory(): (convId: string) => MockModelWsClient {
+    return (convId: string) => {
+      if (!this.clients.has(convId)) {
+        this.clients.set(convId, new MockModelWsClient(convId))
+      }
+      return this.clients.get(convId)!
+    }
+  }
+
+  getClient(convId: string): MockModelWsClient | undefined {
+    return this.clients.get(convId)
+  }
+
+  getAllClients(): MockModelWsClient[] {
+    return Array.from(this.clients.values())
   }
 }
 
@@ -656,5 +686,102 @@ describe("WsSessionManager dispose", () => {
 
     assert.equal(mgr.getSession("conv_1"), undefined)
     assert.equal(mgr.getSession("conv_2"), undefined)
+  })
+})
+
+/* ------------------------------------------------------------------ */
+/*  Integration: per-conversation client isolation                      */
+/* ------------------------------------------------------------------ */
+
+describe("WsSessionManager — per-conversation client isolation", () => {
+  test("pong only updates the targeted conversation's session", async () => {
+    // Use per-conversation factory so each conversation has its own mock client
+    const factory = new PerConvClientFactory()
+    const events: AgentRuntimeEvent[] = []
+    const mgr = new WsSessionManager(factory.getFactory(), {
+      idleCloseMs: 100_000,
+      heartbeatIntervalMs: 50_000,
+      pongTimeoutMs: 10_000,
+      connectTimeoutMs: 5_000,
+    })
+    mgr.onEvent((event) => events.push(event))
+
+    await mgr.connect("conv_1")
+    await mgr.connect("conv_2")
+
+    const session1 = mgr.getSession("conv_1")!
+    const session2 = mgr.getSession("conv_2")!
+
+    // Set different lastPingAt values
+    session1.lastPingAt = Date.now() - 200
+    session2.lastPingAt = Date.now() - 100
+
+    // Emit pong only for conv_1's client
+    const client1 = factory.getClient("conv_1")!
+    client1.emit({ type: "pong" })
+
+    // Only conv_1's lastPongAt should be updated
+    assert.ok(session1.lastPongAt !== null, "Conv_1 should have pong timestamp")
+    assert.ok(session1.lastPongAt! >= session1.lastPingAt!, "Conv_1 pong >= ping")
+
+    // conv_2's lastPongAt should still be null (no pong for conv_2)
+    assert.equal(session2.lastPongAt, null, "Conv_2 should NOT have pong timestamp")
+  })
+
+  test("close only affects the targeted conversation", async () => {
+    const factory = new PerConvClientFactory()
+    const events: AgentRuntimeEvent[] = []
+    const mgr = new WsSessionManager(factory.getFactory(), {
+      idleCloseMs: 100_000,
+      heartbeatIntervalMs: 50_000,
+      pongTimeoutMs: 10_000,
+      connectTimeoutMs: 5_000,
+    })
+    mgr.onEvent((event) => events.push(event))
+
+    await mgr.connect("conv_1")
+    await mgr.connect("conv_2")
+
+    assert.equal(mgr.getState("conv_1"), "ready")
+    assert.equal(mgr.getState("conv_2"), "ready")
+
+    // Close conv_1
+    await mgr.closeSession("conv_1", "test_close")
+
+    // conv_1 should be closed
+    assert.equal(mgr.getState("conv_1"), "closed")
+    const client1 = factory.getClient("conv_1")
+    assert.equal(client1?.closeCalls.length, 1, "Conv_1 client should be closed")
+
+    // conv_2 should remain unaffected
+    assert.equal(mgr.getState("conv_2"), "ready",
+      "Conv_2 should still be ready after conv_1 close")
+    const client2 = factory.getClient("conv_2")
+    assert.equal(client2?.closeCalls.length, 0, "Conv_2 client should NOT be closed")
+  })
+
+  test("getClient returns the correct per-conversation instance", async () => {
+    const factory = new PerConvClientFactory()
+    const mgr = new WsSessionManager(factory.getFactory(), {
+      idleCloseMs: 100_000,
+      heartbeatIntervalMs: 50_000,
+      pongTimeoutMs: 10_000,
+      connectTimeoutMs: 5_000,
+    })
+
+    await mgr.connect("conv_alpha")
+    await mgr.connect("conv_beta")
+
+    const clientAlpha = mgr.getClient("conv_alpha")
+    const clientBeta = mgr.getClient("conv_beta")
+
+    assert.ok(clientAlpha, "getClient should return a client for conv_alpha")
+    assert.ok(clientBeta, "getClient should return a client for conv_beta")
+
+    // With PerConvClientFactory, each conversation gets a unique MockModelWsClient
+    if (clientAlpha && clientBeta) {
+      assert.notEqual(clientAlpha, clientBeta,
+        "Each conversation should have its own ModelWsClient instance")
+    }
   })
 })

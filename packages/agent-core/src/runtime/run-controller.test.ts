@@ -34,7 +34,7 @@ import { ToolRegistry } from "../tool-registry.js"
 import type { WsSessionManager } from "../ws/ws-session-manager.js"
 import type { ModelWsClient, ModelWsEvent, ModelWsEventListener, ModelWsEventUnsubscribe, ModelWsToolResultInput } from "../ws/model-ws-client.js"
 import type { AgentRuntimeEvent, WsToolCall } from "../ws/ws-types.js"
-import type { RuntimeEventCallback, RuntimeEventUnsubscribe } from "../ws/ws-session-manager.js"
+import type { RuntimeEventCallback, RuntimeEventUnsubscribe, ModelEventCallback } from "../ws/ws-session-manager.js"
 import { WS_RUNTIME_CONSTANTS } from "../ws/ws-runtime-constants.js"
 
 /* ------------------------------------------------------------------ */
@@ -99,6 +99,10 @@ class MockWsSessionManager {
   public sessionStateTransitions: Array<{ conversationId: string; newState: string }> = []
   /** Event listeners for ws.session manager events. */
   private eventListeners = new Set<RuntimeEventCallback>()
+  /** Model event listeners (RunController subscribes to these). */
+  private modelEventListeners = new Set<ModelEventCallback>()
+  /** Default client returned by getClient (set by test harness). */
+  public defaultClient?: ModelWsClient
 
   async ensureReady(conversationId: string): Promise<void> {
     this.state[conversationId] = "ready"
@@ -174,6 +178,24 @@ class MockWsSessionManager {
     return () => this.eventListeners.delete(callback)
   }
 
+  /** Subscribe to per-conversation model events (used by RunController). */
+  onModelEvent(callback: ModelEventCallback): RuntimeEventUnsubscribe {
+    this.modelEventListeners.add(callback)
+    return () => this.modelEventListeners.delete(callback)
+  }
+
+  /** Test helper: emit a model event for a conversation (triggers RunController handler). */
+  emitModelEvent(conversationId: string, event: ModelWsEvent): void {
+    for (const listener of this.modelEventListeners) {
+      listener(conversationId, event)
+    }
+  }
+
+  /** Return the default mock client for this conversation. */
+  getClient(_conversationId: string): ModelWsClient | undefined {
+    return this.defaultClient
+  }
+
   /** Test helper: emit a ws session manager event. */
   emit(event: AgentRuntimeEvent): void {
     for (const listener of this.eventListeners) {
@@ -183,6 +205,7 @@ class MockWsSessionManager {
 
   dispose(): void {
     this.eventListeners.clear()
+    this.modelEventListeners.clear()
   }
 }
 
@@ -204,7 +227,10 @@ function createHarness(): Harness {
   const client = new MockModelWsClient()
   const events: AgentRuntimeEvent[] = []
 
-  const controller = new RunController(convManager, wsManager as any as WsSessionManager, client)
+  // Wire the mock client so getClient() returns it for any conversation
+  wsManager.defaultClient = client
+
+  const controller = new RunController(convManager, wsManager as any as WsSessionManager)
   controller.onEvent((event) => events.push(event))
 
   return { convManager, wsManager, client, controller, events } as Harness
@@ -254,19 +280,19 @@ describe("RunController — basic text streaming", () => {
     await controller.enqueueUserMessage(conv.id, "Hi")
 
     // Simulate response.created
-    client.emit({ type: "response.created", responseId: "resp_1" })
+    wsManager.emitModelEvent(conv.id, { type: "response.created", responseId: "resp_1" })
 
     assert.equal(wsManager.activeResponseIds[conv.id], "resp_1")
   })
 
   test("text deltas are accumulated and flushed on interval", async () => {
-    const { convManager, controller, client, events } = createHarness()
+    const { convManager, controller, client, wsManager, events } = createHarness()
     const conv = convManager.createConversation()
     await controller.enqueueUserMessage(conv.id, "Hi")
 
     // Simulate deltas
-    client.emit({ type: "response.text.delta", responseId: "resp_1", delta: "Hello " })
-    client.emit({ type: "response.text.delta", responseId: "resp_1", delta: "world!" })
+    wsManager.emitModelEvent(conv.id, { type: "response.text.delta", responseId: "resp_1", delta: "Hello " })
+    wsManager.emitModelEvent(conv.id, { type: "response.text.delta", responseId: "resp_1", delta: "world!" })
 
     // Wait for flush interval
     await new Promise((resolve) => setTimeout(resolve, WS_RUNTIME_CONSTANTS.ASSISTANT_DELTA_FLUSH_INTERVAL_MS + 20))
@@ -286,13 +312,13 @@ describe("RunController — basic text streaming", () => {
   })
 
   test("large delta (>512 chars) flushes immediately", async () => {
-    const { convManager, controller, client, events } = createHarness()
+    const { convManager, controller, client, wsManager, events } = createHarness()
     const conv = convManager.createConversation()
     await controller.enqueueUserMessage(conv.id, "Hi")
 
     // Simulate a large delta
     const largeText = "x".repeat(600)
-    client.emit({ type: "response.text.delta", responseId: "resp_1", delta: largeText })
+    wsManager.emitModelEvent(conv.id, { type: "response.text.delta", responseId: "resp_1", delta: largeText })
 
     // Should flush immediately without waiting for interval
     const deltaEvents = events.filter((e) => e.type === "assistant.message.delta")
@@ -304,16 +330,16 @@ describe("RunController — basic text streaming", () => {
   })
 
   test("response.completed completes the run and flushes remaining delta", async () => {
-    const { convManager, controller, client, events } = createHarness()
+    const { convManager, controller, client, wsManager, events } = createHarness()
     const conv = convManager.createConversation()
     await controller.enqueueUserMessage(conv.id, "Hi")
 
     // Send some deltas but don't flush
-    client.emit({ type: "response.text.delta", responseId: "resp_1", delta: "Final " })
-    client.emit({ type: "response.text.delta", responseId: "resp_1", delta: "message" })
+    wsManager.emitModelEvent(conv.id, { type: "response.text.delta", responseId: "resp_1", delta: "Final " })
+    wsManager.emitModelEvent(conv.id, { type: "response.text.delta", responseId: "resp_1", delta: "message" })
 
     // Complete the response
-    client.emit({ type: "response.completed", responseId: "resp_1", remoteContextId: "ctx_1" })
+    wsManager.emitModelEvent(conv.id, { type: "response.completed", responseId: "resp_1", remoteContextId: "ctx_1" })
 
     // Run should be completed
     const completedEvents = events.filter((e) => e.type === "run.completed")
@@ -337,8 +363,8 @@ describe("RunController — basic text streaming", () => {
     const conv = convManager.createConversation()
     await controller.enqueueUserMessage(conv.id, "Hi")
 
-    client.emit({ type: "response.created", responseId: "resp_1" })
-    client.emit({ type: "response.completed", responseId: "resp_1", remoteContextId: "ctx_2" })
+    wsManager.emitModelEvent(conv.id, { type: "response.created", responseId: "resp_1" })
+    wsManager.emitModelEvent(conv.id, { type: "response.completed", responseId: "resp_1", remoteContextId: "ctx_2" })
 
     assert.equal(wsManager.remoteContextIds[conv.id], "ctx_2")
   })
@@ -377,7 +403,7 @@ describe("RunController — queuing", () => {
   })
 
   test("queued messages are processed after run completes", async () => {
-    const { convManager, controller, client, events } = createHarness()
+    const { convManager, controller, client, wsManager, events } = createHarness()
     const conv = convManager.createConversation()
 
     await controller.enqueueUserMessage(conv.id, "First")
@@ -386,8 +412,8 @@ describe("RunController — queuing", () => {
     await controller.enqueueUserMessage(conv.id, "Second")
 
     // Complete the first response
-    client.emit({ type: "response.created", responseId: "resp_1" })
-    client.emit({ type: "response.completed", responseId: "resp_1" })
+    wsManager.emitModelEvent(conv.id, { type: "response.created", responseId: "resp_1" })
+    wsManager.emitModelEvent(conv.id, { type: "response.completed", responseId: "resp_1" })
 
     // Wait for queue processing
     await new Promise((resolve) => setTimeout(resolve, 10))
@@ -459,11 +485,11 @@ describe("RunController — queuing", () => {
 
 describe("RunController — cancellation", () => {
   test("cancelRun cancels the active run and emits event", async () => {
-    const { convManager, controller, client, events } = createHarness()
+    const { convManager, controller, client, wsManager, events } = createHarness()
     const conv = convManager.createConversation()
 
     await controller.enqueueUserMessage(conv.id, "Hi")
-    client.emit({ type: "response.created", responseId: "resp_1" })
+    wsManager.emitModelEvent(conv.id, { type: "response.created", responseId: "resp_1" })
 
     await controller.cancelRun(conv.id)
 
@@ -496,14 +522,14 @@ describe("RunController — Phase 3 cancel & reconnect", () => {
 
     // Start first run and queue a second message
     await controller.enqueueUserMessage(conv.id, "First")
-    client.emit({ type: "response.created", responseId: "resp_1" })
+    wsManager.emitModelEvent(conv.id, { type: "response.created", responseId: "resp_1" })
     await controller.enqueueUserMessage(conv.id, "Second")
 
     // Cancel the active run
     await controller.cancelRun(conv.id)
 
-    // WS should be ready after cancel
-    assert.equal(wsManager.state[conv.id], "ready")
+    // WS should be in responding (queue processing starts a new run)
+    assert.equal(wsManager.state[conv.id], "responding")
 
     // Second message should be dequeued and started (processNextInQueue runs)
     await new Promise((resolve) => setTimeout(resolve, 10))
@@ -520,15 +546,15 @@ describe("RunController — Phase 3 cancel & reconnect", () => {
   })
 
   test("cancelRun saves partial assistant message", async () => {
-    const { convManager, controller, client, events } = createHarness()
+    const { convManager, controller, client, wsManager, events } = createHarness()
     const conv = convManager.createConversation()
 
     await controller.enqueueUserMessage(conv.id, "Hello")
-    client.emit({ type: "response.created", responseId: "resp_1" })
+    wsManager.emitModelEvent(conv.id, { type: "response.created", responseId: "resp_1" })
 
     // Send some delta text
-    client.emit({ type: "response.text.delta", responseId: "resp_1", delta: "Partial " })
-    client.emit({ type: "response.text.delta", responseId: "resp_1", delta: "message" })
+    wsManager.emitModelEvent(conv.id, { type: "response.text.delta", responseId: "resp_1", delta: "Partial " })
+    wsManager.emitModelEvent(conv.id, { type: "response.text.delta", responseId: "resp_1", delta: "message" })
 
     // Cancel before flush
     await controller.cancelRun(conv.id)
@@ -548,7 +574,7 @@ describe("RunController — Phase 3 cancel & reconnect", () => {
     const conv = convManager.createConversation()
 
     await controller.enqueueUserMessage(conv.id, "Replay me")
-    client.emit({ type: "response.created", responseId: "resp_1" })
+    wsManager.emitModelEvent(conv.id, { type: "response.created", responseId: "resp_1" })
 
     const startedCount = events.filter((e) => e.type === "run.started").length
 
@@ -579,7 +605,7 @@ describe("RunController — Phase 3 cancel & reconnect", () => {
     const conv = convManager.createConversation()
 
     await controller.enqueueUserMessage(conv.id, "Test replay limit")
-    client.emit({ type: "response.created", responseId: "resp_1" })
+    wsManager.emitModelEvent(conv.id, { type: "response.created", responseId: "resp_1" })
 
     // First reconnect failure — should replay
     wsManager.setActiveRun(conv.id, controller.getCurrentRunId(conv.id) ?? "")
@@ -618,13 +644,13 @@ describe("RunController — Phase 3 cancel & reconnect", () => {
 
 describe("RunController — error handling", () => {
   test("model error fails the current run", async () => {
-    const { convManager, controller, client, events } = createHarness()
+    const { convManager, controller, client, wsManager, events } = createHarness()
     const conv = convManager.createConversation()
 
     await controller.enqueueUserMessage(conv.id, "Hi")
-    client.emit({ type: "response.created", responseId: "resp_1" })
+    wsManager.emitModelEvent(conv.id, { type: "response.created", responseId: "resp_1" })
 
-    client.emit({
+    wsManager.emitModelEvent(conv.id, {
       type: "error",
       error: { code: "ws_protocol_error", message: "Something went wrong", retryable: false },
     })
@@ -637,7 +663,7 @@ describe("RunController — error handling", () => {
   })
 
   test("createResponse failure marks run as failed via event", async () => {
-    const { convManager, controller, client, events } = createHarness()
+    const { convManager, controller, client, wsManager, events } = createHarness()
     const conv = convManager.createConversation()
     client.shouldFailCreateResponse = true
 
@@ -670,17 +696,17 @@ describe("RunController — error handling", () => {
 
 describe("RunController — event emission", () => {
   test("full successful run emits all expected events in order", async () => {
-    const { convManager, controller, client, events } = createHarness()
+    const { convManager, controller, client, wsManager, events } = createHarness()
     const conv = convManager.createConversation()
 
     await controller.enqueueUserMessage(conv.id, "Hi")
-    client.emit({ type: "response.created", responseId: "resp_1" })
-    client.emit({ type: "response.text.delta", responseId: "resp_1", delta: "Hello" })
+    wsManager.emitModelEvent(conv.id, { type: "response.created", responseId: "resp_1" })
+    wsManager.emitModelEvent(conv.id, { type: "response.text.delta", responseId: "resp_1", delta: "Hello" })
 
     // Wait for flush
     await new Promise((resolve) => setTimeout(resolve, WS_RUNTIME_CONSTANTS.ASSISTANT_DELTA_FLUSH_INTERVAL_MS + 10))
 
-    client.emit({ type: "response.completed", responseId: "resp_1" })
+    wsManager.emitModelEvent(conv.id, { type: "response.completed", responseId: "resp_1" })
 
     const eventTypes = events.map((e) => e.type)
     assert.ok(eventTypes.includes("run.started"))
@@ -691,12 +717,12 @@ describe("RunController — event emission", () => {
   })
 
   test("response.cancelled emits run.cancelled", async () => {
-    const { convManager, controller, client, events } = createHarness()
+    const { convManager, controller, client, wsManager, events } = createHarness()
     const conv = convManager.createConversation()
 
     await controller.enqueueUserMessage(conv.id, "Hi")
-    client.emit({ type: "response.created", responseId: "resp_1" })
-    client.emit({ type: "response.cancelled", responseId: "resp_1" })
+    wsManager.emitModelEvent(conv.id, { type: "response.created", responseId: "resp_1" })
+    wsManager.emitModelEvent(conv.id, { type: "response.cancelled", responseId: "resp_1" })
 
     const cancelledEvents = events.filter((e) => e.type === "run.cancelled")
     assert.equal(cancelledEvents.length, 1)
@@ -771,10 +797,11 @@ function createToolHarness(
     ...permissionOverrides,
   }
 
+  wsManager.defaultClient = client
+
   const controller = new RunController(
     convManager,
     wsManager as any as WsSessionManager,
-    client,
     { toolRegistry, runtime: mockRuntime, permission: mockPermission },
   )
   controller.onEvent((event) => events.push(event))
@@ -784,14 +811,14 @@ function createToolHarness(
 
 describe("RunController — Phase 2 tool call continuation", () => {
   test("response.tool_call.created collects tool calls and emits tool.call.created event", async () => {
-    const { convManager, controller, client, events } = createToolHarness()
+    const { convManager, controller,client, wsManager, events } = createToolHarness()
     const conv = convManager.createConversation()
 
     await controller.enqueueUserMessage(conv.id, "Run a command")
 
     // Simulate response with a tool call
-    client.emit({ type: "response.created", responseId: "resp_1" })
-    client.emit({
+    wsManager.emitModelEvent(conv.id, { type: "response.created", responseId: "resp_1" })
+    wsManager.emitModelEvent(conv.id, {
       type: "response.tool_call.created",
       responseId: "resp_1",
       toolCall: { id: "call_1", name: "shell.run", arguments: { command: "echo hi" } },
@@ -816,15 +843,15 @@ describe("RunController — Phase 2 tool call continuation", () => {
 
     await controller.enqueueUserMessage(conv.id, "Run a command")
 
-    client.emit({ type: "response.created", responseId: "resp_1" })
-    client.emit({
+    wsManager.emitModelEvent(conv.id, { type: "response.created", responseId: "resp_1" })
+    wsManager.emitModelEvent(conv.id, {
       type: "response.tool_call.created",
       responseId: "resp_1",
       toolCall: { id: "call_1", name: "shell.run", arguments: { command: "echo hi" } },
     })
 
     // Complete the response to trigger tool processing
-    client.emit({ type: "response.completed", responseId: "resp_1", remoteContextId: "ctx_1" })
+    wsManager.emitModelEvent(conv.id, { type: "response.completed", responseId: "resp_1", remoteContextId: "ctx_1" })
 
     // Wait for async tool processing
     await new Promise((resolve) => setTimeout(resolve, 20))
@@ -856,7 +883,7 @@ describe("RunController — Phase 2 tool call continuation", () => {
   })
 
   test("permission denied returns denied status and run continues", async () => {
-    const { convManager, controller, client, events } = createToolHarness(
+    const { convManager, controller,client, wsManager, events } = createToolHarness(
       undefined,
       {
         async check(actions) {
@@ -872,15 +899,15 @@ describe("RunController — Phase 2 tool call continuation", () => {
 
     await controller.enqueueUserMessage(conv.id, "Run a command")
 
-    client.emit({ type: "response.created", responseId: "resp_1" })
-    client.emit({
+    wsManager.emitModelEvent(conv.id, { type: "response.created", responseId: "resp_1" })
+    wsManager.emitModelEvent(conv.id, {
       type: "response.tool_call.created",
       responseId: "resp_1",
       toolCall: { id: "call_1", name: "shell.run", arguments: { command: "rm -rf /" } },
     })
 
     // Complete the response
-    client.emit({ type: "response.completed", responseId: "resp_1", remoteContextId: "ctx_1" })
+    wsManager.emitModelEvent(conv.id, { type: "response.completed", responseId: "resp_1", remoteContextId: "ctx_1" })
 
     // Wait for async tool processing
     await new Promise((resolve) => setTimeout(resolve, 20))
@@ -903,20 +930,20 @@ describe("RunController — Phase 2 tool call continuation", () => {
   })
 
   test("tool with invalid arguments returns tool_arguments_invalid error", async () => {
-    const { convManager, controller, client, events } = createToolHarness()
+    const { convManager, controller,client, wsManager, events } = createToolHarness()
     const conv = convManager.createConversation()
 
     await controller.enqueueUserMessage(conv.id, "Run a command")
 
-    client.emit({ type: "response.created", responseId: "resp_1" })
+    wsManager.emitModelEvent(conv.id, { type: "response.created", responseId: "resp_1" })
     // Missing required "command" argument
-    client.emit({
+    wsManager.emitModelEvent(conv.id, {
       type: "response.tool_call.created",
       responseId: "resp_1",
       toolCall: { id: "call_bad", name: "shell.run", arguments: {} },
     })
 
-    client.emit({ type: "response.completed", responseId: "resp_1", remoteContextId: "ctx_1" })
+    wsManager.emitModelEvent(conv.id, { type: "response.completed", responseId: "resp_1", remoteContextId: "ctx_1" })
 
     await new Promise((resolve) => setTimeout(resolve, 20))
 
@@ -934,16 +961,16 @@ describe("RunController — Phase 2 tool call continuation", () => {
   })
 
   test("multiple consecutive tool calls (3) all processed correctly", async () => {
-    const { convManager, controller, client, events } = createToolHarness()
+    const { convManager, controller,client, wsManager, events } = createToolHarness()
     const conv = convManager.createConversation()
 
     await controller.enqueueUserMessage(conv.id, "Run three commands")
 
-    client.emit({ type: "response.created", responseId: "resp_1" })
+    wsManager.emitModelEvent(conv.id, { type: "response.created", responseId: "resp_1" })
 
     // Emit 3 tool calls
     for (let i = 1; i <= 3; i++) {
-      client.emit({
+      wsManager.emitModelEvent(conv.id, {
         type: "response.tool_call.created",
         responseId: "resp_1",
         toolCall: { id: `call_${i}`, name: "shell.run", arguments: { command: `echo ${i}` } },
@@ -951,7 +978,7 @@ describe("RunController — Phase 2 tool call continuation", () => {
     }
 
     // Complete the response
-    client.emit({ type: "response.completed", responseId: "resp_1", remoteContextId: "ctx_1" })
+    wsManager.emitModelEvent(conv.id, { type: "response.completed", responseId: "resp_1", remoteContextId: "ctx_1" })
 
     await new Promise((resolve) => setTimeout(resolve, 20))
 
@@ -968,17 +995,17 @@ describe("RunController — Phase 2 tool call continuation", () => {
   })
 
   test("tool calls exceeding MAX_TOOL_CALLS_PER_RUN are rejected", async () => {
-    const { convManager, controller, client, events } = createToolHarness()
+    const { convManager, controller,client, wsManager, events } = createToolHarness()
     const conv = convManager.createConversation()
 
     await controller.enqueueUserMessage(conv.id, "Run many commands")
 
-    client.emit({ type: "response.created", responseId: "resp_1" })
+    wsManager.emitModelEvent(conv.id, { type: "response.created", responseId: "resp_1" })
 
     // Emit MAX_TOOL_CALLS_PER_RUN + 1 tool calls
     const maxCalls = WS_RUNTIME_CONSTANTS.MAX_TOOL_CALLS_PER_RUN
     for (let i = 1; i <= maxCalls; i++) {
-      client.emit({
+      wsManager.emitModelEvent(conv.id, {
         type: "response.tool_call.created",
         responseId: "resp_1",
         toolCall: { id: `call_${i}`, name: "shell.run", arguments: { command: `echo ${i}` } },
@@ -986,7 +1013,7 @@ describe("RunController — Phase 2 tool call continuation", () => {
     }
 
     // The extra call beyond the limit will be rejected (tool.call.failed with max_tool_calls_exceeded)
-    client.emit({
+    wsManager.emitModelEvent(conv.id, {
       type: "response.tool_call.created",
       responseId: "resp_1",
       toolCall: { id: "call_extra", name: "shell.run", arguments: { command: "echo extra" } },
@@ -1008,25 +1035,26 @@ describe("RunController — Phase 2 tool call continuation", () => {
     const client = new MockModelWsClient()
     const events: AgentRuntimeEvent[] = []
 
+    wsManager.defaultClient = client
+
     // Create RunController WITHOUT toolOpts
     const controller = new RunController(
       convManager,
       wsManager as any as WsSessionManager,
-      client,
     )
     controller.onEvent((event) => events.push(event))
 
     const conv = convManager.createConversation()
     await controller.enqueueUserMessage(conv.id, "Run a command")
 
-    client.emit({ type: "response.created", responseId: "resp_1" })
-    client.emit({
+    wsManager.emitModelEvent(conv.id, { type: "response.created", responseId: "resp_1" })
+    wsManager.emitModelEvent(conv.id, {
       type: "response.tool_call.created",
       responseId: "resp_1",
       toolCall: { id: "call_1", name: "shell.run", arguments: { command: "echo hi" } },
     })
 
-    client.emit({ type: "response.completed", responseId: "resp_1", remoteContextId: "ctx_1" })
+    wsManager.emitModelEvent(conv.id, { type: "response.completed", responseId: "resp_1", remoteContextId: "ctx_1" })
 
     await new Promise((resolve) => setTimeout(resolve, 20))
 
@@ -1040,25 +1068,25 @@ describe("RunController — Phase 2 tool call continuation", () => {
   })
 
   test("tool call with text delta still processes correctly", async () => {
-    const { convManager, controller, client, events } = createToolHarness()
+    const { convManager, controller,client, wsManager, events } = createToolHarness()
     const conv = convManager.createConversation()
 
     await controller.enqueueUserMessage(conv.id, "Run and explain")
 
-    client.emit({ type: "response.created", responseId: "resp_1" })
+    wsManager.emitModelEvent(conv.id, { type: "response.created", responseId: "resp_1" })
 
     // Some text first
-    client.emit({ type: "response.text.delta", responseId: "resp_1", delta: "I'll run that command." })
+    wsManager.emitModelEvent(conv.id, { type: "response.text.delta", responseId: "resp_1", delta: "I'll run that command." })
 
     // Then tool call
-    client.emit({
+    wsManager.emitModelEvent(conv.id, {
       type: "response.tool_call.created",
       responseId: "resp_1",
       toolCall: { id: "call_1", name: "shell.run", arguments: { command: "echo hello" } },
     })
 
     // Complete
-    client.emit({ type: "response.completed", responseId: "resp_1", remoteContextId: "ctx_1" })
+    wsManager.emitModelEvent(conv.id, { type: "response.completed", responseId: "resp_1", remoteContextId: "ctx_1" })
 
     // Wait for flush + tool processing
     await new Promise((resolve) => setTimeout(resolve, WS_RUNTIME_CONSTANTS.ASSISTANT_DELTA_FLUSH_INTERVAL_MS + 30))
@@ -1077,5 +1105,157 @@ describe("RunController — Phase 2 tool call continuation", () => {
     // Assistant message should be completed
     const msgCompletedEvents = events.filter((e) => e.type === "assistant.message.completed")
     assert.ok(msgCompletedEvents.length >= 1)
+  })
+})
+
+/* ------------------------------------------------------------------ */
+/*  Integration tests for multi-conversation isolation                 */
+/* ------------------------------------------------------------------ */
+
+describe("RunController — multi-conversation isolation", () => {
+  test("concurrent deltas from different conversations do not intermix", async () => {
+    const { convManager, controller, client, wsManager, events } = createHarness()
+    const convA = convManager.createConversation("ConvA")
+    const convB = convManager.createConversation("ConvB")
+
+    // Start runs in both conversations
+    await controller.enqueueUserMessage(convA.id, "Hello A")
+    await controller.enqueueUserMessage(convB.id, "Hello B")
+
+    // Emit deltas for both
+    wsManager.emitModelEvent(convA.id, { type: "response.created", responseId: "resp_a1" })
+    wsManager.emitModelEvent(convA.id, { type: "response.text.delta", responseId: "resp_a1", delta: "DeltaA1 " })
+    wsManager.emitModelEvent(convB.id, { type: "response.created", responseId: "resp_b1" })
+    wsManager.emitModelEvent(convB.id, { type: "response.text.delta", responseId: "resp_b1", delta: "DeltaB1 " })
+    wsManager.emitModelEvent(convA.id, { type: "response.text.delta", responseId: "resp_a1", delta: "DeltaA2" })
+    wsManager.emitModelEvent(convB.id, { type: "response.text.delta", responseId: "resp_b1", delta: "DeltaB2" })
+
+    // Complete both
+    wsManager.emitModelEvent(convA.id, { type: "response.completed", responseId: "resp_a1" })
+    wsManager.emitModelEvent(convB.id, { type: "response.completed", responseId: "resp_b1" })
+
+    // Wait for flush + processing
+    await new Promise((resolve) => setTimeout(resolve, WS_RUNTIME_CONSTANTS.ASSISTANT_DELTA_FLUSH_INTERVAL_MS + 30))
+
+    const msgsA = convManager.getMessages(convA.id)
+    const msgsB = convManager.getMessages(convB.id)
+
+    const assistantA = msgsA.find((m) => m.role === "assistant")
+    const assistantB = msgsB.find((m) => m.role === "assistant")
+
+    assert.ok(assistantA, "ConvA should have an assistant message")
+    assert.ok(assistantB, "ConvB should have an assistant message")
+
+    // Verify A's content contains only A's deltas (not B's)
+    assert.ok(assistantA!.content.includes("DeltaA1"), "ConvA should contain DeltaA1")
+    assert.ok(assistantA!.content.includes("DeltaA2"), "ConvA should contain DeltaA2")
+    assert.ok(!assistantA!.content.includes("DeltaB"), "ConvA should NOT contain DeltaB text")
+
+    // Verify B's content contains only B's deltas (not A's)
+    assert.ok(assistantB!.content.includes("DeltaB1"), "ConvB should contain DeltaB1")
+    assert.ok(assistantB!.content.includes("DeltaB2"), "ConvB should contain DeltaB2")
+    assert.ok(!assistantB!.content.includes("DeltaA"), "ConvB should NOT contain DeltaA text")
+
+    // Each conversation should have exactly one completion event
+    const aCompleted = events.filter(
+      (e) => e.type === "run.completed" && e.conversationId === convA.id,
+    )
+    const bCompleted = events.filter(
+      (e) => e.type === "run.completed" && e.conversationId === convB.id,
+    )
+    assert.equal(aCompleted.length, 1, "ConvA should have one run.completed")
+    assert.equal(bCompleted.length, 1, "ConvB should have one run.completed")
+  })
+
+  test("tool call does not crash with ready → waiting_approval transition fix", async () => {
+    // The fix: startRun transitions ready → responding before createResponse,
+    // so the tool call flow (responding → waiting_approval → waiting_tool → responding)
+    // never hits an invalid transition from "ready".
+    const { convManager, controller, client, wsManager, events } = createToolHarness()
+    const conv = convManager.createConversation()
+
+    await controller.enqueueUserMessage(conv.id, "Run a tool")
+
+    // Verify the session transitioned to responding after startRun
+    // (this would throw in the old code without the fix)
+    assert.equal(wsManager.state[conv.id], "responding", "Session should be in responding state after startRun")
+
+    // Emit response with a tool call
+    wsManager.emitModelEvent(conv.id, { type: "response.created", responseId: "resp_1" })
+    wsManager.emitModelEvent(conv.id, {
+      type: "response.tool_call.created",
+      responseId: "resp_1",
+      toolCall: { id: "call_t1", name: "shell.run", arguments: { command: "echo ok" } },
+    })
+
+    // Complete the response — this should NOT throw from invalid state transition
+    // because the session is in "responding", not "ready"
+    wsManager.emitModelEvent(conv.id, { type: "response.completed", responseId: "resp_1", remoteContextId: "ctx_1" })
+
+    // Wait for async tool processing
+    await new Promise((resolve) => setTimeout(resolve, 20))
+
+    // Verify tool call completed successfully (no crash)
+    const completedEvents = events.filter((e) => e.type === "tool.call.completed")
+    assert.equal(completedEvents.length, 1, "Tool call should complete without crash")
+    if (completedEvents[0]?.type === "tool.call.completed") {
+      assert.equal(completedEvents[0].result.status, "ok")
+    }
+
+    // Verify the session went through the correct states
+    const transitions = wsManager.sessionStateTransitions.map((t) => t.newState)
+    assert.ok(transitions.includes("responding"), "Should have transitioned to responding")
+    assert.ok(transitions.includes("waiting_approval"), "Should have transitioned to waiting_approval")
+    assert.ok(transitions.includes("waiting_tool"), "Should have transitioned to waiting_tool")
+  })
+
+  test("queued run is cleaned up and does not block new messages when dequeued", async () => {
+    const { convManager, controller, client, wsManager, events } = createHarness()
+    const conv = convManager.createConversation()
+
+    // Start first message
+    await controller.enqueueUserMessage(conv.id, "First")
+    wsManager.emitModelEvent(conv.id, { type: "response.created", responseId: "resp_1" })
+
+    // Queue a second message while first is active
+    await controller.enqueueUserMessage(conv.id, "Second")
+
+    // Verify the queue has a run entry
+    const queuedEvents = events.filter((e) => e.type === "run.queued")
+    assert.equal(queuedEvents.length, 1)
+    if (queuedEvents[0]?.type === "run.queued") {
+      const queuedRunId = queuedEvents[0].runId
+      // The queued run should exist in the runs map
+      const queuedRun = controller.getRun(queuedRunId)
+      assert.ok(queuedRun, "Queued run should exist in the runs map")
+      assert.equal(queuedRun?.status, "queued")
+    }
+
+    // Complete the first response
+    wsManager.emitModelEvent(conv.id, { type: "response.completed", responseId: "resp_1" })
+
+    // Wait for queue processing
+    await new Promise((resolve) => setTimeout(resolve, 10))
+
+    // The queued run should be removed after dequeue
+    if (queuedEvents[0]?.type === "run.queued") {
+      const queuedRunId = queuedEvents[0].runId
+      const removedRun = controller.getRun(queuedRunId)
+      assert.equal(removedRun, undefined, "Queued run entry should be removed after dequeue")
+    }
+
+    // The second message should have started as a new run (not queued)
+    const startedEvents = events.filter(
+      (e) => e.type === "run.started" || e.type === "run.queued",
+    )
+    const startedCount = startedEvents.filter((e) => e.type === "run.started").length
+    // After dequeue, should have started a new run
+    assert.equal(startedCount, 2, "Should have 2 run.started events (first + dequeued)")
+
+    // getActiveRun should not be polluted by stale queued runs
+    const activeRun = controller["getActiveRun"](conv.id)
+    // Should be undefined or a non-queued run (the queued one was removed)
+    assert.ok(!activeRun || activeRun.status !== "queued",
+      "getActiveRun should not return a queued run")
   })
 })

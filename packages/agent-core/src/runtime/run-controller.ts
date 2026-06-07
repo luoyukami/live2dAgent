@@ -8,6 +8,13 @@
  *   - Sends results back to model and triggers continuation
  *   - Enforces MAX_TOOL_CALLS_PER_RUN (20) and MAX_MODEL_CONTINUATIONS_PER_RUN (30)
  *
+ * Key design decisions:
+ *   - Delta accumulation is per-conversation (not global) — different conversations'
+ *     text deltas, tool calls, and completions never intermix.
+ *   - State machine transitions happen before createResponse (ready → responding)
+ *     so tools can correctly transition responding → waiting_approval.
+ *   - Queue items carry their runId; getActiveRun excludes "queued" status.
+ *
  * See docs/ws_model_communication_architecture.md §3.1 (RunController), §10.
  */
 import type {
@@ -18,12 +25,11 @@ import type {
   WsToolResult,
 } from "../ws/ws-types.js"
 import type {
-  ModelWsClient,
   ModelWsEvent,
 } from "../ws/model-ws-client.js"
 import type { ToolRegistry } from "../tool-registry.js"
 import type { ConversationManager } from "../conversation/conversation-manager.js"
-import type { WsSessionManager } from "../ws/ws-session-manager.js"
+import type { WsSessionManager, ModelEventCallback, ModelEventUnsubscribe } from "../ws/ws-session-manager.js"
 import { WS_RUNTIME_CONSTANTS } from "../ws/ws-runtime-constants.js"
 import { RuntimeErrors } from "../ws/ws-errors.js"
 import { processToolCalls, type ArtifactWriter, type ToolCallProcessResult } from "../tools/tool-runtime.js"
@@ -63,12 +69,25 @@ export interface RunControllerToolOpts {
 }
 
 /* ------------------------------------------------------------------ */
-/*  Queued message                                                     */
+/*  Internal types                                                     */
 /* ------------------------------------------------------------------ */
 
 interface QueuedMessage {
   content: string
   conversationId: string
+  /** The placeholder run ID assigned when the message was queued. */
+  runId: string
+}
+
+/**
+ * Per-conversation delta accumulation state.
+ * Replaces the old global `currentRunId` / `currentMessageId` / `currentDelta`.
+ */
+interface ConversationDeltaState {
+  runId: string
+  messageId: string
+  delta: string
+  flushTimer: ReturnType<typeof setTimeout> | null
 }
 
 /* ------------------------------------------------------------------ */
@@ -80,16 +99,10 @@ export class RunController {
   private queues = new Map<string, QueuedMessage[]>()
   private eventListeners = new Set<RuntimeEventCallback>()
 
-  /** Accumulated delta text for the current run. */
-  private currentDelta = ""
-  /** The assistant message ID being accumulated into. */
-  private currentMessageId: string | null = null
-  /** The run ID whose delta is being accumulated. */
-  private currentRunId: string | null = null
-  /** Timer handle for periodic delta flush. */
-  private deltaFlushTimer: ReturnType<typeof setTimeout> | null = null
+  /** Per-conversation delta accumulation state. */
+  private deltaStates = new Map<string, ConversationDeltaState>()
 
-  private modelWsUnsubscribe: (() => void) | null = null
+  private modelEventUnsubscribe: ModelEventUnsubscribe | null = null
   private wsSessionUnsubscribe: (() => void) | null = null
 
   /* ---- Phase 2: tool call state ---- */
@@ -112,13 +125,14 @@ export class RunController {
   constructor(
     private conversationManager: ConversationManager,
     private wsSessionManager: WsSessionManager,
-    private modelWsClient: ModelWsClient,
     private toolOpts?: RunControllerToolOpts,
     private contextManager: ContextManager = new ContextManager(),
   ) {
-    // Subscribe to model WS events
-    this.modelWsUnsubscribe = this.modelWsClient.onEvent((event) =>
-      this.handleModelWsEvent(event),
+    // Subscribe to per-conversation model WS events forwarded by WsSessionManager.
+    // Each event carries the conversationId so we can route to the correct delta state.
+    this.modelEventUnsubscribe = this.wsSessionManager.onModelEvent(
+      (conversationId: string, event: ModelWsEvent) =>
+        this.handleModelWsEvent(conversationId, event),
     )
     // Subscribe to WS session events for reconnect failure handling
     this.wsSessionUnsubscribe = this.wsSessionManager.onEvent((event) => {
@@ -170,7 +184,7 @@ export class RunController {
       throw new Error(`Conversation not found: ${conversationId}`)
     }
 
-    // Check if there's an active run
+    // Check if there's an active run (queued runs don't count as "active")
     const activeRun = this.getActiveRun(conversationId)
     if (activeRun) {
       // Queue the message with a real run ID
@@ -203,7 +217,7 @@ export class RunController {
         toolCallCount: 0,
       }
       this.runs.set(queuedRun.id, queuedRun)
-      queue.push({ content: text, conversationId })
+      queue.push({ content: text, conversationId, runId: queuedRun.id })
       // Emit queued event with real run ID
       this.emit({ type: "run.queued", conversationId, runId: queuedRun.id })
       return
@@ -218,7 +232,7 @@ export class RunController {
    *
    * Flow: cancelling → cancelled
    * - Saves partial assistant message (via flushDelta)
-   * - Calls modelWsClient.cancelResponse
+   * - Calls the per-session client's cancelResponse
    * - Clears active response, transitions WS back to ready
    * - Processes next queued message
    */
@@ -232,15 +246,18 @@ export class RunController {
     // Tell the model to cancel
     const responseId = this.wsSessionManager.getActiveResponseId(conversationId)
     if (responseId) {
-      try {
-        await this.modelWsClient.cancelResponse({ responseId })
-      } catch {
-        // Non-critical — proceed with local cancellation
+      const client = this.wsSessionManager.getClient(conversationId)
+      if (client) {
+        try {
+          await client.cancelResponse({ responseId })
+        } catch {
+          // Non-critical — proceed with local cancellation
+        }
       }
     }
 
     // Flush any pending delta (saves partial assistant message content)
-    this.flushDelta()
+    this.flushDelta(conversationId)
 
     // Mark cancelled
     run.status = "cancelled"
@@ -305,13 +322,18 @@ export class RunController {
 
   /** Dispose all resources. */
   dispose(): void {
-    if (this.deltaFlushTimer) {
-      clearTimeout(this.deltaFlushTimer)
-      this.deltaFlushTimer = null
+    // Clear all per-conversation delta flush timers
+    for (const convId of this.deltaStates.keys()) {
+      const ds = this.deltaStates.get(convId)
+      if (ds?.flushTimer) {
+        clearTimeout(ds.flushTimer)
+      }
     }
-    if (this.modelWsUnsubscribe) {
-      this.modelWsUnsubscribe()
-      this.modelWsUnsubscribe = null
+    this.deltaStates.clear()
+
+    if (this.modelEventUnsubscribe) {
+      this.modelEventUnsubscribe()
+      this.modelEventUnsubscribe = null
     }
     if (this.wsSessionUnsubscribe) {
       this.wsSessionUnsubscribe()
@@ -324,7 +346,6 @@ export class RunController {
     this.continuationCount.clear()
     this.replayCount.clear()
     this.runUserText.clear()
-    this.clearDeltaState()
   }
 
   /* ---- Run execution ---- */
@@ -336,8 +357,9 @@ export class RunController {
    *   1. Append user message to conversation
    *   2. Create AgentRun record
    *   3. Ensure WS session is ready
-   *   4. Create assistant message placeholder
-   *   5. Call ModelWsClient.createResponse with current messages
+   *   4. Transition WS session to "responding" (fixes state machine for tool calls)
+   *   5. Create assistant message placeholder
+   *   6. Call the per-session client's createResponse with current messages
    */
   private async startRun(conversationId: string, text: string): Promise<void> {
     // 1. Append user message
@@ -369,11 +391,19 @@ export class RunController {
     // 3. Ensure WS ready
     await this.wsSessionManager.ensureReady(conversationId)
 
-    // 4. Create assistant message placeholder
+    // 4. Transition to "responding" before createResponse.
+    //    This fixes the state machine: createResponse leads to response.created,
+    //    which is handled while in "responding". Without this, the session stays
+    //    "ready" and subsequent tool call transitions (ready → waiting_approval)
+    //    would throw "Invalid transition".
+    this.wsSessionManager.transitionSessionState(conversationId, "responding")
+
+    // 5. Create assistant message placeholder
     const assistantMessage = this.conversationManager.appendAssistantMessage(conversationId)
     if (!assistantMessage) {
       run.status = "failed"
       run.completedAt = Date.now()
+      this.wsSessionManager.transitionSessionState(conversationId, "ready")
       this.emit({
         type: "run.failed",
         conversationId,
@@ -387,10 +417,13 @@ export class RunController {
     run.updatedAt = Date.now()
     this.wsSessionManager.setActiveRun(conversationId, run.id)
 
-    // Setup delta accumulation state
-    this.currentMessageId = assistantMessage.id
-    this.currentRunId = run.id
-    this.currentDelta = ""
+    // Setup per-conversation delta accumulation state
+    this.deltaStates.set(conversationId, {
+      runId: run.id,
+      messageId: assistantMessage.id,
+      delta: "",
+      flushTimer: null,
+    })
 
     this.emit({
       type: "assistant.message.created",
@@ -399,7 +432,7 @@ export class RunController {
       messageId: assistantMessage.id,
     })
 
-    // 5. Build messages using ContextManager
+    // 6. Build messages using ContextManager
     const effectiveContextManager = this.contextManager
     const convMsgs = this.conversationManager.getMessages(conversationId)
     // Exclude the current user message and assistant placeholder; the current
@@ -431,17 +464,28 @@ export class RunController {
       (m): m is { role: "system" | "user" | "assistant"; content: string } => m.role !== "tool",
     )
 
-    // Call createResponse
+    // Call createResponse on the per-conversation client
+    const client = this.wsSessionManager.getClient(conversationId)
+    if (!client) {
+      this.failRun(run, {
+        code: "create_response_failed",
+        message: "No WS client available for conversation",
+        retryable: false,
+      })
+      return
+    }
+
     try {
-      await this.modelWsClient.createResponse({
+      await client.createResponse({
         messages: createResponseMessages,
         ...(remoteContextId ? { remoteContextId } : {}),
       })
     } catch (err) {
       run.status = "failed"
       run.completedAt = Date.now()
-      this.clearDeltaState()
+      this.clearDeltaState(conversationId)
       this.wsSessionManager.clearActiveRun(conversationId)
+      this.wsSessionManager.transitionSessionState(conversationId, "ready")
       this.emit({
         type: "run.failed",
         conversationId,
@@ -458,65 +502,67 @@ export class RunController {
 
   /* ---- ModelWsEvent handler ---- */
 
-  private handleModelWsEvent(event: ModelWsEvent): void {
+  /**
+   * Handle a model WS event for a specific conversation.
+   *
+   * The conversationId is provided by the WsSessionManager's per-client handler,
+   * so no global responseId→conversationId mapping is needed.
+   */
+  private handleModelWsEvent(conversationId: string, event: ModelWsEvent): void {
     switch (event.type) {
       case "response.created": {
-        this.wsSessionManager.setActiveResponse(
-          this.currentRunId
-            ? this.runs.get(this.currentRunId)?.conversationId ?? ""
-            : "",
-          event.responseId,
-        )
-        if (event.remoteContextId && this.currentRunId) {
-          const run = this.runs.get(this.currentRunId)
-          if (run) {
-            this.wsSessionManager.setRemoteContextId(run.conversationId, event.remoteContextId)
-          }
+        this.wsSessionManager.setActiveResponse(conversationId, event.responseId)
+        if (event.remoteContextId) {
+          this.wsSessionManager.setRemoteContextId(conversationId, event.remoteContextId)
         }
         break
       }
 
       case "response.text.delta": {
-        if (!this.currentMessageId || !this.currentRunId) break
+        const ds = this.deltaStates.get(conversationId)
+        if (!ds) break
 
-        this.currentDelta += event.delta
+        ds.delta += event.delta
 
         // Start flush timer if not already running
-        if (!this.deltaFlushTimer) {
-          this.deltaFlushTimer = setTimeout(
-            () => this.flushDelta(),
+        if (!ds.flushTimer) {
+          ds.flushTimer = setTimeout(
+            () => this.flushDelta(conversationId),
             WS_RUNTIME_CONSTANTS.ASSISTANT_DELTA_FLUSH_INTERVAL_MS,
           )
         }
 
         // Immediate flush if accumulated text is large
-        if (this.currentDelta.length >= 512) {
-          this.flushDelta()
+        if (ds.delta.length >= 512) {
+          this.flushDelta(conversationId)
         }
         break
       }
 
       case "response.tool_call.created": {
-        this.handleToolCallCreated(event)
+        const run = this.getActiveRun(conversationId)
+        if (!run) break
+        this.handleToolCallCreated(run, event)
         break
       }
 
       case "response.completed": {
-        this.handleResponseCompleted(event)
+        const run = this.getActiveRun(conversationId)
+        if (!run) break
+        this.handleResponseCompleted(run, event)
         break
       }
 
       case "response.cancelled": {
-        if (!this.currentRunId) break
-        const run = this.runs.get(this.currentRunId)
+        const run = this.getActiveRun(conversationId)
         if (!run) break
         // Skip if already cancelled (cancelRun may have already processed this)
         if (run.status === "cancelled" || run.status === "cancelling") {
-          this.cleanupAfterRun(run.conversationId)
+          this.cleanupAfterRun(conversationId)
           break
         }
         // Flush any remaining text before marking cancelled
-        this.flushDelta()
+        this.flushDelta(conversationId)
         run.status = "cancelled"
         run.completedAt = Date.now()
         this.emit({
@@ -526,15 +572,14 @@ export class RunController {
         })
         this.pendingToolCalls.delete(run.id)
         this.continuationCount.delete(run.id)
-        this.cleanupAfterRun(run.conversationId)
+        this.cleanupAfterRun(conversationId)
         break
       }
 
       case "error": {
-        if (!this.currentRunId) break
-        const run = this.runs.get(this.currentRunId)
+        const run = this.getActiveRun(conversationId)
         if (!run) break
-        this.failCurrentRun(event.error)
+        this.failRun(run, event.error)
         break
       }
     }
@@ -548,11 +593,7 @@ export class RunController {
    * Collects tool calls for processing when the response completes.
    * Enforces MAX_TOOL_CALLS_PER_RUN limit.
    */
-  private handleToolCallCreated(event: ModelWsEvent & { type: "response.tool_call.created" }): void {
-    if (!this.currentRunId) return
-    const run = this.runs.get(this.currentRunId)
-    if (!run) return
-
+  private handleToolCallCreated(run: AgentRun, event: ModelWsEvent & { type: "response.tool_call.created" }): void {
     // Check tool call count limit
     if (run.toolCallCount >= WS_RUNTIME_CONSTANTS.MAX_TOOL_CALLS_PER_RUN) {
       // Emit failure and skip collecting — run will be failed at response.completed
@@ -599,13 +640,9 @@ export class RunController {
    * If there are pending tool calls, process them instead of completing.
    * Otherwise, complete the run normally.
    */
-  private handleResponseCompleted(event: ModelWsEvent & { type: "response.completed" }): void {
-    if (!this.currentRunId) return
-    const run = this.runs.get(this.currentRunId)
-    if (!run) return
-
+  private handleResponseCompleted(run: AgentRun, event: ModelWsEvent & { type: "response.completed" }): void {
     // Flush remaining delta
-    this.flushDelta()
+    this.flushDelta(run.conversationId)
 
     // Save remote context
     if (event.remoteContextId) {
@@ -626,19 +663,20 @@ export class RunController {
       // Don't complete the run — process tool calls first
 
       // Emit assistant.message.completed for the text portion (the response text is done)
-      if (this.currentMessageId) {
+      const ds = this.deltaStates.get(run.conversationId)
+      if (ds?.messageId) {
         this.emit({
           type: "assistant.message.completed",
           conversationId: run.conversationId,
           runId: run.id,
-          messageId: this.currentMessageId,
+          messageId: ds.messageId,
         })
       }
 
-      // Save the current run ID so failCurrentRun can still work after clearDeltaState
-      const runId = this.currentRunId
+      // Save the run's conversation ID for tool processing closure
+      const savedConversationId = run.conversationId
 
-      this.clearDeltaState() // Reset delta state (new message will be created for continuation)
+      this.clearDeltaState(run.conversationId) // Reset delta state (new message will be created for continuation)
       this.wsSessionManager.transitionSessionState(run.conversationId, "waiting_approval")
       run.status = "waiting_approval"
       run.updatedAt = Date.now()
@@ -654,22 +692,19 @@ export class RunController {
       }
 
       // Process the tool calls (asynchronous)
-      this.processPendingToolCalls(run, runId).catch((err) => {
+      this.processPendingToolCalls(run, savedConversationId).catch((err) => {
         console.error("[RunController] Tool processing failed:", err)
-        // Ensure failCurrentRun has a valid run ID
-        const prevRunId = this.currentRunId
-        if (!this.currentRunId && runId) this.currentRunId = runId
-        this.failCurrentRun({
+        // Ensure failRun has a valid run
+        this.failRun(run, {
           code: "tool_execution_failed",
           message: err instanceof Error ? err.message : "Tool processing failed",
           retryable: false,
           cause: err,
         })
-        this.currentRunId = prevRunId
       })
     } else {
       // No tool calls — complete normally
-      this.completeCurrentRun()
+      this.completeCurrentRun(run)
     }
   }
 
@@ -680,11 +715,11 @@ export class RunController {
    *   1. Run is in waiting_approval state
    *   2. Process through processToolCalls (validate → permission → execute → truncate)
    *   3. Emit tool.call.started / completed / failed events
-   *   4. Send results to the model via sendToolResult
+   *   4. Send results to the model via the per-session client's sendToolResult
    *   5. Check MAX_MODEL_CONTINUATIONS_PER_RUN limit
-   *   6. Create continuation response via createResponse
+   *   6. Create continuation response via the per-session client's createResponse
    */
-  private async processPendingToolCalls(run: AgentRun, savedRunId: string | null = null): Promise<void> {
+  private async processPendingToolCalls(run: AgentRun, savedConversationId: string): Promise<void> {
     const pending = this.pendingToolCalls.get(run.id) ?? []
     if (pending.length === 0) {
       // No tool calls — complete the run
@@ -710,15 +745,11 @@ export class RunController {
           },
         })
       }
-      // Temporarily restore currentRunId so failCurrentRun can emit the event
-      const prevRunId = this.currentRunId
-      this.currentRunId = savedRunId ?? run.id
-      this.failCurrentRun({
+      this.failRun(run, {
         code: "tool_execution_failed",
         message: "Tool runtime not configured for RunController",
         retryable: false,
       })
-      this.currentRunId = prevRunId
       return
     }
 
@@ -751,6 +782,7 @@ export class RunController {
 
     // Emit completion/failure events and send results
     const responseId = this.wsSessionManager.getActiveResponseId(run.conversationId)
+    const client = this.wsSessionManager.getClient(run.conversationId)
 
     for (const pr of processResults) {
       if (pr.result.status === "ok") {
@@ -776,9 +808,9 @@ export class RunController {
       }
 
       // Send tool result back to the model
-      if (responseId) {
+      if (responseId && client) {
         try {
-          await this.modelWsClient.sendToolResult({
+          await client.sendToolResult({
             responseId,
             toolCallId: pr.toolCallId,
             result: pr.result,
@@ -849,9 +881,12 @@ export class RunController {
       // Create new assistant message placeholder for the continuation
       const assistantMessage = this.conversationManager.appendAssistantMessage(run.conversationId)
       if (assistantMessage) {
-        this.currentMessageId = assistantMessage.id
-        this.currentRunId = run.id
-        this.currentDelta = ""
+        this.deltaStates.set(run.conversationId, {
+          runId: run.id,
+          messageId: assistantMessage.id,
+          delta: "",
+          flushTimer: null,
+        })
 
         this.emit({
           type: "assistant.message.created",
@@ -861,10 +896,19 @@ export class RunController {
         })
       }
 
-      await this.modelWsClient.createResponse({
-        messages: createResponseMessages,
-        ...(remoteContextId ? { remoteContextId } : {}),
-      })
+      const continuationClient = this.wsSessionManager.getClient(run.conversationId)
+      if (continuationClient) {
+        await continuationClient.createResponse({
+          messages: createResponseMessages,
+          ...(remoteContextId ? { remoteContextId } : {}),
+        })
+      } else {
+        this.failRun(run, {
+          code: "ws_protocol_error",
+          message: "No WS client available for continuation",
+          retryable: true,
+        })
+      }
     } catch (err) {
       console.error("[RunController] Continuation createResponse failed:", err)
       this.failRun(run, {
@@ -878,33 +922,38 @@ export class RunController {
 
   /* ---- Delta flushing ---- */
 
-  private flushDelta(): void {
-    if (this.deltaFlushTimer) {
-      clearTimeout(this.deltaFlushTimer)
-      this.deltaFlushTimer = null
+  /**
+   * Flush accumulated delta for a specific conversation.
+   */
+  private flushDelta(conversationId: string): void {
+    const ds = this.deltaStates.get(conversationId)
+    if (!ds) return
+
+    if (ds.flushTimer) {
+      clearTimeout(ds.flushTimer)
+      ds.flushTimer = null
     }
 
-    if (this.currentDelta.length === 0) return
-    if (!this.currentMessageId || !this.currentRunId) return
+    if (ds.delta.length === 0) return
 
-    const run = this.runs.get(this.currentRunId)
+    const run = this.runs.get(ds.runId)
     if (!run) return
 
-    const text = this.currentDelta
-    this.currentDelta = ""
+    const text = ds.delta
+    ds.delta = ""
 
     // Append to the conversation message
     this.conversationManager.updateAssistantMessage(
       run.conversationId,
-      this.currentMessageId,
-      this.getCurrentAssistantContent(run.conversationId, this.currentMessageId) + text,
+      ds.messageId,
+      this.getCurrentAssistantContent(run.conversationId, ds.messageId) + text,
     )
 
     this.emit({
       type: "assistant.message.delta",
       conversationId: run.conversationId,
       runId: run.id,
-      messageId: this.currentMessageId,
+      messageId: ds.messageId,
       text,
     })
   }
@@ -919,20 +968,18 @@ export class RunController {
 
   /* ---- Run completion ---- */
 
-  private completeCurrentRun(): void {
-    if (!this.currentRunId) return
-    const run = this.runs.get(this.currentRunId)
-    if (!run) return
-
+  private completeCurrentRun(run: AgentRun): void {
     run.status = "completed"
     run.completedAt = Date.now()
     run.updatedAt = Date.now()
+
+    const ds = this.deltaStates.get(run.conversationId)
 
     this.emit({
       type: "assistant.message.completed",
       conversationId: run.conversationId,
       runId: run.id,
-      messageId: this.currentMessageId ?? "",
+      messageId: ds?.messageId ?? "",
     })
 
     this.emit({
@@ -944,18 +991,9 @@ export class RunController {
     this.cleanupAfterRun(run.conversationId)
   }
 
-  private failCurrentRun(error: RuntimeErrorPayload): void {
-    if (!this.currentRunId) return
-    const run = this.runs.get(this.currentRunId)
-    if (!run) return
-
-    this.failRun(run, error)
-  }
-
   private failRun(run: AgentRun, error: RuntimeErrorPayload): void {
-
     // Flush any remaining delta before failing
-    this.flushDelta()
+    this.flushDelta(run.conversationId)
 
     run.status = "failed"
     run.completedAt = Date.now()
@@ -976,7 +1014,7 @@ export class RunController {
 
   private cleanupAfterRun(conversationId: string): void {
     this.transitionSessionToReady(conversationId)
-    this.clearDeltaState()
+    this.clearDeltaState(conversationId)
     this.wsSessionManager.clearActiveRun(conversationId)
     this.wsSessionManager.clearActiveResponse(conversationId)
 
@@ -984,13 +1022,13 @@ export class RunController {
     this.processNextInQueue(conversationId)
   }
 
-  private clearDeltaState(): void {
-    this.currentDelta = ""
-    this.currentMessageId = null
-    this.currentRunId = null
-    if (this.deltaFlushTimer) {
-      clearTimeout(this.deltaFlushTimer)
-      this.deltaFlushTimer = null
+  private clearDeltaState(conversationId: string): void {
+    const ds = this.deltaStates.get(conversationId)
+    if (ds) {
+      if (ds.flushTimer) {
+        clearTimeout(ds.flushTimer)
+      }
+      this.deltaStates.delete(conversationId)
     }
   }
 
@@ -1025,6 +1063,11 @@ export class RunController {
     if (!queue || queue.length === 0) return
 
     const next = queue.shift()!
+
+    // Remove the stale queued run placeholder — it was just a marker
+    // and should not pollute getActiveRun or future queries.
+    this.runs.delete(next.runId)
+
     if (queue.length === 0) {
       this.queues.delete(conversationId)
     }
@@ -1038,12 +1081,16 @@ export class RunController {
 
   /* ---- Query helpers ---- */
 
+  /**
+   * Get the active (non-queued, non-terminal) run for a conversation.
+   * "queued" runs are explicitly excluded so they don't block new messages
+   * or pollute the active-run workflow.
+   */
   private getActiveRun(conversationId: string): AgentRun | undefined {
     for (const run of this.runs.values()) {
       if (
         run.conversationId === conversationId &&
         (run.status === "running" ||
-          run.status === "queued" ||
           run.status === "waiting_tool" ||
           run.status === "waiting_approval")
       ) {
