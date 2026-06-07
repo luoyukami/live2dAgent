@@ -294,6 +294,7 @@ class FakeContextBuilder implements ContextBuilder {
     messages: Array<{ id: string; role: string; content: string }>
     tools: CanonicalToolDefinition[]
     remoteResponseId?: string | null
+    currentUserMessageId?: string
   }): CanonicalCreateInput {
     return {
       conversationId: params.conversationId,
@@ -1487,5 +1488,296 @@ describe("AssistantRuntime — Phase 3: sendUserMessage with attachments", () =>
     const userMsg = msgs.find((m) => m.role === "user")
     assert.ok(userMsg)
     assert.equal(userMsg!.content, "Just text")
+  })
+})
+
+/* ------------------------------------------------------------------ */
+/*  Test: ToolResultLimiter with artifactWriter                         */
+/* ------------------------------------------------------------------ */
+
+describe("AssistantRuntime — ToolResultLimiter with artifactWriter", () => {
+  const LONG_OUTPUT = "x".repeat(10_000) // exceeds 8k inline limit
+
+  test("artifactWriter is called when tool output > 8000 chars", async () => {
+    const store = new FakeConversationStore()
+    const provider = new FakeProviderRuntime()
+    const captureWriter: { calls: Array<{ name: string; content: string }> } = { calls: [] }
+    const fakeWriter: import("../tools/tool-result-limiter.js").ArtifactWriter = {
+      writeArtifact: async (name, content, mimeType) => {
+        captureWriter.calls.push({ name, content })
+        return { id: `art_${captureWriter.calls.length}`, path: `/tmp/${name}`, size: content.length }
+      },
+    }
+    const toolManager = new FakeToolManager()
+    const runtime = new AssistantRuntime({
+      conversationStore: store,
+      provider,
+      contextBuilder: new FakeContextBuilder(),
+      toolManager,
+      model: "test-model",
+      systemPrompt: "You are a test assistant.",
+      artifactWriter: fakeWriter,
+    })
+    const convId = store.createConversation("conv_limiter1")
+
+    // Override executeToolCall to return long output
+    const origExecute = toolManager.executeToolCall.bind(toolManager)
+    toolManager.executeToolCall = async (call) => {
+      return {
+        callId: call.callId,
+        name: call.name,
+        status: "ok",
+        output: LONG_OUTPUT,
+        summary: "Long output",
+      }
+    }
+
+    provider.setSingleCreateSequence([
+      { type: "response.created", responseId: "resp_1" },
+      { type: "tool.call", responseId: "resp_1", callId: "call_1", name: "file.read", argumentsText: JSON.stringify({ path: "/bigfile" }) },
+      { type: "response.completed", responseId: "resp_1" },
+    ])
+    provider.setContinuationSequence([
+      { type: "response.created", responseId: "resp_2" },
+      { type: "text.delta", responseId: "resp_2", delta: "Read long file" },
+      { type: "response.completed", responseId: "resp_2" },
+    ])
+
+    await runtime.sendUserMessage(convId, "Read big file")
+    await waitForRun(provider)
+
+    // artifactWriter should have been called once
+    assert.equal(captureWriter.calls.length, 1, "artifactWriter should be called once")
+    assert.ok(captureWriter.calls[0]!.content.length > 8000, "Written content should be long")
+    assert.ok(captureWriter.calls[0]!.name.startsWith("tool_output_file_read"), "Artifact name should contain tool name")
+
+    // The tool result sent to the model's continuation should contain artifactRef
+    // We verify by checking that the continueWithToolResult received output with artifactRef
+    const msgs = store.getConversationMessages(convId)
+    const toolResultMsg = msgs.find((m) => m.role === "tool")
+    assert.ok(toolResultMsg, "Tool result message should exist")
+    const parsed = JSON.parse(toolResultMsg!.content)
+    assert.ok(parsed.artifactRef, "Tool result output should contain artifactRef")
+    assert.ok(parsed.artifactRef.startsWith("artifact://tool-output/"), "artifactRef should have correct prefix")
+    assert.ok(parsed.content.includes("[omitted"), "Truncated content should show omitted count")
+  })
+
+  test("artifactWriter is NOT called for short tool output", async () => {
+    const store = new FakeConversationStore()
+    const provider = new FakeProviderRuntime()
+    const captureWriter: { calls: Array<{ name: string; content: string }> } = { calls: [] }
+    const fakeWriter: import("../tools/tool-result-limiter.js").ArtifactWriter = {
+      writeArtifact: async (name, content, mimeType) => {
+        captureWriter.calls.push({ name, content })
+        return { id: `art_${captureWriter.calls.length}`, path: `/tmp/${name}`, size: content.length }
+      },
+    }
+    const toolManager = new FakeToolManager()
+    const runtime = new AssistantRuntime({
+      conversationStore: store,
+      provider,
+      contextBuilder: new FakeContextBuilder(),
+      toolManager,
+      model: "test-model",
+      systemPrompt: "You are a test assistant.",
+      artifactWriter: fakeWriter,
+    })
+    const convId = store.createConversation("conv_limiter2")
+
+    provider.setSingleCreateSequence([
+      { type: "response.created", responseId: "resp_1" },
+      { type: "tool.call", responseId: "resp_1", callId: "call_1", name: "file.read", argumentsText: JSON.stringify({ path: "/smallfile" }) },
+      { type: "response.completed", responseId: "resp_1" },
+    ])
+    provider.setContinuationSequence([
+      { type: "response.created", responseId: "resp_2" },
+      { type: "text.delta", responseId: "resp_2", delta: "Done" },
+      { type: "response.completed", responseId: "resp_2" },
+    ])
+
+    await runtime.sendUserMessage(convId, "Read small file")
+    await waitForRun(provider)
+
+    assert.equal(captureWriter.calls.length, 0, "artifactWriter should NOT be called for short output")
+  })
+})
+
+/* ------------------------------------------------------------------ */
+/*  Test: Tool execution timeout                                       */
+/* ------------------------------------------------------------------ */
+
+describe("AssistantRuntime — tool execution timeout", () => {
+  test("tool that never resolves triggers timeout and tool.failed", async () => {
+    const store = new FakeConversationStore()
+    const provider = new FakeProviderRuntime()
+    const toolManager = new FakeToolManager()
+    const events: AssistantRuntimeEvent[] = []
+
+    const runtime = new AssistantRuntime({
+      conversationStore: store,
+      provider,
+      contextBuilder: new FakeContextBuilder(),
+      toolManager,
+      model: "test-model",
+      systemPrompt: "You are a test assistant.",
+      toolExecutionTimeoutMs: 50, // short timeout for testing
+    })
+    runtime.onEvent((ev) => events.push(ev))
+    const convId = store.createConversation("conv_timeout1")
+
+    // Make tool hang (never resolves)
+    let executeResolve: (() => void) | null = null
+    const origExecute = toolManager.executeToolCall.bind(toolManager)
+    toolManager.executeToolCall = async (call) => {
+      await new Promise<void>((resolve) => { executeResolve = resolve })
+      return { callId: call.callId, name: call.name, status: "ok", output: "done", summary: "Done" }
+    }
+
+    provider.setSingleCreateSequence([
+      { type: "response.created", responseId: "resp_1" },
+      { type: "tool.call", responseId: "resp_1", callId: "call_1", name: "shell.run", argumentsText: JSON.stringify({ command: "echo hi" }) },
+      { type: "response.completed", responseId: "resp_1" },
+    ])
+    provider.setContinuationSequence([
+      { type: "response.created", responseId: "resp_2" },
+      { type: "text.delta", responseId: "resp_2", delta: "Timeout handled" },
+      { type: "response.completed", responseId: "resp_2" },
+    ])
+
+    await runtime.sendUserMessage(convId, "Run command")
+    await waitForRun(provider)
+
+    // Should have tool.failed event
+    const toolFailed = events.filter((e) => e.type === "tool.failed")
+    assert.equal(toolFailed.length, 1, "Should have tool.failed event")
+
+    // Should have continuation (model received error result)
+    assert.equal(provider.continuationCallCount, 1, "Model should have received error result via continuation")
+
+    // Run should complete (not fail)
+    assert.ok(events.some((e) => e.type === "run.completed"), "Run should complete after timeout error continuation")
+  })
+
+  test("normal tool execution is NOT affected by timeout", async () => {
+    const { runtime, provider, toolManager, events, conversationId } = createHarness()
+
+    provider.setSingleCreateSequence([
+      { type: "response.created", responseId: "resp_1" },
+      { type: "tool.call", responseId: "resp_1", callId: "call_1", name: "shell.run", argumentsText: JSON.stringify({ command: "echo hi" }) },
+      { type: "response.completed", responseId: "resp_1" },
+    ])
+    provider.setContinuationSequence([
+      { type: "response.created", responseId: "resp_2" },
+      { type: "text.delta", responseId: "resp_2", delta: "Done" },
+      { type: "response.completed", responseId: "resp_2" },
+    ])
+
+    await runtime.sendUserMessage(conversationId, "Run command")
+
+    // Tool should have executed normally
+    assert.equal(toolManager.executedCalls.length, 1)
+    assert.ok(events.some((e) => e.type === "tool.completed"))
+    assert.ok(events.some((e) => e.type === "run.completed"))
+  })
+})
+
+/* ------------------------------------------------------------------ */
+/*  Test: Retryable provider failure replay (ws_closed_unexpectedly)    */
+/* ------------------------------------------------------------------ */
+
+describe("AssistantRuntime — retryable provider failure replay", () => {
+  test("ws_closed_unexpectedly with retryable:true triggers replay once", async () => {
+    const { runtime, provider, store, events, conversationId } = createHarness()
+
+    // First create attempt: fails with ws_closed_unexpectedly
+    // Second create attempt: succeeds
+    provider.setCreateSequences([
+      // First attempt → fails
+      [
+        { type: "response.created", responseId: "resp_1" },
+        { type: "response.failed", error: { code: "ws_closed_unexpectedly", message: "WS closed unexpectedly", retryable: true } },
+      ],
+      // Replay → succeeds
+      [
+        { type: "response.created", responseId: "resp_2" },
+        { type: "text.delta", responseId: "resp_2", delta: "Replayed successfully" },
+        { type: "response.completed", responseId: "resp_2" },
+      ],
+    ])
+
+    await runtime.sendUserMessage(conversationId, "Test ws replay")
+    await waitForRun(provider)
+
+    // Should have run.completed (replay worked)
+    const completedEvents = events.filter((e) => e.type === "run.completed")
+    assert.equal(completedEvents.length, 1)
+
+    // Should have two create calls (initial + replay)
+    assert.equal(provider.createCallCount, 2, "Should have replayed once")
+
+    // RemoteResponseId should be set to the second response
+    assert.equal(store.getRemoteResponseId(conversationId), "resp_2")
+  })
+
+  test("ws_reconnect_failed with retryable:true also triggers replay once", async () => {
+    const { runtime, provider, store, events, conversationId } = createHarness()
+
+    provider.setCreateSequences([
+      [
+        { type: "response.created", responseId: "resp_1" },
+        { type: "response.failed", error: { code: "ws_reconnect_failed", message: "Reconnect failed", retryable: true } },
+      ],
+      [
+        { type: "response.created", responseId: "resp_2" },
+        { type: "text.delta", responseId: "resp_2", delta: "Replayed" },
+        { type: "response.completed", responseId: "resp_2" },
+      ],
+    ])
+
+    await runtime.sendUserMessage(conversationId, "Test reconnect replay")
+    await waitForRun(provider)
+
+    assert.ok(events.some((e) => e.type === "run.completed"))
+    assert.equal(provider.createCallCount, 2)
+  })
+
+  test("second ws_closed_unexpectedly after replay fails the run", async () => {
+    const { runtime, provider, events, conversationId } = createHarness()
+
+    // Both attempts fail
+    provider.setCreateSequences([
+      // First attempt → fails
+      [
+        { type: "response.created", responseId: "resp_1" },
+        { type: "response.failed", error: { code: "ws_closed_unexpectedly", message: "First failure", retryable: true } },
+      ],
+      // Replay → also fails
+      [
+        { type: "response.created", responseId: "resp_2" },
+        { type: "response.failed", error: { code: "ws_closed_unexpectedly", message: "Second failure", retryable: true } },
+      ],
+    ])
+
+    await runtime.sendUserMessage(conversationId, "Test double ws fail")
+
+    const failedEvents = events.filter((e) => e.type === "run.failed")
+    assert.equal(failedEvents.length, 1)
+    assert.equal(provider.createCallCount, 2)
+  })
+
+  test("ws_closed_unexpectedly with retryable:false does NOT replay", async () => {
+    const { runtime, provider, events, conversationId } = createHarness()
+
+    provider.setSingleCreateSequence([
+      { type: "response.created", responseId: "resp_1" },
+      { type: "response.failed", error: { code: "ws_closed_unexpectedly", message: "Non-retryable close", retryable: false } },
+    ])
+
+    await runtime.sendUserMessage(conversationId, "Test non-retryable ws fail")
+
+    const failedEvents = events.filter((e) => e.type === "run.failed")
+    assert.equal(failedEvents.length, 1)
+    // Only one create call (no replay)
+    assert.equal(provider.createCallCount, 1)
   })
 })

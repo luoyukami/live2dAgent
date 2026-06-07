@@ -59,6 +59,8 @@ export interface MimoWsRuntimeConfig {
   apiKey: string
   connectionFactory?: () => NodeWsConnection
   connectTimeoutMs?: number
+  /** Idle close timeout in ms (default: WS_RUNTIME_CONSTANTS.IDLE_CLOSE_MS). Testing can override. */
+  idleCloseMs?: number
 }
 
 /**
@@ -103,6 +105,9 @@ export class MimoWsRuntime implements ProviderRuntime {
     lastActivityAt: 0,
   }
 
+  /** Resolved idle close timeout in ms. */
+  private idleCloseMs: number = WS_RUNTIME_CONSTANTS.IDLE_CLOSE_MS
+
   constructor(config: MimoWsRuntimeConfig) {
     this.configure(config)
   }
@@ -110,6 +115,7 @@ export class MimoWsRuntime implements ProviderRuntime {
   /** Update configuration (safe to call before open). */
   configure(config: MimoWsRuntimeConfig): void {
     this.config = { ...config }
+    this.idleCloseMs = config.idleCloseMs ?? WS_RUNTIME_CONSTANTS.IDLE_CLOSE_MS
   }
 
   /* ---- ProviderRuntime implementation ---- */
@@ -160,9 +166,10 @@ export class MimoWsRuntime implements ProviderRuntime {
       }
     })
 
-    // Wire up error handler
-    conn.onError((error) => {
-      // Errors during connect are propagated via the connect Promise
+    // Wire up error handler — clean up timers on error
+    conn.onError((_error) => {
+      this.stopHeartbeat()
+      this.stopIdleTimer()
     })
 
     await conn.connect(connectInput)
@@ -171,9 +178,8 @@ export class MimoWsRuntime implements ProviderRuntime {
     this._connectedAt = Date.now()
     this.touchActivity()
 
-    // Start heartbeat & idle timers
+    // Start heartbeat timer
     this.startHeartbeat()
-    this.startIdleTimer()
   }
 
   async *create(input: CanonicalCreateInput): AsyncGenerator<ModelEvent> {
@@ -265,10 +271,45 @@ export class MimoWsRuntime implements ProviderRuntime {
     }
   }
 
+  /**
+   * Record activity and reschedule the idle close timer from now.
+   * This ensures the connection stays open as long as there is regular activity.
+   */
   private touchActivity(): void {
     const now = Date.now()
     this.heartbeat.lastFrameAt = now
     this.idle.lastActivityAt = now
+    this.scheduleIdleCheck()
+  }
+
+  /**
+   * Schedule an idle check after `idleCloseMs` of inactivity.
+   * If the timer fires but activity occurred within the threshold,
+   * the check will reschedule itself for the remaining time.
+   */
+  private scheduleIdleCheck(): void {
+    this.stopIdleTimer()
+    this.idle.timer = setTimeout(() => this.checkIdle(), this.idleCloseMs)
+    if (this.idle.timer && typeof this.idle.timer.unref === "function") {
+      this.idle.timer.unref()
+    }
+  }
+
+  /**
+   * Check if the connection has been idle long enough to close.
+   * If not idle yet, reschedule for the remaining time.
+   */
+  private checkIdle(): void {
+    const elapsed = Date.now() - this.idle.lastActivityAt
+    if (elapsed >= this.idleCloseMs) {
+      this.close("idle timeout").catch(() => {})
+    } else {
+      // Not yet idle — schedule another check for the remaining time
+      this.idle.timer = setTimeout(() => this.checkIdle(), this.idleCloseMs - elapsed)
+      if (this.idle.timer && typeof this.idle.timer.unref === "function") {
+        this.idle.timer.unref()
+      }
+    }
   }
 
   /**
@@ -303,14 +344,24 @@ export class MimoWsRuntime implements ProviderRuntime {
       pushFrame(frame as Record<string, unknown>)
     })
 
-    // Also support the "error" event to break out of stuck waits
-    const errorUnsubscribe = conn.onError((_error) => {
-      // When an error occurs, push a sentinel to unblock the queue
-      pushFrame({ type: "response.failed", _internal: true })
+    // Also support the "error" event to break out of stuck waits with a retryable model error.
+    const errorUnsubscribe = conn.onError((error) => {
+      const message = error instanceof Error ? error.message : String(error)
+      pushFrame({
+        type: "response.failed",
+        error: { code: "ws_closed_unexpectedly", message, retryable: true },
+      })
     })
 
-    const closeUnsubscribe = conn.onClose((_event) => {
-      pushFrame({ type: "response.failed", _internal: true })
+    const closeUnsubscribe = conn.onClose((event) => {
+      pushFrame({
+        type: "response.failed",
+        error: {
+          code: "ws_closed_unexpectedly",
+          message: `WebSocket closed unexpectedly (${event.code}${event.reason ? `: ${event.reason}` : ""})`,
+          retryable: true,
+        },
+      })
     })
 
     try {
@@ -329,12 +380,6 @@ export class MimoWsRuntime implements ProviderRuntime {
           nextFrame = await new Promise<Record<string, unknown>>((resolve) => {
             resolveFrame = resolve
           })
-        }
-
-        // Skip internal sentinel frames
-        if ((nextFrame as Record<string, unknown>)._internal) {
-          done = true
-          break
         }
 
         const events = protocol.decode(nextFrame)
@@ -419,19 +464,6 @@ export class MimoWsRuntime implements ProviderRuntime {
   }
 
   /* ---- Idle Timer ---- */
-
-  private startIdleTimer(): void {
-    this.stopIdleTimer()
-    this.idle.lastActivityAt = Date.now()
-
-    this.idle.timer = setTimeout(() => {
-      const now = Date.now()
-      if (now - this.idle.lastActivityAt >= WS_RUNTIME_CONSTANTS.IDLE_CLOSE_MS) {
-        this.close("idle timeout").catch(() => {})
-      }
-    }, WS_RUNTIME_CONSTANTS.IDLE_CLOSE_MS)
-    this.idle.timer.unref?.()
-  }
 
   private stopIdleTimer(): void {
     if (this.idle.timer) {

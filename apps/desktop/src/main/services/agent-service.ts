@@ -266,6 +266,7 @@ export class AgentService implements ToolRuntime {
       toolManager,
       model: settings.openaiModel,
       systemPrompt,
+      artifactWriter: this.createToolArtifactWriter(),
     })
 
     // Wire bridge
@@ -984,6 +985,7 @@ class ContextBuilderAdapter implements ContextBuilder {
     messages: ConversationStoreMessage[]
     tools: CanonicalToolDefinition[]
     remoteResponseId?: string | null
+    currentUserMessageId?: string
   }): CanonicalCreateInput {
     const modelMessages = this._buildModelMessages(params)
 
@@ -1015,6 +1017,7 @@ class ContextBuilderAdapter implements ContextBuilder {
       systemPrompt: string
       userText: string
       messages: ConversationStoreMessage[]
+      currentUserMessageId?: string
     },
   ): ModelMessage[] {
     // ── Step 1: Filter and limit conversation messages ──────────────
@@ -1042,11 +1045,14 @@ class ContextBuilderAdapter implements ContextBuilder {
     }
 
     // Conversation messages with multimodal content parts
+    // Only the message matching currentUserMessageId sends raw image/audio;
+    // historical messages use file_ref instead.
     for (const msg of convMessages) {
+      const isCurrentTurn = params.currentUserMessageId != null && msg.id === params.currentUserMessageId
       const role = msg.role as "user" | "assistant" | "tool"
       modelMessages.push({
         role,
-        content: this._buildContentParts(msg),
+        content: this._buildContentParts(msg, isCurrentTurn),
       })
     }
 
@@ -1092,11 +1098,16 @@ class ContextBuilderAdapter implements ContextBuilder {
   /**
    * Build content parts for a message:
    * - Text content → text part
-   * - Image artifactRefs → image part (read from ArtifactStore)
-   * - Audio attachments/artifactRefs → audio part (encoder may reject)
+   * - Current turn (isCurrentTurn=true):
+   *     Image artifactRefs → raw image part (read from ArtifactStore)
+   *     Audio artifactRefs → raw audio part (encoder may reject)
+   *     Audio attachments → raw audio part
+   * - Historical turn (isCurrentTurn=false):
+   *     All artifactRefs → file_ref parts (no readArtifact)
+   *     Audio attachments → file_ref parts (no readArtifact)
    * - No text placeholders for non-text content
    */
-  private _buildContentParts(msg: ConversationStoreMessage): ModelContentPart[] {
+  private _buildContentParts(msg: ConversationStoreMessage, isCurrentTurn: boolean = false): ModelContentPart[] {
     const parts: ModelContentPart[] = []
 
     // Always include text content
@@ -1106,35 +1117,29 @@ class ContextBuilderAdapter implements ContextBuilder {
     const artifactRefs = msg.extra?.artifactRefs
     if (artifactRefs && artifactRefs.length > 0) {
       for (const ref of artifactRefs) {
-        if (ref.mimeType.startsWith("image/")) {
-          try {
-            const buffer = this.artifactStore.readArtifact(ref as ArtifactRefType)
-            const data = buffer.toString("base64")
+        if (ref.mimeType.startsWith("image/") || ref.mimeType.startsWith("audio/")) {
+          if (isCurrentTurn) {
+            // Current turn: read raw data and create inline part
+            try {
+              const buffer = this.artifactStore.readArtifact(ref as ArtifactRefType)
+              const data = buffer.toString("base64")
+              parts.push({
+                type: ref.mimeType.startsWith("image/") ? "image" : "audio",
+                mime: ref.mimeType,
+                data,
+                source: "artifact",
+                artifactId: ref.id,
+              })
+            } catch {
+              // If artifact cannot be read, skip — text content already included
+            }
+          } else {
+            // Historical turn: use file_ref instead of raw bytes
             parts.push({
-              type: "image",
-              mime: ref.mimeType,
-              data,
-              source: "artifact",
+              type: "file_ref",
               artifactId: ref.id,
-            })
-          } catch {
-            // If artifact cannot be read, skip — text content already included
-          }
-        } else if (ref.mimeType.startsWith("audio/")) {
-          // Generate audio part; the encoder will throw UnsupportedInputPartError
-          // per plan §8.3 — no text placeholders
-          try {
-            const buffer = this.artifactStore.readArtifact(ref as ArtifactRefType)
-            const data = buffer.toString("base64")
-            parts.push({
-              type: "audio",
               mime: ref.mimeType,
-              data,
-              source: "artifact",
-              artifactId: ref.id,
             })
-          } catch {
-            // Skip if artifact cannot be read
           }
         }
         // Other types (tool-output, file-content) — skip, text is enough
@@ -1146,18 +1151,28 @@ class ContextBuilderAdapter implements ContextBuilder {
     if (attachments && attachments.length > 0) {
       for (const att of attachments) {
         if (att.type === "audio") {
-          try {
-            const buffer = this.artifactStore.readArtifact(att.artifact as ArtifactRefType)
-            const data = buffer.toString("base64")
+          if (isCurrentTurn) {
+            try {
+              const buffer = this.artifactStore.readArtifact(att.artifact as ArtifactRefType)
+              const data = buffer.toString("base64")
+              parts.push({
+                type: "audio",
+                mime: att.mimeType,
+                data,
+                source: "artifact",
+                artifactId: att.artifact.id,
+              })
+            } catch {
+              // Skip if artifact cannot be read
+            }
+          } else {
+            // Historical turn: use file_ref for audio attachments too
             parts.push({
-              type: "audio",
-              mime: att.mimeType,
-              data,
-              source: "artifact",
+              type: "file_ref",
               artifactId: att.artifact.id,
+              mime: att.mimeType,
+              name: att.label,
             })
-          } catch {
-            // Skip if artifact cannot be read
           }
         }
       }
@@ -1226,6 +1241,7 @@ class ContextBuilderAdapter implements ContextBuilder {
       systemPrompt: string
       userText: string
       messages: ConversationStoreMessage[]
+      currentUserMessageId?: string
     },
     n: number,
   ): ModelMessage[] {
@@ -1248,10 +1264,11 @@ class ContextBuilderAdapter implements ContextBuilder {
       .filter((m) => m.role !== "system")
       .slice(-n)
     for (const msg of lastN) {
+      const isCurrentTurn = params.currentUserMessageId != null && msg.id === params.currentUserMessageId
       const role = msg.role as "user" | "assistant" | "tool"
       modelMessages.push({
         role,
-        content: this._buildContentParts(msg),
+        content: this._buildContentParts(msg, isCurrentTurn),
       })
     }
 

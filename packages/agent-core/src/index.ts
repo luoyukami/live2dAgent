@@ -130,6 +130,7 @@ export type {
   TokenUsage,
   ModelError,
 } from "./model/model-event.js"
+export { MODEL_ERROR_CODES } from "./model/model-event.js"
 export type {
   CanonicalToolDefinition,
   CanonicalToolResult,

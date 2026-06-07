@@ -19,6 +19,7 @@
  */
 import { describe, test, afterEach } from "node:test"
 import assert from "node:assert/strict"
+import { setTimeout as sleep } from "node:timers/promises"
 import { FakeWsServer } from "./fake-ws-server.js"
 import type { CanonicalCreateInput, CanonicalToolContinuationInput, CanonicalToolDefinition, ModelContentPart, ModelEvent } from "@live2d-agent/agent-core"
 import { MimoWsRuntime } from "../mimo-ws-runtime.js"
@@ -781,6 +782,118 @@ describe("MimoWsRuntime", () => {
     assert.equal(request.max_output_tokens, 8000)
     assert.equal(request.input.length, 1)
     assert.equal(request.tools.length, 2)
+  })
+
+  /* ================================================================ */
+  /*  Idle timer: activity extends timer; reschedule; eventual close   */
+  /* ================================================================ */
+
+  test("idle timer is reset on frame activity, keeping connection open", async () => {
+    const port = await setupServer()
+    const idleMs = 200
+
+    runtime = new MimoWsRuntime({
+      baseUrl: `http://localhost:${port}`,
+      model: "test-model",
+      apiKey: "test-key",
+      idleCloseMs: idleMs,
+    })
+
+    await runtime.open("conv_idle_extend")
+
+    // Wait 60% of idle timeout — still active
+    await sleep(idleMs * 0.6)
+    assert.equal(runtime.getState().status, "connected", "Should still be connected after 60% of idle")
+
+    // Send a frame to reset the idle timer
+    server.send({ type: "test.frame", t: 1 })
+
+    // Wait another 60% of idle timeout (total 120%, but timer was reset so only 60% elapsed)
+    await sleep(idleMs * 0.6)
+    assert.equal(runtime.getState().status, "connected", "Should still be connected after frame reset timer")
+
+    // Now stop and wait for full idle timeout
+    await sleep(idleMs * 1.1)
+    assert.equal(runtime.getState().status, "closed", "Should close after idle timeout without activity")
+  })
+
+  test("repeated frames keep connection alive indefinitely", async () => {
+    const port = await setupServer()
+    const idleMs = 150
+
+    runtime = new MimoWsRuntime({
+      baseUrl: `http://localhost:${port}`,
+      model: "test-model",
+      apiKey: "test-key",
+      idleCloseMs: idleMs,
+    })
+
+    await runtime.open("conv_idle_repeat")
+
+    // Send frames at 50ms intervals — well within idleMs
+    for (let i = 0; i < 6; i++) {
+      await sleep(idleMs * 0.3)
+      server.send({ type: "test.frame", seq: i })
+      assert.equal(runtime.getState().status, "connected", `Should be connected during frame ${i}`)
+    }
+
+    // Now stop sending frames and wait for idle close
+    await sleep(idleMs * 1.2)
+    assert.equal(runtime.getState().status, "closed", "Should close after frames stop")
+  })
+
+  test("idle timer reschedules when threshold not yet met (checkIdle reschedule path)", async () => {
+    const port = await setupServer()
+    const idleMs = 150
+
+    runtime = new MimoWsRuntime({
+      baseUrl: `http://localhost:${port}`,
+      model: "test-model",
+      apiKey: "test-key",
+      idleCloseMs: idleMs,
+    })
+
+    await runtime.open("conv_idle_reschedule")
+
+    // Send a frame at 60% of idle timeout so the first timer check finds
+    // elapsed < idleMs and must reschedule
+    await sleep(idleMs * 0.6)
+    server.send({ type: "test.frame", t: 1 })
+
+    // Wait the remaining time after reset (0.6 * idleMs elapsed, then reset)
+    // Without reschedule, the first timer would fire at ~idleMs from open
+    // and find elapsed ~0.4 * idleMs, then NOTHING further would happen.
+    // With reschedule, a new timer fires at idleMs from the frame.
+    // So close should happen at 0.6 + 1.0 = 1.6 * idleMs.
+    await sleep(idleMs * 0.8)
+    assert.equal(runtime.getState().status, "connected", "Still connected before second idle window expires")
+
+    // Now exceed the second idle window
+    await sleep(idleMs * 0.6)
+    assert.equal(runtime.getState().status, "closed", "Should close after rescheduled idle timeout")
+  })
+
+  test("close cleans up idle timer (no double close)", async () => {
+    const port = await setupServer()
+    const idleMs = 200
+
+    runtime = new MimoWsRuntime({
+      baseUrl: `http://localhost:${port}`,
+      model: "test-model",
+      apiKey: "test-key",
+      idleCloseMs: idleMs,
+    })
+
+    await runtime.open("conv_idle_cleanup")
+
+    // Manually close before idle fires
+    await runtime.close("manual close")
+
+    assert.equal(runtime.getState().status, "closed")
+
+    // Wait past idle timeout — timer should have been stopped, no crash/error
+    await sleep(idleMs * 1.5)
+    assert.equal(runtime.getState().status, "closed", "Status should remain closed (no double-close)")
   })
 
   /* ================================================================ */

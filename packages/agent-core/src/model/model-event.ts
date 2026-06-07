@@ -28,6 +28,17 @@ export interface ModelError {
   retryable: boolean
 }
 
+/**
+ * Known model error codes used in ModelError.code and for replay decisions.
+ */
+export const MODEL_ERROR_CODES = {
+  REMOTE_CONTEXT_NOT_FOUND: "remote_context_not_found",
+  PREVIOUS_RESPONSE_NOT_FOUND: "previous_response_not_found",
+  RESPONSE_NOT_FOUND: "response_not_found",
+  WS_CLOSED_UNEXPECTEDLY: "ws_closed_unexpectedly",
+  WS_RECONNECT_FAILED: "ws_reconnect_failed",
+} as const
+
 /* ------------------------------------------------------------------ */
 /*  ModelEvent                                                         */
 /* ------------------------------------------------------------------ */

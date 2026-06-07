@@ -19,7 +19,7 @@
  */
 
 import type { ModelMessage } from "../model/model-message.js"
-import type { ModelEvent } from "../model/model-event.js"
+import { ModelEvent, MODEL_ERROR_CODES } from "../model/model-event.js"
 import type {
   CanonicalToolDefinition,
   CanonicalToolResult,
@@ -36,6 +36,7 @@ import type {
 } from "../model/model-runtime.js"
 import { WS_RUNTIME_CONSTANTS } from "../ws/ws-runtime-constants.js"
 import { ToolResultLimiter } from "../tools/tool-result-limiter.js"
+import type { ArtifactWriter } from "../tools/tool-result-limiter.js"
 import { buildDoomLoopErrorOutput } from "../tools/doom-loop-detector.js"
 import { AssistantRun } from "./assistant-run.js"
 import type { AssistantRuntimeEvent } from "./assistant-runtime-events.js"
@@ -135,6 +136,14 @@ export interface ContextBuilder {
     messages: ConversationStoreMessage[]
     tools: CanonicalToolDefinition[]
     remoteResponseId?: string | null
+    /**
+     * ID of the user message that represents the current turn.
+     * ContextBuilder should use this to decide which artifacts
+     * are sent as raw data vs file_ref:
+     *   - The user message matching this ID → raw image/audio parts
+     *   - All other user messages → file_ref parts (no raw data)
+     */
+    currentUserMessageId?: string
   }): CanonicalCreateInput
 
   buildContinuationInput(params: {
@@ -208,7 +217,10 @@ export class AssistantRuntime {
   private readonly eventListeners = new Set<(event: AssistantRuntimeEvent) => void>()
 
   /* ---- Tool result limiter (shared instance) ---- */
-  private readonly limiter = new ToolResultLimiter()
+  private readonly limiter: ToolResultLimiter
+
+  /** Timeout for individual tool executions (ms). */
+  private readonly toolExecutionTimeoutMs: number
 
   constructor(options: {
     provider: ProviderRuntime
@@ -217,6 +229,10 @@ export class AssistantRuntime {
     toolManager: ToolManager
     model: string
     systemPrompt: string
+    /** Optional artifact writer for persisting long tool outputs. */
+    artifactWriter?: ArtifactWriter
+    /** Timeout for single tool execution (defaults to WS_RUNTIME_CONSTANTS value). */
+    toolExecutionTimeoutMs?: number
   }) {
     this.provider = options.provider
     this.conversationStore = options.conversationStore
@@ -224,6 +240,8 @@ export class AssistantRuntime {
     this.toolManager = options.toolManager
     this.model = options.model
     this.systemPrompt = options.systemPrompt
+    this.toolExecutionTimeoutMs = options.toolExecutionTimeoutMs ?? WS_RUNTIME_CONSTANTS.TOOL_EXECUTION_TIMEOUT_MS
+    this.limiter = new ToolResultLimiter({ artifactWriter: options.artifactWriter })
   }
 
   /* ---- Event bus ---- */
@@ -452,6 +470,7 @@ export class AssistantRuntime {
         messages: this.conversationStore.getConversationMessages(conversationId),
         tools: this.toolManager.getEnabledTools(),
         remoteResponseId,
+        currentUserMessageId: userMessage.id,
       })
 
       await this.consumeResponseStream(run, createInput)
@@ -597,8 +616,14 @@ export class AssistantRuntime {
             errorCode === "remote_context_not_found" ||
             errorCode === "previous_response_not_found" ||
             errorCode === "response_not_found"
+          const isRetryableConnectionError =
+            errorCode === "ws_closed_unexpectedly" ||
+            errorCode === "ws_reconnect_failed"
+          const shouldReplay =
+            (isRemoteContextNotFound || (isRetryableConnectionError && event.error.retryable)) &&
+            run.hasReplayBudget()
 
-          if (isRemoteContextNotFound && run.hasReplayBudget()) {
+          if (shouldReplay) {
             // Replay once: clear remoteResponseId and retry with full context
             run.markReplay()
             this.conversationStore.setRemoteResponseId(run.conversationId, null)
@@ -613,6 +638,7 @@ export class AssistantRuntime {
               messages: this.conversationStore.getConversationMessages(run.conversationId),
               tools: this.toolManager.getEnabledTools(),
               remoteResponseId: null,
+              currentUserMessageId: run.userMessageId,
             })
 
             await this.consumeResponseStream(run, replayInput)
@@ -779,7 +805,7 @@ export class AssistantRuntime {
         name: call.name,
       })
 
-      // --- Execute ---
+      // --- Execute with timeout ---
       let result: CanonicalToolResult
       try {
         const validatedCall: ValidatedToolCall = {
@@ -787,7 +813,9 @@ export class AssistantRuntime {
           name: call.name,
           arguments: call.arguments,
         }
-        result = await this.toolManager.executeToolCall(validatedCall)
+        result = await this.withToolExecutionTimeout(
+          this.toolManager.executeToolCall(validatedCall),
+        )
       } catch (err) {
         const errorMsg = err instanceof Error ? err.message : "Tool execution failed"
         result = {
@@ -952,5 +980,20 @@ export class AssistantRuntime {
 
   private generateId(prefix: string): string {
     return `${prefix}_${Date.now()}_${Math.random().toString(36).slice(2, 9)}`
+  }
+
+  private withToolExecutionTimeout(promise: Promise<CanonicalToolResult>): Promise<CanonicalToolResult> {
+    let timer: ReturnType<typeof setTimeout> | undefined
+    const timeout = new Promise<CanonicalToolResult>((_, reject) => {
+      timer = setTimeout(
+        () => reject(new Error(`Tool execution timed out after ${this.toolExecutionTimeoutMs}ms`)),
+        this.toolExecutionTimeoutMs,
+      )
+      timer.unref?.()
+    })
+
+    return Promise.race([promise, timeout]).finally(() => {
+      if (timer) clearTimeout(timer)
+    })
   }
 }
