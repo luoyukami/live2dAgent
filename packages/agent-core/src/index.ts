@@ -89,3 +89,15 @@ export type { ToolExecutionContext, ToolPermissionContext, RunControllerToolOpts
 /* ---- Tool Runtime (Phase 2) ---- */
 export { ToolCallValidator, ToolOutputTruncator, processToolCalls } from "./tools/tool-runtime.js"
 export type { ArtifactMeta, ArtifactWriter, ValidationResult, TruncatedOutput, ToolCallProcessResult, ProcessToolCallsInput } from "./tools/tool-runtime.js"
+
+/* ---- ContextManager (Phase 4) ---- */
+export { ContextManager, DefaultContextManager } from "./context/context-manager.js"
+export { estimateTokens, estimateMessageTokens } from "./context/token-budget.js"
+export type {
+  ArtifactEntry,
+  ArtifactType,
+  ContextManagerInput,
+  ContextManagerOptions,
+  ModelInput,
+} from "./context/context-types.js"
+export { DEFAULT_CONTEXT_OPTIONS } from "./context/context-types.js"

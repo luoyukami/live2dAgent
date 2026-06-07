@@ -27,6 +27,8 @@ import type { WsSessionManager } from "../ws/ws-session-manager.js"
 import { WS_RUNTIME_CONSTANTS } from "../ws/ws-runtime-constants.js"
 import { RuntimeErrors } from "../ws/ws-errors.js"
 import { processToolCalls, type ArtifactWriter, type ToolCallProcessResult } from "../tools/tool-runtime.js"
+import { ContextManager } from "../context/context-manager.js"
+import type { ContextManagerInput } from "../context/context-types.js"
 
 /* ------------------------------------------------------------------ */
 /*  Types                                                              */
@@ -104,11 +106,15 @@ export class RunController {
   /** Original user message text per run ID for replay. */
   private runUserText = new Map<string, string>()
 
+  /** System instructions for the ContextManager. */
+  private systemInstructions: string = ""
+
   constructor(
     private conversationManager: ConversationManager,
     private wsSessionManager: WsSessionManager,
     private modelWsClient: ModelWsClient,
     private toolOpts?: RunControllerToolOpts,
+    private contextManager: ContextManager = new ContextManager(),
   ) {
     // Subscribe to model WS events
     this.modelWsUnsubscribe = this.modelWsClient.onEvent((event) =>
@@ -139,6 +145,14 @@ export class RunController {
         console.error("[RunController] listener error:", err)
       }
     }
+  }
+
+  /**
+   * Set system instructions for the ContextManager.
+   * Called during session init when instructions are available.
+   */
+  setSystemInstructions(instructions: string): void {
+    this.systemInstructions = instructions
   }
 
   /* ---- Public API ---- */
@@ -385,20 +399,42 @@ export class RunController {
       messageId: assistantMessage.id,
     })
 
-    // 5. Build messages for the model
-    const messages = this.conversationManager.getMessages(conversationId)
-    const modelMessages = messages.map((m) => ({
-      role: m.role as "user" | "assistant",
-      content: m.content,
-    }))
+    // 5. Build messages using ContextManager
+    const effectiveContextManager = this.contextManager
+    const convMsgs = this.conversationManager.getMessages(conversationId)
+    // Exclude the current user message and assistant placeholder; the current
+    // user input is passed separately as currentUserMessage.
+    const contextInput: ContextManagerInput = {
+      systemInstructions: this.systemInstructions,
+      currentUserMessage: text,
+      conversationMessages: convMsgs.length > 1 ? convMsgs.slice(0, -2) : [],
+      toolResults: [],
+      currentArtifacts: [],
+      historicalArtifacts: [],
+      toolSchemas: [],
+      currentTurnIndex: convMsgs.length,
+    }
+    const modelInput = effectiveContextManager.build(contextInput)
+
+    // If the hard limit is exceeded, fail the run
+    if (modelInput.error) {
+      this.failRun(run, modelInput.error)
+      return
+    }
 
     // Include remote context if available
     const remoteContextId = this.wsSessionManager.getRemoteContextId(conversationId)
 
+    // Filter tool-role messages — WS protocol uses sendToolResult API,
+    // not tool-role messages embedded in createResponse.
+    const createResponseMessages = modelInput.messages.filter(
+      (m): m is { role: "system" | "user" | "assistant"; content: string } => m.role !== "tool",
+    )
+
     // Call createResponse
     try {
       await this.modelWsClient.createResponse({
-        messages: modelMessages,
+        messages: createResponseMessages,
         ...(remoteContextId ? { remoteContextId } : {}),
       })
     } catch (err) {
@@ -701,6 +737,9 @@ export class RunController {
       })
     }
 
+    // Build tool name lookup for continuation mapping
+    const toolNameByCallId = new Map(pending.map((tc) => [tc.id, tc.name]))
+
     // Process through the tool pipeline
     const processResults = await processToolCalls({
       toolCalls: pending,
@@ -773,11 +812,37 @@ export class RunController {
 
     // Create continuation response
     try {
-      const messages = this.conversationManager.getMessages(run.conversationId)
-      const modelMessages = messages.map((m) => ({
-        role: m.role as "user" | "assistant",
-        content: m.content,
-      }))
+      const effectiveContextManager = this.contextManager
+      const convMsgs = this.conversationManager.getMessages(run.conversationId)
+      const contextInput: ContextManagerInput = {
+        systemInstructions: this.systemInstructions,
+        currentUserMessage: "", // No new user input on continuation
+        conversationMessages: convMsgs,
+        toolResults: processResults.map((pr) => ({
+          toolCallId: pr.toolCallId,
+          toolName: toolNameByCallId.get(pr.toolCallId) ?? "unknown",
+          status: pr.result.status,
+          summary: pr.result.summary,
+          contentForModel: pr.result.contentForModel,
+          artifactRef: pr.result.artifactRef,
+        })),
+        currentArtifacts: [],
+        historicalArtifacts: [],
+        toolSchemas: [],
+        currentTurnIndex: convMsgs.length,
+      }
+      const modelInput = effectiveContextManager.build(contextInput)
+
+      // If hard limit exceeded, fail
+      if (modelInput.error) {
+        this.failRun(run, modelInput.error)
+        return
+      }
+
+      // Filter out tool-role messages for WS protocol
+      const createResponseMessages = modelInput.messages.filter(
+        (m): m is { role: "system" | "user" | "assistant"; content: string } => m.role !== "tool",
+      )
 
       const remoteContextId = this.wsSessionManager.getRemoteContextId(run.conversationId)
 
@@ -797,7 +862,7 @@ export class RunController {
       }
 
       await this.modelWsClient.createResponse({
-        messages: modelMessages,
+        messages: createResponseMessages,
         ...(remoteContextId ? { remoteContextId } : {}),
       })
     } catch (err) {

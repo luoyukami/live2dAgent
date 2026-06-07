@@ -229,7 +229,8 @@ describe("RunController — basic text streaming", () => {
 
     // Verify createResponse was called
     assert.equal(client.createResponseCalls.length, 1)
-    assert.equal(client.createResponseCalls[0]!.messages.length, 2)
+    assert.equal(client.createResponseCalls[0]!.messages.length, 1)
+    assert.equal(client.createResponseCalls[0]!.messages[0]!.content, "Hello!")
 
     // Verify WS session was set up
     assert.equal(wsManager.activeRunIds[conv.id], controller.getCurrentRunId(conv.id))
