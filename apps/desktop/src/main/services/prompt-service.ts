@@ -2,9 +2,20 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs"
 import { join } from "node:path"
 import type { ToolDefinition } from "@live2d-agent/agent-core"
 
-const DEFAULT_SYSTEM_PROMPT = `You are Live2D Agent, a local desktop assistant.
+const LEGACY_DEFAULT_SYSTEM_PROMPT = `You are Live2D Agent, a local desktop assistant.
 
 Be concise, ask before risky actions, and use tools when they help. Keep file and shell work inside the configured workspace.`
+
+const DEFAULT_SYSTEM_PROMPT = `You are Live2D Agent, a local desktop assistant.
+
+Be concise, friendly, and answer ordinary conversation directly in assistant text.
+
+Tool policy:
+- Do not use tools for greetings, casual chat, or questions you can answer from the conversation.
+- Use tools only when they are necessary to complete the user's explicit request.
+- Use clipboard tools only when the user explicitly asks to read or write the clipboard.
+- Use task.finish only when the user has explicitly delegated a task that should be marked finished; never use it for casual chat.
+- Ask before risky actions and keep file and shell work inside the configured workspace.`
 
 type ToolOverrides = Record<string, { description?: string } | string>
 
@@ -28,7 +39,7 @@ export class PromptService {
     this.error = undefined
     try {
       this.ensureFiles()
-      this.systemPrompt = readFileSync(this.systemFile, "utf8")
+      this.systemPrompt = migrateLegacyDefault(readFileSync(this.systemFile, "utf8"))
     } catch (error) {
       this.error = `读取 system.md 失败：${messageOf(error)}`
       this.systemPrompt = DEFAULT_SYSTEM_PROMPT
@@ -51,7 +62,7 @@ export class PromptService {
   getSystemPrompt(): string {
     // Dev hot reload: read each model request, but keep last good state on error.
     try {
-      this.systemPrompt = readFileSync(this.systemFile, "utf8")
+      this.systemPrompt = migrateLegacyDefault(readFileSync(this.systemFile, "utf8"))
       return this.systemPrompt
     } catch (error) {
       this.error = `读取 system.md 失败：${messageOf(error)}`
@@ -97,4 +108,8 @@ export class PromptService {
 
 function messageOf(error: unknown): string {
   return error instanceof Error ? error.message : String(error)
+}
+
+function migrateLegacyDefault(prompt: string): string {
+  return prompt.trim() === LEGACY_DEFAULT_SYSTEM_PROMPT ? DEFAULT_SYSTEM_PROMPT : prompt
 }

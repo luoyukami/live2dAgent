@@ -3,7 +3,7 @@ import type { RuntimeToolContext } from "./runtime.js"
 
 export const clipboardReadToolDefinition: ToolDefinition = {
   name: "clipboard.read",
-  description: "Read text from the system clipboard.",
+  description: "Read text from the system clipboard only when the user explicitly asks to inspect the clipboard.",
   permission: "clipboard_read" as PermissionLevel,
   inputSchema: {
     type: "object",
@@ -13,7 +13,7 @@ export const clipboardReadToolDefinition: ToolDefinition = {
 
 export const clipboardWriteToolDefinition: ToolDefinition = {
   name: "clipboard.write",
-  description: "Write text to the system clipboard.",
+  description: "Write text to the system clipboard only when the user explicitly asks to copy something. Do not use this to answer the user.",
   permission: "clipboard_write" as PermissionLevel,
   inputSchema: {
     type: "object",

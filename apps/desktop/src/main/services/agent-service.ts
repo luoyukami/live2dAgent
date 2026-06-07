@@ -318,7 +318,15 @@ export class AgentService implements ToolRuntime {
     const attachments = typeof input === "object" ? input.attachments : undefined
     const conversationId = (typeof input === "object" && input.conversationId) || this.activeConversationId!
 
-    // Emit user message added event (consistent for both paths)
+    if (this.runtimeMode === "http-legacy") {
+      if (!this.session) this.reconfigure()
+      await this.session?.runUserMessage(input)
+      return
+    }
+
+    // The WS runtime does not emit renderer-facing user messages itself.
+    // The legacy AgentSession path does, so keep this emit WS-only to avoid
+    // rendering the same user input twice with different generated IDs.
     this.emit({
       type: "message.added",
       message: {
@@ -329,12 +337,6 @@ export class AgentService implements ToolRuntime {
         attachments,
       },
     })
-
-    if (this.runtimeMode === "http-legacy") {
-      if (!this.session) this.reconfigure()
-      await this.session?.runUserMessage(input)
-      return
-    }
 
     // Default WS runtime path
     if (!this.assistantRuntime) this.reconfigure()

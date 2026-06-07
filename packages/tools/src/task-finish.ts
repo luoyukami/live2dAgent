@@ -3,7 +3,7 @@ import type { RuntimeToolContext } from "./runtime.js"
 
 export const taskFinishToolDefinition: ToolDefinition = {
   name: "task.finish",
-  description: "Finish the current task with a summary.",
+  description: "Mark an explicitly delegated multi-step task as finished. Do not use for greetings, casual chat, or normal assistant replies.",
   permission: "safe" as PermissionLevel,
   inputSchema: {
     type: "object",

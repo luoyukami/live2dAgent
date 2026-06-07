@@ -13,6 +13,9 @@
  *  3. Tool-only assistant messages (no visible text + actions):
  *     - The message is stored as-is (no metadata, no stripping).
  *     - NO `emotion.set` event is emitted.
+ *  3b. `content: null` with tool actions — runtime edge case from model adapters:
+ *     - Does NOT throw.
+ *     - Does NOT emit `emotion.set`.
  *  4. Emotion system disabled:
  *     - NO `emotion.set` events ever fire.
  *     - With `stripTagWhenDisabled = true`, a trailing tag is removed from
@@ -196,6 +199,31 @@ test("tool-only multimodal assistant: still no emotion.set", async () => {
 
   const stored = await runOne(harness)
   const assistant = stored.find((m) => m.role === "assistant")!
+  assert.equal(assistant.metadata, undefined)
+  assert.equal(harness.emittedEmotion.length, 0)
+})
+
+test("assistant with content: null + tool actions: does not throw, does not emit emotion.set", async () => {
+  const harness = makeHarness(DEFAULT_EMOTION_SETTINGS, {
+    id: "msg_null",
+    role: "assistant",
+    content: null as never,
+    actions: [
+      { id: "act_z", tool: "shell.run", args: {}, source: "llm", createdAt: 0 },
+    ],
+    createdAt: 0,
+  })
+
+  let thrown: unknown = undefined
+  try {
+    await runOne(harness)
+  } catch (err) {
+    thrown = err
+  }
+  assert.equal(thrown, undefined, "content: null must not throw during runUserMessage")
+
+  const assistant = harness.session.messages.find((m) => m.role === "assistant")!
+  assert.equal(assistant.content, null as never)
   assert.equal(assistant.metadata, undefined)
   assert.equal(harness.emittedEmotion.length, 0)
 })

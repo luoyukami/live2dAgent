@@ -389,6 +389,7 @@ function assistantMessageHasVisibleText(message: AgentMessage): boolean {
   if (typeof message.content === "string") {
     return message.content.trim().length > 0
   }
+  if (!Array.isArray(message.content)) return false
   return message.content.some(
     (block) => block.type === "text" && typeof block.text === "string" && block.text.trim().length > 0,
   )

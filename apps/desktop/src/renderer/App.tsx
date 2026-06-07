@@ -43,6 +43,35 @@ const RISK_TEXT: Record<string, string> = {
   dangerous: "高风险操作，默认拒绝",
 }
 
+function hasVisibleText(message: AgentMessage): boolean {
+  if (typeof message.content === "string") return message.content.trim().length > 0
+  return Array.isArray(message.content) && message.content.length > 0
+}
+
+function shouldRenderAddedMessage(message: AgentMessage): boolean {
+  if (message.role !== "assistant") return true
+  return hasVisibleText(message)
+}
+
+function mergeAddedMessage(items: AgentMessage[], message: AgentMessage): AgentMessage[] {
+  const existingIndex = items.findIndex((item) => item.id === message.id)
+
+  if (!shouldRenderAddedMessage(message)) {
+    return existingIndex >= 0 ? items.filter((item) => item.id !== message.id) : items
+  }
+
+  if (existingIndex < 0) return [...items, message]
+
+  return items.map((item, index) => {
+    if (index !== existingIndex) return item
+    return {
+      ...item,
+      ...message,
+      content: hasVisibleText(message) ? message.content : item.content,
+    }
+  })
+}
+
 function defaultForm(): SettingsForm {
   return {
     mode: "confirm",
@@ -134,10 +163,7 @@ export function App(): JSX.Element {
       }
       // message.completed is a no-op — content is already final via deltas
       if (event.type === "message.added") {
-        setMessages((items) => {
-          if (items.some((m) => m.id === event.message.id)) return items
-          return [...items, event.message]
-        })
+        setMessages((items) => mergeAddedMessage(items, event.message))
       }
       if (event.type === "approval.pending") setPending(event.actions)
       if (event.type === "approval.approved" || event.type === "approval.denied") setPending([])
