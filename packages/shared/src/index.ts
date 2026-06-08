@@ -56,4 +56,6 @@ export type {
   CompactInputAnchor,
   IpcToolRequest,
   IpcToolResponse,
+  AvatarHitRegionRect,
+  IpcSetAvatarHitRegionRequest,
 } from "./ipc.js"

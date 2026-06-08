@@ -1,7 +1,7 @@
 import { contextBridge, ipcRenderer } from "electron"
 import { IPC_CHANNELS } from "@live2d-agent/shared"
 import type { AgentEvent } from "@live2d-agent/agent-core"
-import type { PublicSettings, AppSettingsPublicPatch, DebugSnapshot, IpcSaveAudioRecordingRequest, IpcSaveAudioRecordingResponse, IpcSendUserMessageRequest, CompactInputAnchor } from "@live2d-agent/shared"
+import type { PublicSettings, AppSettingsPublicPatch, DebugSnapshot, IpcSaveAudioRecordingRequest, IpcSaveAudioRecordingResponse, IpcSendUserMessageRequest, CompactInputAnchor, AvatarHitRegionRect } from "@live2d-agent/shared"
 
 const api = {
   /* ---- Agent ---- */
@@ -31,6 +31,8 @@ const api = {
     ipcRenderer.invoke(IPC_CHANNELS.WINDOW_DRAG_END),
   setMousePassthrough: (enabled: boolean, windowType?: "combined" | "avatar"): Promise<void> =>
     ipcRenderer.invoke(IPC_CHANNELS.WINDOW_SET_MOUSE_PASSTHROUGH, enabled, windowType),
+  setAvatarHitRegion: (rects: AvatarHitRegionRect[]): Promise<void> =>
+    ipcRenderer.invoke(IPC_CHANNELS.WINDOW_SET_AVATAR_HIT_REGION, rects),
 
   /* ---- Dual-window UI control ---- */
   showCompactInput: (anchor?: CompactInputAnchor): Promise<void> =>

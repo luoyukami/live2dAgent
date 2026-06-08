@@ -13,6 +13,14 @@ import {
 } from "./renderer-shared"
 
 /* ------------------------------------------------------------------ */
+/*  Platform detection for hit-region strategy                         */
+/* ------------------------------------------------------------------ */
+
+function isDarwin(): boolean {
+  return /macintosh|mac os x|mac os/i.test(navigator.userAgent)
+}
+
+/* ------------------------------------------------------------------ */
 /*  AvatarApp — Live2D‑only window root component                      */
 /* ------------------------------------------------------------------ */
 
@@ -69,19 +77,29 @@ export function AvatarApp(): JSX.Element {
     })
   }, [])
 
-  /* ---- Dynamic mouse passthrough for avatar window ---- */
+  /* ---- Dynamic mouse passthrough / hit-region reporting for avatar window ---- */
   useEffect(() => {
     // Default: enable passthrough
     setAvatarPassthrough(true)
 
-    function handleMouseMove(e: MouseEvent): void {
-      const isOverInteractiveTarget = live2dRef.current?.containsPoint(e.clientX, e.clientY) ?? false
-      // Disable passthrough when over model/fallback area, enable when leaving
-      setAvatarPassthrough(!isOverInteractiveTarget)
+    if (isDarwin()) {
+      // macOS: keep the original dynamic mousemove passthrough strategy
+      function handleMouseMove(e: MouseEvent): void {
+        const isOverInteractiveTarget = live2dRef.current?.containsPoint(e.clientX, e.clientY) ?? false
+        setAvatarPassthrough(!isOverInteractiveTarget)
+      }
+      window.addEventListener("mousemove", handleMouseMove)
+      return () => window.removeEventListener("mousemove", handleMouseMove)
     }
 
-    window.addEventListener("mousemove", handleMouseMove)
-    return () => window.removeEventListener("mousemove", handleMouseMove)
+    // Non-macOS: no dynamic mousemove toggling; report hit regions instead
+    // Initial report
+    reportHitRegions()
+
+    // Periodic re-report is only a safety net; Live2DView actively reports
+    // after model load/recenter/resize so the shape does not stay stale.
+    const intervalId = window.setInterval(() => reportHitRegions(), 2000)
+    return () => clearInterval(intervalId)
   }, [])
 
   /* ---- 1c. Subscribe to live2d:reloaded broadcast ---- */
@@ -90,6 +108,22 @@ export function AvatarApp(): JSX.Element {
       setLive2dReloadKey((k) => k + 1)
     })
   }, [])
+
+  /* ---- 1d. Re-report hit regions on window resize (non-macOS) ---- */
+  useEffect(() => {
+    if (isDarwin()) return
+    const onResize = () => reportHitRegions()
+    window.addEventListener("resize", onResize)
+    return () => window.removeEventListener("resize", onResize)
+  }, [])
+
+  /* ---- 1e. Re-report hit regions after model reload (non-macOS) ---- */
+  useEffect(() => {
+    if (isDarwin()) return
+    // Small delay to let model render a frame before reading bounds
+    const timer = setTimeout(() => reportHitRegions(), 300)
+    return () => clearTimeout(timer)
+  }, [live2dReloadKey])
 
   /* ---- 2. Derive latest assistant text for speech bubble ---- */
   const latestAssistantMessage = useMemo(
@@ -146,6 +180,11 @@ export function AvatarApp(): JSX.Element {
 
   /* ---- 7. Render: only Live2D stage + speech bubble ---- */
 
+  function reportHitRegions(): void {
+    const rects = live2dRef.current?.getInteractiveRects() ?? []
+    void window.petAgent.setAvatarHitRegion?.(rects)
+  }
+
   function setAvatarPassthrough(next: boolean): void {
     if (passthroughRef.current === next) return
     passthroughRef.current = next
@@ -196,6 +235,9 @@ export function AvatarApp(): JSX.Element {
             avatarState={status}
             emotion={currentEmotion}
             emotionProfile={settings?.live2d?.emotionProfile}
+            onInteractiveRectsChanged={isDarwin() ? undefined : (rects) => {
+              void window.petAgent.setAvatarHitRegion?.(rects)
+            }}
           />
           {compactAssistantBubbleVisible && latestAssistantText && (
             <div className="assistant-speech-bubble" aria-live="polite">

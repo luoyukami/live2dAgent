@@ -2,7 +2,7 @@ import { BrowserWindow, screen } from "electron"
 import { join } from "node:path"
 import { IPC_CHANNELS } from "@live2d-agent/shared"
 import type { AgentEvent } from "@live2d-agent/agent-core"
-import type { CompactInputAnchor, PublicSettings, UiSettings } from "@live2d-agent/shared"
+import type { CompactInputAnchor, PublicSettings, UiSettings, AvatarHitRegionRect } from "@live2d-agent/shared"
 
 const isDev = process.env.NODE_ENV === "development"
 
@@ -36,6 +36,12 @@ export class WindowManager {
   /** User-configured panel dimensions. */
   private panelWidth = 460
   private panelHeight = 760
+
+  /** Cached normalized hit-region rects for OS-level shape on avatar window. */
+  private cachedAvatarHitRects: AvatarHitRegionRect[] = []
+
+  /** Last applied avatar mouse-ignore state, used to avoid noisy native calls/logs. */
+  private avatarMouseIgnored?: boolean
 
   // ════════════════════════════════════════════════════════════════
   //  Single-window (combined) mode — backward-compatible API
@@ -99,6 +105,7 @@ export class WindowManager {
       this.avatarWindow.setMinimumSize(200, 200)
       this.avatarWindow.setMaximumSize(4000, 4000)
       this.avatarWindow.setContentSize(nextWidth, nextHeight, false)
+      this.applyAvatarHitShape()
       return
     }
 
@@ -151,11 +158,147 @@ export class WindowManager {
   setMousePassthrough(enabled: boolean, windowType: "combined" | "avatar" = "combined"): void {
     if (windowType === "avatar") {
       if (!this.avatarWindow || this.avatarWindow.isDestroyed()) return
-      this.avatarWindow.setIgnoreMouseEvents(enabled, { forward: true })
+      if (process.platform === "darwin") {
+        // macOS: allow dynamic toggle for fallback mousemove passthrough
+        this.setAvatarIgnoreMouseEvents(enabled, "darwin-fallback")
+      } else {
+        // Non-macOS: ignore renderer's dynamic toggles. setShape constrains the
+        // native hit-test area, so false is safe only when at least one shaped
+        // interactive rect exists; otherwise keep the full window pass-through.
+        this.applyAvatarHitShape()
+      }
       return
     }
     if (!this.combinedWindow || this.combinedWindow.isDestroyed()) return
     this.combinedWindow.setIgnoreMouseEvents(enabled, { forward: true })
+  }
+
+  /**
+   * Receive hit-region rects from the renderer and apply OS-level shape
+   * on Windows/Linux (setShape). macOS only caches — dynamic passthrough
+   * remains the fallback strategy.
+   *
+   * Rects are normalized: integers, finite, positive width/height, clamped
+   * to the current avatar content bounds, max 256 entries.
+   */
+  setAvatarHitRegion(rects: AvatarHitRegionRect[]): void {
+    if (!this.avatarWindow || this.avatarWindow.isDestroyed()) return
+
+    const normalized = this.normalizeHitRects(rects)
+
+    // Avoid redundant shape application
+    if (this.hitRectsEqual(this.cachedAvatarHitRects, normalized)) return
+
+    this.cachedAvatarHitRects = normalized
+
+    // macOS: only cache — no setShape, dynamic passthrough via mousemove is the fallback
+    if (process.platform === "darwin") return
+
+    // Windows / Linux: apply OS-level shape
+    this.applyAvatarHitShape()
+  }
+
+  /** Apply the cached hit rects as the avatar window's OS-level shape. */
+  private applyAvatarHitShape(): void {
+    if (!this.avatarWindow || this.avatarWindow.isDestroyed()) return
+    if (process.platform === "darwin") return
+
+    if (this.cachedAvatarHitRects.length === 0) {
+      // No hit regions — make the whole window pass-through
+      this.avatarWindow.setShape([])
+      this.setAvatarIgnoreMouseEvents(true, "empty-shape")
+      return
+    }
+
+    // Electron's setShape expects Electron.Rectangle[]
+    const shape = this.cachedAvatarHitRects.map((r) => ({
+      x: Math.round(r.x),
+      y: Math.round(r.y),
+      width: Math.round(r.width),
+      height: Math.round(r.height),
+    }))
+    this.avatarWindow.setShape(shape)
+
+    // setShape changes the native window region on Windows/Linux. Keep the
+    // region as a stable padded rectangle so visible model pixels stay on top,
+    // while outside the region passes through to apps below.
+    this.setAvatarIgnoreMouseEvents(false, "shape-applied")
+  }
+
+  private setAvatarIgnoreMouseEvents(enabled: boolean, reason: string): void {
+    if (!this.avatarWindow || this.avatarWindow.isDestroyed()) return
+    if (this.avatarMouseIgnored === enabled) return
+    this.avatarMouseIgnored = enabled
+    this.avatarWindow.setIgnoreMouseEvents(enabled, { forward: true })
+    if (isDev) {
+      console.debug(`[WindowManager] avatar ignoreMouseEvents=${enabled} (${reason})`)
+    }
+  }
+
+  /** Keep the companion UI above the avatar while compact/detail UI is visible. */
+  private keepUiAboveAvatar(): void {
+    if (!this.uiWindow || this.uiWindow.isDestroyed()) return
+    this.uiWindow.setAlwaysOnTop(true, "pop-up-menu")
+    try {
+      this.uiWindow.moveTop()
+    } catch {
+      // moveTop is best-effort; alwaysOnTop level is the primary ordering guard.
+    }
+  }
+
+  /** Normalize, clamp, and deduplicate a set of hit rects to the avatar content bounds. */
+  private normalizeHitRects(rects: AvatarHitRegionRect[]): AvatarHitRegionRect[] {
+    if (!this.avatarWindow || this.avatarWindow.isDestroyed()) return []
+
+    const maxRects = 256
+    const [cw, ch] = this.avatarWindow.getContentSize()
+    const result: AvatarHitRegionRect[] = []
+
+    for (const r of rects) {
+      if (result.length >= maxRects) break
+      if (!Number.isFinite(r.x) || !Number.isFinite(r.y) || !Number.isFinite(r.width) || !Number.isFinite(r.height)) continue
+      let w = Math.round(r.width)
+      let h = Math.round(r.height)
+      if (w <= 0 || h <= 0) continue
+      let x = Math.round(r.x)
+      let y = Math.round(r.y)
+
+      // Clamp to content bounds
+      if (x < 0) {
+        const visible = w + x
+        if (visible <= 0) continue
+        w = visible
+        x = 0
+      }
+      if (y < 0) {
+        const visible = h + y
+        if (visible <= 0) continue
+        h = visible
+        y = 0
+      }
+      if (x + w > cw) {
+        const clipped = cw - x
+        if (clipped <= 0) continue
+        w = clipped
+      }
+      if (y + h > ch) {
+        const clipped = ch - y
+        if (clipped <= 0) continue
+        h = clipped
+      }
+      result.push({ x, y, width: w, height: h })
+    }
+
+    return result
+  }
+
+  /** Shallow equality check for normalized hit rects. */
+  private hitRectsEqual(a: AvatarHitRegionRect[], b: AvatarHitRegionRect[]): boolean {
+    if (a.length !== b.length) return false
+    for (let i = 0; i < a.length; i++) {
+      if (a[i].x !== b[i].x || a[i].y !== b[i].y || a[i].width !== b[i].width || a[i].height !== b[i].height) return false
+    }
+    return true
   }
 
   // ════════════════════════════════════════════════════════════════
@@ -208,6 +351,10 @@ export class WindowManager {
     })
     this.avatarWindow.setMenuBarVisibility(false)
     this.avatarWindow.setMaximizable(false)
+    this.avatarWindow.setAlwaysOnTop(true, "floating")
+    this.cachedAvatarHitRects = []
+    this.avatarMouseIgnored = undefined
+    this.setAvatarIgnoreMouseEvents(true, "initial")
     await this.loadRenderer(this.avatarWindow, "avatar")
 
     // ── UI window ───────────────────────────────────────────────
@@ -240,6 +387,7 @@ export class WindowManager {
     })
     this.uiWindow.setMenuBarVisibility(false)
     this.uiWindow.setMaximizable(false)
+    this.uiWindow.setAlwaysOnTop(true, "pop-up-menu")
 
     // 阻止关闭时销毁，改为隐藏
     this.uiWindow.on("close", (event) => {
@@ -364,6 +512,7 @@ export class WindowManager {
     this.uiWindow.setSkipTaskbar(true)
     this.uiWindow.show()
     this.uiWindow.focus()
+    this.keepUiAboveAvatar()
 
     this.uiMode = "compact"
     this.uiWindow.webContents.send(IPC_CHANNELS.WINDOW_UI_COMMAND, { mode: "compact" })
@@ -424,6 +573,7 @@ export class WindowManager {
     this.uiWindow.setSkipTaskbar(false)
     this.uiWindow.show()
     this.uiWindow.focus()
+    this.keepUiAboveAvatar()
 
     this.uiMode = "detail"
     this.uiWindow.webContents.send(IPC_CHANNELS.WINDOW_UI_COMMAND, { mode: "detail", tab })

@@ -1,5 +1,5 @@
 import { ipcMain, shell } from "electron"
-import { IPC_CHANNELS, type AudioContextAttachment, type AudioMimeType, type AudioArtifactRef, type CompactInputAnchor, type DebugSnapshot } from "@live2d-agent/shared"
+import { IPC_CHANNELS, type AudioContextAttachment, type AudioMimeType, type AudioArtifactRef, type CompactInputAnchor, type DebugSnapshot, type AvatarHitRegionRect } from "@live2d-agent/shared"
 import type { AgentEvent } from "@live2d-agent/agent-core"
 import type { AgentService } from "./services/agent-service.js"
 import type { ArtifactStore } from "./services/artifact-store.js"
@@ -123,6 +123,10 @@ export function registerIpcHandlers(services: IpcServices): void {
 
   ipcMain.handle(IPC_CHANNELS.WINDOW_SET_MOUSE_PASSTHROUGH, async (_event, enabled: boolean, windowType?: "combined" | "avatar") => {
     services.window.setMousePassthrough(Boolean(enabled), windowType ?? "combined")
+  })
+
+  ipcMain.handle(IPC_CHANNELS.WINDOW_SET_AVATAR_HIT_REGION, async (_event, rects: AvatarHitRegionRect[]) => {
+    services.window.setAvatarHitRegion(rects)
   })
 
   /* ---- Dual-window UI control ---- */

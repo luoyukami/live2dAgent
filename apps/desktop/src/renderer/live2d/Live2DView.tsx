@@ -7,6 +7,7 @@ import {
   type Emotion,
   type Live2DEmotionProfile,
 } from "@live2d-agent/shared"
+import type { AvatarHitRegionRect } from "@live2d-agent/shared"
 
 declare global {
   interface Window {
@@ -17,6 +18,8 @@ declare global {
 
 let cubismCorePromise: Promise<void> | null = null
 let cubismCoreScript: HTMLScriptElement | null = null
+const MODEL_HIT_REGION_PADDING_PX = 8
+const MODEL_HIT_REGION_SAMPLE_STEP_PX = 10
 
 /* ------------------------------------------------------------------ */
 /*  Model-specific load quirks                                         */
@@ -143,6 +146,8 @@ export interface Live2DViewProps {
    * expression names that their model ships with.
    */
   emotionProfile?: Live2DEmotionProfile
+  /** Called when the approximate OS hit region may have changed. */
+  onInteractiveRectsChanged?: (rects: AvatarHitRegionRect[]) => void
 }
 
 export interface Live2DViewHandle {
@@ -150,6 +155,7 @@ export interface Live2DViewHandle {
   setExpression: (name: string) => void
   clearExpression: () => void
   containsPoint: (clientX: number, clientY: number) => boolean
+  getInteractiveRects: () => AvatarHitRegionRect[]
 }
 
 /* ------------------------------------------------------------------ */
@@ -157,7 +163,7 @@ export interface Live2DViewHandle {
 /* ------------------------------------------------------------------ */
 
 export const Live2DView = forwardRef<Live2DViewHandle, Live2DViewProps>(function Live2DView(
-  { modelPath, avatarState, emotion, emotionProfile },
+  { modelPath, avatarState, emotion, emotionProfile, onInteractiveRectsChanged },
   ref,
 ): JSX.Element {
   const containerRef = useRef<HTMLDivElement>(null)
@@ -191,6 +197,7 @@ export const Live2DView = forwardRef<Live2DViewHandle, Live2DViewProps>(function
     },
     containsPoint: (clientX: number, clientY: number) =>
       containsModelPoint(clientX, clientY) || containsFallbackPoint(clientX, clientY),
+    getInteractiveRects: () => getInteractiveRects(),
   }), [])
 
   /* ---- 1. Create / destroy the Pixi Application ---- */
@@ -225,6 +232,7 @@ export const Live2DView = forwardRef<Live2DViewHandle, Live2DViewProps>(function
 
     if (!modelPath) {
       setLoadError("可在设置中配置 Live2D 模型路径")
+      scheduleInteractiveRectsChanged()
       return
     }
 
@@ -356,6 +364,7 @@ export const Live2DView = forwardRef<Live2DViewHandle, Live2DViewProps>(function
       // effect's `if (!model) return` guard always sees a live model ref.
       // This re-applies the current emotion to the freshly loaded model.
       setModelEpoch((value) => value + 1)
+      scheduleInteractiveRectsChanged()
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err)
       if (msg.includes("Cubism Core")) {
@@ -364,6 +373,7 @@ export const Live2DView = forwardRef<Live2DViewHandle, Live2DViewProps>(function
         setLoadError("Live2D 加载失败，使用 fallback 显示")
       }
       console.error("[Live2DView] Failed to load model:", err)
+      scheduleInteractiveRectsChanged()
     }
   }
 
@@ -395,6 +405,7 @@ export const Live2DView = forwardRef<Live2DViewHandle, Live2DViewProps>(function
       appRef.current?.resize()
       const model = modelRef.current
       if (model) centerModel(model)
+      scheduleInteractiveRectsChanged()
     }
     const ro = new ResizeObserver(resizeModel)
     ro.observe(container)
@@ -414,6 +425,7 @@ export const Live2DView = forwardRef<Live2DViewHandle, Live2DViewProps>(function
         /* ignore cleanup errors */
       }
       modelRef.current = null
+      scheduleInteractiveRectsChanged()
     }
     // 清空 quirk 引用，避免新模型继承上一任的 parameterPins。
     activeQuirksRef.current = []
@@ -457,6 +469,191 @@ export const Live2DView = forwardRef<Live2DViewHandle, Live2DViewProps>(function
       clientY >= rect.top &&
       clientY <= rect.bottom
     )
+  }
+
+  function getInteractiveRects(): AvatarHitRegionRect[] {
+    const model = modelRef.current
+    const container = containerRef.current
+    const app = appRef.current
+
+    if (model && container && app) {
+      // Model state: return approximate model bounds in viewport coordinates
+      try {
+        const sampled = getSampledHitTestRect(model, container)
+        if (sampled) return [sampled]
+
+        // Try model.getBounds() first (pixi-live2d-display)
+        let bounds: { x: number; y: number; width: number; height: number } | null = null
+        if (typeof model.getBounds === "function") {
+          const b = model.getBounds()
+          if (b && typeof b === "object") {
+            bounds = { x: b.x ?? b.left ?? 0, y: b.y ?? b.top ?? 0, width: b.width ?? 0, height: b.height ?? 0 }
+          }
+        }
+        if (!bounds) {
+          // Fallback: use model.width/height + position from the PIXI stage
+          const pos = model.position ?? { x: 0, y: 0 }
+          const mw = model.width || 0
+          const mh = model.height || 0
+          bounds = {
+            x: pos.x - mw / 2,
+            y: pos.y - mh / 2,
+            width: mw,
+            height: mh,
+          }
+        }
+
+        // Convert from PIXI local coords to viewport coords via container bounding rect
+        const containerRect = container.getBoundingClientRect()
+        // PIXI screen coordinates are logical CSS pixels even when the renderer
+        // uses a higher devicePixelRatio backing store.
+        const scaleX = containerRect.width / (app.screen.width || containerRect.width || 1)
+        const scaleY = containerRect.height / (app.screen.height || containerRect.height || 1)
+
+        const viewportRect: AvatarHitRegionRect = {
+          x: Math.round(containerRect.left + bounds.x * scaleX),
+          y: Math.round(containerRect.top + bounds.y * scaleY),
+          width: Math.round(bounds.width * scaleX),
+          height: Math.round(bounds.height * scaleY),
+        }
+
+        const paddedRect = {
+          x: viewportRect.x - MODEL_HIT_REGION_PADDING_PX,
+          y: viewportRect.y - MODEL_HIT_REGION_PADDING_PX,
+          width: viewportRect.width + MODEL_HIT_REGION_PADDING_PX * 2,
+          height: viewportRect.height + MODEL_HIT_REGION_PADDING_PX * 2,
+        }
+
+        // Clip to container viewport rect
+        const crLeft = Math.round(containerRect.left)
+        const crTop = Math.round(containerRect.top)
+        const crRight = Math.round(containerRect.right)
+        const crBottom = Math.round(containerRect.bottom)
+
+        const clippedX = Math.max(paddedRect.x, crLeft)
+        const clippedY = Math.max(paddedRect.y, crTop)
+        const clippedW = Math.min(paddedRect.x + paddedRect.width, crRight) - clippedX
+        const clippedH = Math.min(paddedRect.y + paddedRect.height, crBottom) - clippedY
+
+        if (clippedW > 0 && clippedH > 0) {
+          return [{ x: clippedX, y: clippedY, width: clippedW, height: clippedH }]
+        }
+      } catch {
+        // ignore bounds errors
+      }
+    }
+
+    // Fallback state: return fallback DOM element rect
+    const fallback = fallbackRef.current
+    if (fallback) {
+      const rect = fallback.getBoundingClientRect()
+      const r: AvatarHitRegionRect = {
+        x: Math.round(rect.left),
+        y: Math.round(rect.top),
+        width: Math.round(rect.width),
+        height: Math.round(rect.height),
+      }
+      if (r.width > 0 && r.height > 0) return [r]
+    }
+
+    return []
+  }
+
+  function getSampledHitTestRect(model: InstanceType<any>, container: HTMLDivElement): AvatarHitRegionRect | null {
+    if (typeof model.hitTest !== "function") return null
+
+    const hitAreas = collectHitAreas(model)
+    if (hitAreas.length === 0) return null
+
+    const containerRect = container.getBoundingClientRect()
+    const bounds = getModelLocalBounds(model, containerRect)
+    if (!bounds) return null
+
+    const startX = Math.max(0, Math.floor(bounds.x))
+    const startY = Math.max(0, Math.floor(bounds.y))
+    const endX = Math.min(containerRect.width, Math.ceil(bounds.x + bounds.width))
+    const endY = Math.min(containerRect.height, Math.ceil(bounds.y + bounds.height))
+    if (endX <= startX || endY <= startY) return null
+
+    let minX = Number.POSITIVE_INFINITY
+    let minY = Number.POSITIVE_INFINITY
+    let maxX = Number.NEGATIVE_INFINITY
+    let maxY = Number.NEGATIVE_INFINITY
+
+    for (let y = startY; y <= endY; y += MODEL_HIT_REGION_SAMPLE_STEP_PX) {
+      for (let x = startX; x <= endX; x += MODEL_HIT_REGION_SAMPLE_STEP_PX) {
+        if (!hitTestModelAreas(model, hitAreas, x, y)) continue
+        minX = Math.min(minX, x)
+        minY = Math.min(minY, y)
+        maxX = Math.max(maxX, x)
+        maxY = Math.max(maxY, y)
+      }
+    }
+
+    if (!Number.isFinite(minX) || !Number.isFinite(minY) || !Number.isFinite(maxX) || !Number.isFinite(maxY)) return null
+
+    const pad = MODEL_HIT_REGION_PADDING_PX + MODEL_HIT_REGION_SAMPLE_STEP_PX
+    const localX = Math.max(0, minX - pad)
+    const localY = Math.max(0, minY - pad)
+    const localRight = Math.min(containerRect.width, maxX + pad)
+    const localBottom = Math.min(containerRect.height, maxY + pad)
+    const width = Math.round(localRight - localX)
+    const height = Math.round(localBottom - localY)
+    if (width <= 0 || height <= 0) return null
+
+    return {
+      x: Math.round(containerRect.left + localX),
+      y: Math.round(containerRect.top + localY),
+      width,
+      height,
+    }
+  }
+
+  function getModelLocalBounds(
+    model: InstanceType<any>,
+    containerRect: DOMRect,
+  ): { x: number; y: number; width: number; height: number } | null {
+    const app = appRef.current
+    if (!app) return null
+
+    if (typeof model.getBounds === "function") {
+      const b = model.getBounds()
+      if (b && typeof b === "object") {
+        const scaleX = containerRect.width / (app.screen.width || containerRect.width || 1)
+        const scaleY = containerRect.height / (app.screen.height || containerRect.height || 1)
+        return {
+          x: (b.x ?? b.left ?? 0) * scaleX,
+          y: (b.y ?? b.top ?? 0) * scaleY,
+          width: (b.width ?? 0) * scaleX,
+          height: (b.height ?? 0) * scaleY,
+        }
+      }
+    }
+
+    const pos = model.position ?? { x: 0, y: 0 }
+    const mw = model.width || 0
+    const mh = model.height || 0
+    return { x: pos.x - mw / 2, y: pos.y - mh / 2, width: mw, height: mh }
+  }
+
+  function hitTestModelAreas(model: InstanceType<any>, hitAreas: string[], x: number, y: number): boolean {
+    for (const name of hitAreas) {
+      try {
+        if (model.hitTest(name, x, y)) return true
+      } catch {
+        // Some pixi-live2d-display versions use a different hitTest shape.
+      }
+    }
+    return false
+  }
+
+  function scheduleInteractiveRectsChanged(): void {
+    if (!onInteractiveRectsChanged) return
+    window.requestAnimationFrame(() => {
+      window.requestAnimationFrame(() => {
+        onInteractiveRectsChanged(getInteractiveRects())
+      })
+    })
   }
 
   function collectHitAreas(model: InstanceType<any>): string[] {

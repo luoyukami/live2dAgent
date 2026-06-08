@@ -38,6 +38,7 @@ export const IPC_CHANNELS = {
   WINDOW_DRAG_START: "window:drag-start",
   WINDOW_DRAG_END: "window:drag-end",
   WINDOW_SET_MOUSE_PASSTHROUGH: "window:set-mouse-passthrough",
+  WINDOW_SET_AVATAR_HIT_REGION: "window:set-avatar-hit-region",
 
   /* ---- Dual-window UI control ---- */
   WINDOW_SHOW_COMPACT_INPUT: "window:show-compact-input",
