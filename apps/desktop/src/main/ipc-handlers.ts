@@ -100,6 +100,9 @@ export function registerIpcHandlers(services: IpcServices): void {
     if (patch?.ui && ("width" in patch.ui || "height" in patch.ui)) {
       services.window.setSize(ui.width, ui.height)
     }
+    if (patch?.ui && ("panelWidth" in patch.ui || "panelHeight" in patch.ui)) {
+      services.window.setPanelDimensions(ui.panelWidth, ui.panelHeight)
+    }
     services.agent.reconfigure()
     const publicSettings = services.settings.getPublicSettings()
     services.trace.append({ type: "settings.updated", settings: publicSettings })
@@ -120,6 +123,19 @@ export function registerIpcHandlers(services: IpcServices): void {
 
   ipcMain.handle(IPC_CHANNELS.WINDOW_SET_MOUSE_PASSTHROUGH, async (_event, enabled: boolean) => {
     services.window.setMousePassthrough(Boolean(enabled))
+  })
+
+  /* ---- Dual-window UI control ---- */
+  ipcMain.handle(IPC_CHANNELS.WINDOW_SHOW_COMPACT_INPUT, async () => {
+    services.window.showCompactInput()
+  })
+
+  ipcMain.handle(IPC_CHANNELS.WINDOW_SHOW_DETAIL_PANEL, async (_event, tab?: "chat" | "settings" | "debug") => {
+    services.window.showDetailPanel(tab)
+  })
+
+  ipcMain.handle(IPC_CHANNELS.WINDOW_HIDE_UI, async () => {
+    services.window.hideUiWindow()
   })
 
   /** Update API key (stays in main process) */

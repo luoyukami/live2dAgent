@@ -186,6 +186,30 @@ export function UiApp(): JSX.Element {
     }
   }, [settings?.emotion?.enabled])
 
+  /* ---- Listen to main process UI commands ---- */
+  useEffect(() => {
+    return window.petAgent.onUiCommand?.((command) => {
+      if (command.mode === "hidden") {
+        setShowInput(false)
+        setShowDetail(false)
+        return
+      }
+      if (command.mode === "compact") {
+        setShowInput(true)
+        setShowDetail(false)
+        setTimeout(() => textareaRef.current?.focus(), 0)
+        return
+      }
+      if (command.mode === "detail") {
+        setShowInput(false)
+        setShowDetail(true)
+        setDetailTab(command.tab ?? "chat")
+        if (command.tab === "debug") void refreshDebug()
+        return
+      }
+    })
+  }, [])
+
   /* Surface recorder errors to the user + main process debug state. */
   useEffect(() => {
     if (recorder.error) {
@@ -224,15 +248,13 @@ export function UiApp(): JSX.Element {
 
       if ((e.ctrlKey || e.metaKey) && e.shiftKey && e.key.toLowerCase() === "d") {
         e.preventDefault()
-        setShowDetail((prev) => {
-          const next = !prev
-          if (next) {
-            setDetailTab("debug")
-            setShowInput(false)
-            void refreshDebug()
-          }
-          return next
-        })
+        if (showDetail && detailTab === "debug") {
+          // If debug panel is already open, close it
+          void window.petAgent.hideUiWindow?.()
+        } else {
+          // Open debug panel
+          void window.petAgent.showDetailPanel?.("debug")
+        }
         return
       }
 
@@ -246,7 +268,7 @@ export function UiApp(): JSX.Element {
     }
     window.addEventListener("keydown", onKeyDown)
     return () => window.removeEventListener("keydown", onKeyDown)
-  }, [settings?.voice?.enabled, recorder.status])
+  }, [settings?.voice?.enabled, recorder.status, showDetail, detailTab])
 
   /* ---- Voice input handlers ---- */
 
@@ -445,7 +467,8 @@ export function UiApp(): JSX.Element {
       const updated = await window.petAgent.getSettings()
       setSettings(updated)
       setForm((prev) => ({ ...prev, apiKey: "" }))
-      setShowDetail(false)
+      // Don't close the panel after saving - keep it open
+      // If user wants to close, they can use the close button
     } catch (err) {
       setSettingsError("保存设置失败：" + (err as Error).message)
     }
@@ -566,14 +589,14 @@ export function UiApp(): JSX.Element {
             </button>
             <button
               className="icon-btn"
-              onClick={() => { setShowDetail(true); setShowInput(false); setDetailTab("chat") }}
+              onClick={() => void window.petAgent.showDetailPanel?.("chat")}
               title="展开详细界面"
             >
               ⛭
             </button>
             <button
               className="icon-btn"
-              onClick={() => setShowInput(false)}
+              onClick={() => void window.petAgent.hideUiWindow?.()}
               title="收起输入栏"
             >
               ⬇
@@ -638,7 +661,7 @@ export function UiApp(): JSX.Element {
               <button className="icon-btn" onClick={clearVisibleMessages} title="仅清空当前显示，不删除 trace">
                 清空
               </button>
-              <button className="icon-btn" onClick={() => setShowDetail(false)} title="返回简洁模式">
+              <button className="icon-btn" onClick={() => void window.petAgent.hideUiWindow?.()} title="返回简洁模式">
                 ✕
               </button>
             </div>
@@ -1109,7 +1132,7 @@ export function UiApp(): JSX.Element {
                   lastManualResult={lastManualResult}
                   onFillInput={fillInput}
                   onSendMessage={sendFromPreset}
-                  onClose={() => setShowDetail(false)}
+                  onClose={() => void window.petAgent.hideUiWindow?.()}
                   activeEmotion={currentEmotion}
                   onSimulateEmotion={(emotion) => setCurrentEmotion(emotion)}
                   onClearEmotion={() => setCurrentEmotion(null)}

@@ -16,10 +16,23 @@ export class WindowManager {
   private avatarWindow?: BrowserWindow
   private uiWindow?: BrowserWindow
 
+  /** Current UI mode for the dual-window UI window. */
+  private uiMode: "hidden" | "compact" | "detail" = "hidden"
+
+  /** Set to true when the app is quitting, to allow window destruction. */
+  private isQuitting = false
+
   /** Drag state for the combined window (single-window mode). */
   private dragTimer?: NodeJS.Timeout
   private dragStart?: { cursorX: number; cursorY: number; windowX: number; windowY: number }
   private lockedSize?: { width: number; height: number }
+
+  /** Timer for delayed hide to avoid race conditions. */
+  private hideTimer?: NodeJS.Timeout
+
+  /** User-configured panel dimensions. */
+  private panelWidth = 460
+  private panelHeight = 760
 
   // ════════════════════════════════════════════════════════════════
   //  Single-window (combined) mode — backward-compatible API
@@ -158,6 +171,8 @@ export class WindowManager {
     const { width: workWidth, height: workHeight } = display.workAreaSize
     const avatarWidth = clampWindowDimension(ui?.width, 360)
     const avatarHeight = clampWindowDimension(ui?.height, 720)
+    this.panelWidth = clampWindowDimension(ui?.panelWidth, 460)
+    this.panelHeight = clampWindowDimension(ui?.panelHeight, 760)
 
     // ── Avatar window ───────────────────────────────────────────
     this.avatarWindow = new BrowserWindow({
@@ -183,45 +198,29 @@ export class WindowManager {
     })
     this.avatarWindow.setMenuBarVisibility(false)
     this.avatarWindow.setMaximizable(false)
-    // Avatar window is non-interactive: clicks pass through to desktop
-    this.avatarWindow.setIgnoreMouseEvents(true, { forward: true })
     await this.loadRenderer(this.avatarWindow, "avatar")
 
     // ── UI window ───────────────────────────────────────────────
-    // Use persisted panel dimensions, clamped to the work area.
-    const WINDOW_GAP = 10
+    // Use compact input dimensions initially; will be resized when switching modes.
+    const COMPACT_WIDTH = 420
+    const COMPACT_HEIGHT = 80
 
-    const uiWidth = Math.min(clampWindowDimension(ui?.panelWidth, 460), Math.max(200, workWidth - WINDOW_GAP * 2))
-    const uiHeight = Math.min(clampWindowDimension(ui?.panelHeight, 760), Math.max(200, workHeight - WINDOW_GAP * 2))
-
-    // Prefer positioning the UI window to the left of the avatar window
-    // with a small gap, so the two windows do not overlap.
-    const avatarX = Math.max(0, workWidth - avatarWidth - 20)
-
-    let uiX = avatarX - WINDOW_GAP - uiWidth
-    if (uiX < 0) {
-      // Not enough room on the left — try right of the avatar instead.
-      uiX = avatarX + avatarWidth + WINDOW_GAP
-      if (uiX + uiWidth > workWidth) {
-        // Neither side works — place at the left edge of the work area.
-        uiX = WINDOW_GAP
-      }
-    }
-
-    // Vertically align the UI window bottom with the work area.
-    const uiY = Math.max(WINDOW_GAP, workHeight - uiHeight - 20)
+    const uiPos = this.positionBelowAvatar(COMPACT_WIDTH, COMPACT_HEIGHT)
 
     this.uiWindow = new BrowserWindow({
-      width: Math.round(uiWidth),
-      height: Math.round(uiHeight),
+      width: COMPACT_WIDTH,
+      height: COMPACT_HEIGHT,
       useContentSize: true,
-      x: Math.round(uiX),
-      y: Math.round(uiY),
-      transparent: false,
-      frame: true,
-      resizable: true,
+      x: uiPos.x,
+      y: uiPos.y,
+      show: false,           // <-- 启动时隐藏
+      transparent: true,     // <-- 支持透明
+      backgroundColor: "#00000000",
+      frame: false,          // <-- 无边框
+      resizable: false,
       alwaysOnTop: true,
-      skipTaskbar: false,
+      skipTaskbar: true,     // <-- 不在任务栏显示
+      hasShadow: false,
       webPreferences: {
         preload: join(__dirname, "../preload/index.js"),
         nodeIntegration: false,
@@ -230,6 +229,16 @@ export class WindowManager {
       },
     })
     this.uiWindow.setMenuBarVisibility(false)
+    this.uiWindow.setMaximizable(false)
+
+    // 阻止关闭时销毁，改为隐藏
+    this.uiWindow.on("close", (event) => {
+      if (!this.isQuitting) {
+        event.preventDefault()
+        this.hideUiWindow()
+      }
+    })
+
     await this.loadRenderer(this.uiWindow, "ui")
   }
 
@@ -312,8 +321,174 @@ export class WindowManager {
   }
 
   // ════════════════════════════════════════════════════════════════
+  //  Dual-window UI mode control
+  // ════════════════════════════════════════════════════════════════
+
+  /** Mark that the application is about to quit. */
+  setQuitting(): void {
+    this.isQuitting = true
+  }
+
+  /**
+   * Show the UI window in compact input mode.
+   * - Resizes to compact dimensions
+   * - Positions below/near the avatar window
+   * - Sends 'compact' command to renderer
+   */
+  showCompactInput(): void {
+    if (!this.uiWindow || this.uiWindow.isDestroyed()) return
+
+    // Clear any pending hide timer
+    clearTimeout(this.hideTimer)
+
+    const COMPACT_WIDTH = 420
+    const COMPACT_HEIGHT = 80
+
+    const uiPos = this.positionBelowAvatar(COMPACT_WIDTH, COMPACT_HEIGHT)
+
+    this.uiWindow.setResizable(false)
+    this.uiWindow.setSize(COMPACT_WIDTH, COMPACT_HEIGHT, false)
+    this.uiWindow.setPosition(uiPos.x, uiPos.y, false)
+    this.uiWindow.setSkipTaskbar(true)
+    this.uiWindow.show()
+    this.uiWindow.focus()
+
+    this.uiMode = "compact"
+    this.uiWindow.webContents.send(IPC_CHANNELS.WINDOW_UI_COMMAND, { mode: "compact" })
+  }
+
+  /**
+   * Show the UI window in detail panel mode.
+   * - Resizes to panel dimensions from settings
+   * - Positions to the left (or right) of the avatar window
+   * - Sends 'detail' command to renderer with tab
+   */
+  showDetailPanel(tab: "chat" | "settings" | "debug" = "chat"): void {
+    if (!this.uiWindow || this.uiWindow.isDestroyed()) return
+
+    // Clear any pending hide timer
+    clearTimeout(this.hideTimer)
+
+    const display = screen.getPrimaryDisplay()
+    const { width: workWidth, height: workHeight } = display.workAreaSize
+    const WINDOW_GAP = 10
+
+    // Get avatar window position
+    let avatarX = 100
+    let avatarY = 100
+    let avatarWidth = 360
+    let avatarHeight = 720
+    if (this.avatarWindow && !this.avatarWindow.isDestroyed()) {
+      ;[avatarX, avatarY] = this.avatarWindow.getPosition()
+      ;[avatarWidth, avatarHeight] = this.avatarWindow.getSize()
+    }
+
+    // Use configured panel dimensions, clamped to work area
+    const uiWidth = Math.min(this.panelWidth, Math.max(200, workWidth - WINDOW_GAP * 2))
+    const uiHeight = Math.min(this.panelHeight, Math.max(200, workHeight - WINDOW_GAP * 2))
+
+    // Try left of avatar first
+    let uiX = avatarX - WINDOW_GAP - uiWidth
+    let uiY = avatarY
+
+    if (uiX < 0) {
+      // Try right of avatar
+      uiX = avatarX + avatarWidth + WINDOW_GAP
+      if (uiX + uiWidth > workWidth) {
+        // Neither side works, use left edge
+        uiX = WINDOW_GAP
+      }
+    }
+
+    // Vertically align with avatar top, but ensure it fits
+    uiY = Math.max(WINDOW_GAP, Math.min(uiY, workHeight - uiHeight - WINDOW_GAP))
+
+    this.uiWindow.setResizable(true)
+    this.uiWindow.setSize(Math.round(uiWidth), Math.round(uiHeight), false)
+    this.uiWindow.setPosition(Math.round(uiX), Math.round(uiY), false)
+    this.uiWindow.setSkipTaskbar(false)
+    this.uiWindow.show()
+    this.uiWindow.focus()
+
+    this.uiMode = "detail"
+    this.uiWindow.webContents.send(IPC_CHANNELS.WINDOW_UI_COMMAND, { mode: "detail", tab })
+  }
+
+  /**
+   * Hide the UI window without destroying it.
+   * - Sends 'hidden' command to renderer first
+   * - Hides the window
+   * - Resets uiMode
+   */
+  hideUiWindow(): void {
+    if (!this.uiWindow || this.uiWindow.isDestroyed()) return
+
+    // Clear any pending hide timer
+    clearTimeout(this.hideTimer)
+
+    // Notify renderer before hiding
+    this.uiWindow.webContents.send(IPC_CHANNELS.WINDOW_UI_COMMAND, { mode: "hidden" })
+
+    // Small delay to allow renderer to process the command
+    this.hideTimer = setTimeout(() => {
+      if (this.uiWindow && !this.uiWindow.isDestroyed()) {
+        this.uiWindow.hide()
+      }
+    }, 50)
+
+    this.uiMode = "hidden"
+  }
+
+  /** Get the current UI mode. */
+  getUiMode(): "hidden" | "compact" | "detail" {
+    return this.uiMode
+  }
+
+  // ════════════════════════════════════════════════════════════════
   //  Private helpers
   // ════════════════════════════════════════════════════════════════
+
+  /**
+   * Set the panel dimensions from settings.
+   */
+  setPanelDimensions(width: number, height: number): void {
+    this.panelWidth = clampWindowDimension(width, 460)
+    this.panelHeight = clampWindowDimension(height, 760)
+  }
+
+  /**
+   * Calculate position for a window below the avatar, with fallback to above.
+   * Returns {x, y} clamped to the work area.
+   */
+  private positionBelowAvatar(width: number, height: number): { x: number; y: number } {
+    const display = screen.getPrimaryDisplay()
+    const { width: workWidth, height: workHeight } = display.workAreaSize
+    const WINDOW_GAP = 10
+
+    let avatarX = 100
+    let avatarY = 100
+    let avatarWidth = 360
+    let avatarHeight = 720
+    if (this.avatarWindow && !this.avatarWindow.isDestroyed()) {
+      ;[avatarX, avatarY] = this.avatarWindow.getPosition()
+      ;[avatarWidth, avatarHeight] = this.avatarWindow.getSize()
+    }
+
+    // Position below avatar, centered horizontally
+    let x = avatarX + Math.round((avatarWidth - width) / 2)
+    let y = avatarY + avatarHeight + WINDOW_GAP
+
+    // If below doesn't fit, try above
+    if (y + height > workHeight) {
+      y = avatarY - height - WINDOW_GAP
+    }
+
+    // Clamp to work area
+    x = Math.max(WINDOW_GAP, Math.min(x, workWidth - width - WINDOW_GAP))
+    y = Math.max(WINDOW_GAP, Math.min(y, workHeight - height - WINDOW_GAP))
+
+    return { x, y }
+  }
 
   /**
    * Load the renderer HTML/URL into `win`, optionally with a `?window=`

@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react"
+import { useEffect, useMemo, useRef, useState } from "react"
 import type { AgentEvent, AgentMessage } from "@live2d-agent/agent-core"
 import { mapEventToState, type AvatarState } from "@live2d-agent/live2d"
 import type { Emotion, Live2DEmotionProfile, PublicSettings } from "@live2d-agent/shared"
@@ -23,6 +23,9 @@ export function AvatarApp(): JSX.Element {
   const [compactAssistantBubbleVisible, setCompactAssistantBubbleVisible] = useState(false)
   const [messages, setMessages] = useState<AgentMessage[]>([])
   const [live2dReloadKey, setLive2dReloadKey] = useState(0)
+
+  const live2dRef = useRef<Live2DViewHandle>(null)
+  const pointerStateRef = useRef<{ pointerId: number; startX: number; startY: number; cancelled: boolean } | null>(null)
 
   /* ---- 1. Subscribe to agent events once ---- */
   useEffect(() => {
@@ -126,11 +129,46 @@ export function AvatarApp(): JSX.Element {
   }, [settings?.emotion?.enabled])
 
   /* ---- 7. Render: only Live2D stage + speech bubble ---- */
+
+  function handleStagePointerDown(event: React.PointerEvent<HTMLDivElement>): void {
+    if (event.button !== 0) return
+    if (!(live2dRef.current?.containsPoint(event.clientX, event.clientY) ?? false)) return
+    pointerStateRef.current = {
+      pointerId: event.pointerId,
+      startX: event.screenX,
+      startY: event.screenY,
+      cancelled: false,
+    }
+    event.currentTarget.setPointerCapture(event.pointerId)
+  }
+
+  function handleStagePointerMove(event: React.PointerEvent<HTMLDivElement>): void {
+    const state = pointerStateRef.current
+    if (!state || state.pointerId !== event.pointerId) return
+    const moved = Math.hypot(event.screenX - state.startX, event.screenY - state.startY)
+    if (moved > 8) state.cancelled = true
+  }
+
+  function handleStagePointerUp(event: React.PointerEvent<HTMLDivElement>): void {
+    const state = pointerStateRef.current
+    if (!state || state.pointerId !== event.pointerId) return
+    pointerStateRef.current = null
+    if (!state.cancelled) {
+      void window.petAgent.showCompactInput?.()
+    }
+  }
+
   return (
     <main className="shell">
       <section className="stage" data-state={status}>
-        <div className="stage-content">
+        <div
+          className="stage-content"
+          onPointerDown={handleStagePointerDown}
+          onPointerMove={handleStagePointerMove}
+          onPointerUp={handleStagePointerUp}
+        >
           <Live2DView
+            ref={live2dRef}
             key={live2dReloadKey}
             modelPath={settings?.live2d?.modelPath ?? ""}
             avatarState={status}

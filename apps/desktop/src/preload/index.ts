@@ -32,6 +32,21 @@ const api = {
   setMousePassthrough: (enabled: boolean): Promise<void> =>
     ipcRenderer.invoke(IPC_CHANNELS.WINDOW_SET_MOUSE_PASSTHROUGH, enabled),
 
+  /* ---- Dual-window UI control ---- */
+  showCompactInput: (): Promise<void> =>
+    ipcRenderer.invoke(IPC_CHANNELS.WINDOW_SHOW_COMPACT_INPUT),
+  showDetailPanel: (tab?: "chat" | "settings" | "debug"): Promise<void> =>
+    ipcRenderer.invoke(IPC_CHANNELS.WINDOW_SHOW_DETAIL_PANEL, tab),
+  hideUiWindow: (): Promise<void> =>
+    ipcRenderer.invoke(IPC_CHANNELS.WINDOW_HIDE_UI),
+  onUiCommand: (listener: (payload: { mode: "hidden" | "compact" | "detail"; tab?: "chat" | "settings" | "debug" }) => void) => {
+    const wrapped = (_event: Electron.IpcRendererEvent, payload: { mode: "hidden" | "compact" | "detail"; tab?: "chat" | "settings" | "debug" }) => listener(payload)
+    ipcRenderer.on(IPC_CHANNELS.WINDOW_UI_COMMAND, wrapped)
+    return () => {
+      ipcRenderer.removeListener(IPC_CHANNELS.WINDOW_UI_COMMAND, wrapped)
+    }
+  },
+
   /* ---- Agent events ---- */
   onAgentEvent: (listener: (event: AgentEvent) => void) => {
     const wrapped = (_event: Electron.IpcRendererEvent, payload: AgentEvent) => listener(payload)

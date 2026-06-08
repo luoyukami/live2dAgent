@@ -39,6 +39,12 @@ export const IPC_CHANNELS = {
   WINDOW_DRAG_END: "window:drag-end",
   WINDOW_SET_MOUSE_PASSTHROUGH: "window:set-mouse-passthrough",
 
+  /* ---- Dual-window UI control ---- */
+  WINDOW_SHOW_COMPACT_INPUT: "window:show-compact-input",
+  WINDOW_SHOW_DETAIL_PANEL: "window:show-detail-panel",
+  WINDOW_HIDE_UI: "window:hide-ui",
+  WINDOW_UI_COMMAND: "window:ui-command",
+
   /* ---- Debug / Trace / Manual Action (Phase 2) ---- */
   DEBUG_GET_SNAPSHOT: "debug:get-snapshot",
   TRACE_GET_EVENTS: "trace:get-events",
