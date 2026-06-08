@@ -205,8 +205,8 @@ export class WindowManager {
 
     if (this.cachedAvatarHitRects.length === 0) {
       // No hit regions — make the whole window pass-through
-      this.avatarWindow.setShape([])
       this.setAvatarIgnoreMouseEvents(true, "empty-shape")
+      this.avatarWindow.setShape([])
       return
     }
 

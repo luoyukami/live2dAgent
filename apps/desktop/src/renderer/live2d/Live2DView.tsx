@@ -20,6 +20,7 @@ let cubismCorePromise: Promise<void> | null = null
 let cubismCoreScript: HTMLScriptElement | null = null
 const MODEL_HIT_REGION_PADDING_PX = 8
 const MODEL_HIT_REGION_SAMPLE_STEP_PX = 10
+const MODEL_HIT_REGION_MAX_RECTS = 240
 
 /* ------------------------------------------------------------------ */
 /*  Model-specific load quirks                                         */
@@ -477,10 +478,10 @@ export const Live2DView = forwardRef<Live2DViewHandle, Live2DViewProps>(function
     const app = appRef.current
 
     if (model && container && app) {
-      // Model state: return approximate model bounds in viewport coordinates
+      // Model state: return BrowserWindow content-local hit rects.
       try {
-        const sampled = getSampledHitTestRect(model, container)
-        if (sampled) return [sampled]
+        const sampled = getSampledHitTestRects(model, container)
+        if (sampled.length > 0) return sampled
 
         // Try model.getBounds() first (pixi-live2d-display)
         let bounds: { x: number; y: number; width: number; height: number } | null = null
@@ -503,32 +504,32 @@ export const Live2DView = forwardRef<Live2DViewHandle, Live2DViewProps>(function
           }
         }
 
-        // Convert from PIXI local coords to viewport coords via container bounding rect
         const containerRect = container.getBoundingClientRect()
+        const rootRect = getWindowContentRootRect()
         // PIXI screen coordinates are logical CSS pixels even when the renderer
         // uses a higher devicePixelRatio backing store.
         const scaleX = containerRect.width / (app.screen.width || containerRect.width || 1)
         const scaleY = containerRect.height / (app.screen.height || containerRect.height || 1)
 
-        const viewportRect: AvatarHitRegionRect = {
-          x: Math.round(containerRect.left + bounds.x * scaleX),
-          y: Math.round(containerRect.top + bounds.y * scaleY),
+        const localRect: AvatarHitRegionRect = {
+          x: Math.round(containerRect.left - rootRect.left + bounds.x * scaleX),
+          y: Math.round(containerRect.top - rootRect.top + bounds.y * scaleY),
           width: Math.round(bounds.width * scaleX),
           height: Math.round(bounds.height * scaleY),
         }
 
         const paddedRect = {
-          x: viewportRect.x - MODEL_HIT_REGION_PADDING_PX,
-          y: viewportRect.y - MODEL_HIT_REGION_PADDING_PX,
-          width: viewportRect.width + MODEL_HIT_REGION_PADDING_PX * 2,
-          height: viewportRect.height + MODEL_HIT_REGION_PADDING_PX * 2,
+          x: localRect.x - MODEL_HIT_REGION_PADDING_PX,
+          y: localRect.y - MODEL_HIT_REGION_PADDING_PX,
+          width: localRect.width + MODEL_HIT_REGION_PADDING_PX * 2,
+          height: localRect.height + MODEL_HIT_REGION_PADDING_PX * 2,
         }
 
-        // Clip to container viewport rect
-        const crLeft = Math.round(containerRect.left)
-        const crTop = Math.round(containerRect.top)
-        const crRight = Math.round(containerRect.right)
-        const crBottom = Math.round(containerRect.bottom)
+        // Clip to the container bounds, still in window content-local coords.
+        const crLeft = Math.round(containerRect.left - rootRect.left)
+        const crTop = Math.round(containerRect.top - rootRect.top)
+        const crRight = Math.round(containerRect.right - rootRect.left)
+        const crBottom = Math.round(containerRect.bottom - rootRect.top)
 
         const clippedX = Math.max(paddedRect.x, crLeft)
         const clippedY = Math.max(paddedRect.y, crTop)
@@ -545,11 +546,12 @@ export const Live2DView = forwardRef<Live2DViewHandle, Live2DViewProps>(function
 
     // Fallback state: return fallback DOM element rect
     const fallback = fallbackRef.current
-    if (fallback) {
+    if (fallback && container) {
+      const rootRect = getWindowContentRootRect()
       const rect = fallback.getBoundingClientRect()
       const r: AvatarHitRegionRect = {
-        x: Math.round(rect.left),
-        y: Math.round(rect.top),
+        x: Math.round(rect.left - rootRect.left),
+        y: Math.round(rect.top - rootRect.top),
         width: Math.round(rect.width),
         height: Math.round(rect.height),
       }
@@ -559,54 +561,92 @@ export const Live2DView = forwardRef<Live2DViewHandle, Live2DViewProps>(function
     return []
   }
 
-  function getSampledHitTestRect(model: InstanceType<any>, container: HTMLDivElement): AvatarHitRegionRect | null {
-    if (typeof model.hitTest !== "function") return null
+  function getSampledHitTestRects(model: InstanceType<any>, container: HTMLDivElement): AvatarHitRegionRect[] {
+    if (typeof model.hitTest !== "function") return []
 
     const hitAreas = collectHitAreas(model)
-    if (hitAreas.length === 0) return null
+    if (hitAreas.length === 0) return []
 
     const containerRect = container.getBoundingClientRect()
+    const rootRect = getWindowContentRootRect()
     const bounds = getModelLocalBounds(model, containerRect)
-    if (!bounds) return null
+    if (!bounds) return []
 
     const startX = Math.max(0, Math.floor(bounds.x))
     const startY = Math.max(0, Math.floor(bounds.y))
     const endX = Math.min(containerRect.width, Math.ceil(bounds.x + bounds.width))
     const endY = Math.min(containerRect.height, Math.ceil(bounds.y + bounds.height))
-    if (endX <= startX || endY <= startY) return null
+    if (endX <= startX || endY <= startY) return []
 
-    let minX = Number.POSITIVE_INFINITY
-    let minY = Number.POSITIVE_INFINITY
-    let maxX = Number.NEGATIVE_INFINITY
-    let maxY = Number.NEGATIVE_INFINITY
+    const offsetX = containerRect.left - rootRect.left
+    const offsetY = containerRect.top - rootRect.top
+    const pad = MODEL_HIT_REGION_PADDING_PX
+    const rects: AvatarHitRegionRect[] = []
 
     for (let y = startY; y <= endY; y += MODEL_HIT_REGION_SAMPLE_STEP_PX) {
+      let runStart: number | null = null
       for (let x = startX; x <= endX; x += MODEL_HIT_REGION_SAMPLE_STEP_PX) {
-        if (!hitTestModelAreas(model, hitAreas, x, y)) continue
-        minX = Math.min(minX, x)
-        minY = Math.min(minY, y)
-        maxX = Math.max(maxX, x)
-        maxY = Math.max(maxY, y)
+        const hit = hitTestModelAreas(model, hitAreas, x, y)
+        if (hit && runStart === null) {
+          runStart = x
+        }
+
+        const isLastSample = x + MODEL_HIT_REGION_SAMPLE_STEP_PX > endX
+        if ((!hit || isLastSample) && runStart !== null) {
+          const runEnd = hit ? Math.min(endX, x + MODEL_HIT_REGION_SAMPLE_STEP_PX) : x
+          const localX = Math.max(0, runStart - pad)
+          const localY = Math.max(0, y - pad)
+          const localRight = Math.min(containerRect.width, runEnd + pad)
+          const localBottom = Math.min(containerRect.height, y + MODEL_HIT_REGION_SAMPLE_STEP_PX + pad)
+          const rect = {
+            x: Math.round(offsetX + localX),
+            y: Math.round(offsetY + localY),
+            width: Math.round(localRight - localX),
+            height: Math.round(localBottom - localY),
+          }
+          if (rect.width > 0 && rect.height > 0) rects.push(rect)
+          runStart = null
+        }
       }
     }
 
-    if (!Number.isFinite(minX) || !Number.isFinite(minY) || !Number.isFinite(maxX) || !Number.isFinite(maxY)) return null
+    return mergeNearbyRects(rects).slice(0, MODEL_HIT_REGION_MAX_RECTS)
+  }
 
-    const pad = MODEL_HIT_REGION_PADDING_PX + MODEL_HIT_REGION_SAMPLE_STEP_PX
-    const localX = Math.max(0, minX - pad)
-    const localY = Math.max(0, minY - pad)
-    const localRight = Math.min(containerRect.width, maxX + pad)
-    const localBottom = Math.min(containerRect.height, maxY + pad)
-    const width = Math.round(localRight - localX)
-    const height = Math.round(localBottom - localY)
-    if (width <= 0 || height <= 0) return null
-
-    return {
-      x: Math.round(containerRect.left + localX),
-      y: Math.round(containerRect.top + localY),
-      width,
-      height,
+  function mergeNearbyRects(rects: AvatarHitRegionRect[]): AvatarHitRegionRect[] {
+    const sorted = [...rects].sort((a, b) => a.x - b.x || a.y - b.y)
+    const merged: AvatarHitRegionRect[] = []
+    for (const rect of sorted) {
+      const last = merged[merged.length - 1]
+      if (last && canMergeVerticalRuns(last, rect)) {
+        const left = Math.min(last.x, rect.x)
+        const top = Math.min(last.y, rect.y)
+        const right = Math.max(last.x + last.width, rect.x + rect.width)
+        const bottom = Math.max(last.y + last.height, rect.y + rect.height)
+        last.x = left
+        last.y = top
+        last.width = right - left
+        last.height = bottom - top
+      } else {
+        merged.push({ ...rect })
+      }
     }
+    return merged
+  }
+
+  function canMergeVerticalRuns(a: AvatarHitRegionRect, b: AvatarHitRegionRect): boolean {
+    const tolerance = MODEL_HIT_REGION_SAMPLE_STEP_PX
+    const aRight = a.x + a.width
+    const bRight = b.x + b.width
+    return (
+      Math.abs(a.x - b.x) <= tolerance &&
+      Math.abs(aRight - bRight) <= tolerance &&
+      b.y <= a.y + a.height + tolerance
+    )
+  }
+
+  function getWindowContentRootRect(): Pick<DOMRect, "left" | "top"> {
+    return document.documentElement.getBoundingClientRect()
   }
 
   function getModelLocalBounds(

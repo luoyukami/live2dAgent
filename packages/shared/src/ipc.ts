@@ -79,7 +79,10 @@ export interface IpcToolRequest {
   args: unknown
 }
 
-/** Axis-aligned rectangle for avatar hit regions (all values in logical pixels). */
+/**
+ * Axis-aligned rectangle for avatar hit regions.
+ * Coordinates are logical pixels relative to the avatar BrowserWindow content origin.
+ */
 export interface AvatarHitRegionRect {
   x: number
   y: number
