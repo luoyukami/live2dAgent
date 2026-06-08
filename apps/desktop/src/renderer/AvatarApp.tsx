@@ -3,61 +3,14 @@ import type { AgentEvent, AgentMessage } from "@live2d-agent/agent-core"
 import { mapEventToState, type AvatarState } from "@live2d-agent/live2d"
 import type { Emotion, Live2DEmotionProfile, PublicSettings } from "@live2d-agent/shared"
 import { Live2DView, type Live2DViewHandle } from "./live2d/Live2DView"
-
-/* ------------------------------------------------------------------ */
-/*  Constants                                                          */
-/* ------------------------------------------------------------------ */
-
-const EMOTION_IDLE_REVERT_MS = 20_000
-const IDLE_EMOTION: Emotion = "neutral"
-
-/* ------------------------------------------------------------------ */
-/*  Helper functions (pure, copied from App.tsx)                       */
-/* ------------------------------------------------------------------ */
-
-function hasVisibleText(message: AgentMessage): boolean {
-  if (typeof message.content === "string") return message.content.trim().length > 0
-  return Array.isArray(message.content) && message.content.length > 0
-}
-
-function messageContentToText(message: AgentMessage): string {
-  if (typeof message.content === "string") return message.content
-  return message.content.map((block) => {
-    if (block.type === "text") return block.text ?? ""
-    if (block.type === "image_url") return "[图片输入]"
-    if (block.type === "input_audio") return "[音频输入]"
-    return JSON.stringify(block)
-  }).filter(Boolean).join("\n")
-}
-
-function summarize(text: string, max = 240): string {
-  if (text.length <= max) return text
-  return `${text.slice(0, max)}…`
-}
-
-function shouldRenderAddedMessage(message: AgentMessage): boolean {
-  if (message.role !== "assistant") return true
-  return hasVisibleText(message)
-}
-
-function mergeAddedMessage(items: AgentMessage[], message: AgentMessage): AgentMessage[] {
-  const existingIndex = items.findIndex((item) => item.id === message.id)
-
-  if (!shouldRenderAddedMessage(message)) {
-    return existingIndex >= 0 ? items.filter((item) => item.id !== message.id) : items
-  }
-
-  if (existingIndex < 0) return [...items, message]
-
-  return items.map((item, index) => {
-    if (index !== existingIndex) return item
-    return {
-      ...item,
-      ...message,
-      content: hasVisibleText(message) ? message.content : item.content,
-    }
-  })
-}
+import {
+  EMOTION_IDLE_REVERT_MS,
+  IDLE_EMOTION,
+  hasVisibleText,
+  messageContentToText,
+  summarize,
+  mergeAddedMessage,
+} from "./renderer-shared"
 
 /* ------------------------------------------------------------------ */
 /*  AvatarApp — Live2D‑only window root component                      */

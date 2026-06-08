@@ -4,117 +4,32 @@ import type { AgentEvent, AgentMessage, AgentAction, AudioContextAttachment } fr
 import { mapEventToState, type AvatarState } from "@live2d-agent/live2d"
 import {
   EMOTION_VALUES,
-  DEFAULT_PROMPT_PRESET_SETTINGS,
   type Emotion,
-  type EmotionSettings,
-  type PromptPresetSettings,
   type PublicSettings,
   type ReasoningEffort,
   type DebugSnapshot,
-  type VoiceInputSettings,
 } from "@live2d-agent/shared"
 import { Live2DView, type Live2DViewHandle } from "./live2d/Live2DView"
 import { DebugPanel } from "./components/DebugPanel"
+import { MessageBubble } from "./components/MessageBubble"
+import { ApprovalBubble } from "./components/ApprovalBubble"
 import { AudioAttachmentCard } from "./components/AudioAttachmentCard"
 import { RecorderButton } from "./components/RecorderButton"
 import { useAudioRecorder } from "./audio/useAudioRecorder"
-
-interface SettingsForm {
-  mode: PublicSettings["mode"]
-  openaiBaseUrl: string
-  openaiModel: string
-  reasoningEffort: ReasoningEffort
-  apiKey: string
-  workspaceDir: string
-  live2dModelPath: string
-  permissionMode: PublicSettings["permissions"]["mode"]
-  windowWidth: string
-  windowHeight: string
-  promptPresets: PromptPresetSettings
-  emotion: EmotionSettings
-  voice: VoiceInputSettings
-}
-
-const HOTKEY_HINT =
-  "v0 快捷键仅在窗口聚焦时生效。当前实现固定为 Ctrl/Cmd + Alt + V，设置中保存的字符串仅用于显示和未来扩展。"
-
-const EMOTION_IDLE_REVERT_MS = 20_000
-const IDLE_EMOTION: Emotion = "neutral"
-
-const RISK_TEXT: Record<string, string> = {
-  safe: "安全操作",
-  workspace_read: "读取工作区文件",
-  workspace_write: "写入工作区文件，需要确认",
-  screen_read: "读取屏幕截图，可能包含隐私信息",
-  clipboard_read: "读取剪贴板，可能包含敏感信息",
-  clipboard_write: "修改剪贴板内容",
-  shell: "执行命令，可能修改文件或运行程序",
-  dangerous: "高风险操作，默认拒绝",
-}
-
-function hasVisibleText(message: AgentMessage): boolean {
-  if (typeof message.content === "string") return message.content.trim().length > 0
-  return Array.isArray(message.content) && message.content.length > 0
-}
-
-function shouldRenderAddedMessage(message: AgentMessage): boolean {
-  if (message.role !== "assistant") return true
-  return hasVisibleText(message)
-}
-
-function normalizeFormDimension(value: string, fallback: number): number {
-  const parsed = Number(value)
-  if (!Number.isFinite(parsed)) return fallback
-  return Math.round(Math.min(4000, Math.max(200, parsed)))
-}
-
-function mergeAddedMessage(items: AgentMessage[], message: AgentMessage): AgentMessage[] {
-  const existingIndex = items.findIndex((item) => item.id === message.id)
-
-  if (!shouldRenderAddedMessage(message)) {
-    return existingIndex >= 0 ? items.filter((item) => item.id !== message.id) : items
-  }
-
-  if (existingIndex < 0) return [...items, message]
-
-  return items.map((item, index) => {
-    if (index !== existingIndex) return item
-    return {
-      ...item,
-      ...message,
-      content: hasVisibleText(message) ? message.content : item.content,
-    }
-  })
-}
-
-function defaultForm(): SettingsForm {
-  return {
-    mode: "confirm",
-    openaiBaseUrl: "",
-    openaiModel: "",
-    reasoningEffort: "low",
-    apiKey: "",
-    workspaceDir: "",
-    live2dModelPath: "",
-    permissionMode: "permissive",
-    windowWidth: "360",
-    windowHeight: "720",
-    promptPresets: { ...DEFAULT_PROMPT_PRESET_SETTINGS },
-    emotion: {
-      enabled: true,
-      injectPrompt: true,
-      defaultEmotion: "neutral",
-      stripTagWhenDisabled: true,
-    },
-    voice: {
-      enabled: true,
-      audioInputEnabled: true,
-      preferredFormat: "wav",
-      maxDurationMs: 30_000,
-      pushToTalkHotkey: "CommandOrControl+Alt+V",
-    },
-  }
-}
+import {
+  SettingsForm,
+  HOTKEY_HINT,
+  EMOTION_IDLE_REVERT_MS,
+  IDLE_EMOTION,
+  hasVisibleText,
+  normalizeFormDimension,
+  mergeAddedMessage,
+  defaultForm,
+  formatAttachmentLabel,
+  formatAttachmentSubLabel,
+  messageContentToText,
+  summarize,
+} from "./renderer-shared"
 
 export function App(): JSX.Element {
   const [messages, setMessages] = useState<AgentMessage[]>([])
@@ -427,16 +342,6 @@ export function App(): JSX.Element {
   function handleRemoveAttachment(id: string): void {
     setAttachments((prev) => prev.filter((a) => a.id !== id))
     void window.petAgent.appendTraceEvent?.({ type: "audio.attachment.removed", attachmentId: id })
-  }
-
-  function formatAttachmentLabel(att: AudioContextAttachment): string {
-    const seconds = (att.durationMs / 1000).toFixed(1)
-    return `录音 ${seconds}s · ${att.mimeType.replace("audio/", "")}`
-  }
-
-  function formatAttachmentSubLabel(att: AudioContextAttachment): string {
-    const sizeKb = (att.artifact.size / 1024).toFixed(1)
-    return `${att.artifact.path.split(/[\\/]/).pop()} · ${sizeKb} KB`
   }
 
   /* ---- Send flow ---- */
@@ -1296,110 +1201,3 @@ export function App(): JSX.Element {
   )
 }
 
-function MessageBubble({ message }: { message: AgentMessage }): JSX.Element {
-  const [expanded, setExpanded] = useState(message.role !== "tool")
-  const text = messageContentToText(message)
-  const isError = Boolean(message.extra?.error) || /^(API error|Network error|Invalid JSON|Model returned|Error executing)/i.test(text)
-  const audioAttachments = (message.attachments ?? []).filter((a) => a.type === "audio")
-
-  async function copy(): Promise<void> {
-    await navigator.clipboard.writeText(text)
-  }
-
-  return (
-    <article className={`bubble ${message.role} ${isError ? "error" : ""}`}>
-      <div className="message-head">
-        <b>{message.role}</b>
-        <div className="message-actions">
-          {message.role === "tool" && (
-            <button className="ghost-btn" onClick={() => setExpanded((value) => !value)}>
-              {expanded ? "折叠" : "展开"}
-            </button>
-          )}
-          <button className="ghost-btn" onClick={() => void copy()}>复制</button>
-        </div>
-      </div>
-      {audioAttachments.length > 0 && (
-        <div className="message-attachments">
-          {audioAttachments.map((att) => (
-            <AudioAttachmentCard
-              key={att.id}
-              label={`录音 ${(att.durationMs / 1000).toFixed(1)}s`}
-              subLabel={`${att.mimeType} · ${(att.artifact.size / 1024).toFixed(1)} KB`}
-            />
-          ))}
-        </div>
-      )}
-      {expanded ? <p>{text}</p> : <p className="tool-summary">{summarize(text, 160)}</p>}
-    </article>
-  )
-}
-
-function ApprovalBubble({ action }: { action: AgentAction }): JSX.Element {
-  const risk = riskForTool(action.tool)
-  const args = asRecord(action.args)
-  const allowLabel = risk === "screen_read" ? "允许本会话" : "允许"
-
-  return (
-    <article className="approval">
-      <div className="approval-head">
-        <b>请求权限：{action.tool}</b>
-        <span className={`risk-badge ${risk}`}>{risk}</span>
-      </div>
-      <small>{RISK_TEXT[risk]}</small>
-      <div className="approval-summary">{renderActionSummary(action.tool, args)}</div>
-      <details>
-        <summary>查看完整参数</summary>
-        <code>{JSON.stringify(action.args, null, 2)}</code>
-      </details>
-      <div className="approval-actions">
-        <button onClick={() => window.petAgent.approveAction(action.id)}>{allowLabel}</button>
-        <button className="danger-btn" onClick={() => window.petAgent.denyAction(action.id, "User denied this tool-call round")}>拒绝本轮工具调用</button>
-      </div>
-    </article>
-  )
-}
-
-function renderActionSummary(tool: string, args: Record<string, unknown>): JSX.Element {
-  if (tool === "shell.run") {
-    return <><span>命令：{String(args.command ?? "")}</span><span>工作目录：{String(args.cwd ?? "workspace")}</span></>
-  }
-  if (tool === "file.write") {
-    return <><span>目标路径：{String(args.path ?? "")}</span><span>内容摘要：{summarize(String(args.content ?? ""), 180)}</span></>
-  }
-  if (tool === "file.read") return <span>读取路径：{String(args.path ?? "")}</span>
-  if (tool === "clipboard.read") return <span>助手请求读取剪贴板，可能包含密码、令牌或隐私内容。</span>
-  if (tool === "clipboard.write") return <span>写入剪贴板：{summarize(String(args.text ?? ""), 180)}</span>
-  if (tool === "screenshot.capture") return <span>助手请求读取当前屏幕截图用于分析屏幕内容。</span>
-  return <span>{summarize(JSON.stringify(args), 220)}</span>
-}
-
-function messageContentToText(message: AgentMessage): string {
-  if (typeof message.content === "string") return message.content
-  return message.content.map((block) => {
-    if (block.type === "text") return block.text ?? ""
-    if (block.type === "image_url") return "[图片输入]"
-    if (block.type === "input_audio") return "[音频输入]"
-    return JSON.stringify(block)
-  }).filter(Boolean).join("\n")
-}
-
-function riskForTool(tool: string): string {
-  if (tool === "shell.run") return "shell"
-  if (tool === "file.write") return "workspace_write"
-  if (tool === "file.read") return "workspace_read"
-  if (tool === "clipboard.read") return "clipboard_read"
-  if (tool === "clipboard.write") return "clipboard_write"
-  if (tool === "screenshot.capture") return "screen_read"
-  if (tool === "task.finish") return "safe"
-  return "dangerous"
-}
-
-function asRecord(value: unknown): Record<string, unknown> {
-  return value && typeof value === "object" ? value as Record<string, unknown> : {}
-}
-
-function summarize(text: string, max = 240): string {
-  if (text.length <= max) return text
-  return `${text.slice(0, max)}…`
-}
