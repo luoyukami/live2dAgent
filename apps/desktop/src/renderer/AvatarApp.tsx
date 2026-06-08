@@ -176,7 +176,7 @@ export function AvatarApp(): JSX.Element {
     if (!state || state.pointerId !== event.pointerId) return
     pointerStateRef.current = null
     if (!state.cancelled) {
-      void window.petAgent.showCompactInput?.()
+      void window.petAgent.showCompactInput?.({ screenX: event.screenX, screenY: event.screenY })
     }
   }
 

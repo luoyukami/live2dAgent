@@ -65,6 +65,13 @@ export interface IpcSetAgentModeRequest {
   mode: AgentMode
 }
 
+export interface CompactInputAnchor {
+  /** Screen-space X coordinate where the user clicked the avatar. */
+  screenX: number
+  /** Screen-space Y coordinate where the user clicked the avatar. */
+  screenY: number
+}
+
 /** Generic payload for tool-execution IPC calls */
 export interface IpcToolRequest {
   actionId: string

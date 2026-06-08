@@ -1,7 +1,7 @@
 import { contextBridge, ipcRenderer } from "electron"
 import { IPC_CHANNELS } from "@live2d-agent/shared"
 import type { AgentEvent } from "@live2d-agent/agent-core"
-import type { PublicSettings, AppSettingsPublicPatch, DebugSnapshot, IpcSaveAudioRecordingRequest, IpcSaveAudioRecordingResponse, IpcSendUserMessageRequest } from "@live2d-agent/shared"
+import type { PublicSettings, AppSettingsPublicPatch, DebugSnapshot, IpcSaveAudioRecordingRequest, IpcSaveAudioRecordingResponse, IpcSendUserMessageRequest, CompactInputAnchor } from "@live2d-agent/shared"
 
 const api = {
   /* ---- Agent ---- */
@@ -33,8 +33,8 @@ const api = {
     ipcRenderer.invoke(IPC_CHANNELS.WINDOW_SET_MOUSE_PASSTHROUGH, enabled, windowType),
 
   /* ---- Dual-window UI control ---- */
-  showCompactInput: (): Promise<void> =>
-    ipcRenderer.invoke(IPC_CHANNELS.WINDOW_SHOW_COMPACT_INPUT),
+  showCompactInput: (anchor?: CompactInputAnchor): Promise<void> =>
+    ipcRenderer.invoke(IPC_CHANNELS.WINDOW_SHOW_COMPACT_INPUT, anchor),
   showDetailPanel: (tab?: "chat" | "settings" | "debug"): Promise<void> =>
     ipcRenderer.invoke(IPC_CHANNELS.WINDOW_SHOW_DETAIL_PANEL, tab),
   hideUiWindow: (): Promise<void> =>

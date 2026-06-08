@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from "react"
-import type { PointerEvent as ReactPointerEvent } from "react"
+import type { CSSProperties, PointerEvent as ReactPointerEvent } from "react"
 import type { AgentEvent, AgentMessage, AgentAction, AudioContextAttachment } from "@live2d-agent/agent-core"
 import { mapEventToState, type AvatarState } from "@live2d-agent/live2d"
 import {
@@ -30,6 +30,32 @@ import {
   messageContentToText,
   summarize,
 } from "./renderer-shared"
+
+const COMPACT_INPUT_WIDTH = 420
+const COMPACT_INPUT_HEIGHT = 150
+const COMPACT_INPUT_GAP = 10
+
+function clamp(value: number, min: number, max: number): number {
+  return Math.max(min, Math.min(value, max))
+}
+
+function getCompactInputPosition(clientX: number, clientY: number): { x: number; y: number } {
+  const compactWidth = Math.min(COMPACT_INPUT_WIDTH, Math.max(0, window.innerWidth - COMPACT_INPUT_GAP * 2))
+  const minX = compactWidth / 2
+  const maxX = window.innerWidth - compactWidth / 2
+  const minY = COMPACT_INPUT_GAP
+  const maxY = window.innerHeight - COMPACT_INPUT_GAP - COMPACT_INPUT_HEIGHT
+
+  let y = clientY + COMPACT_INPUT_GAP
+  if (y > maxY) {
+    y = clientY - COMPACT_INPUT_HEIGHT - COMPACT_INPUT_GAP
+  }
+
+  return {
+    x: clamp(clientX, minX, Math.max(minX, maxX)),
+    y: clamp(y, minY, Math.max(minY, maxY)),
+  }
+}
 
 export function App(): JSX.Element {
   const [messages, setMessages] = useState<AgentMessage[]>([])
@@ -75,6 +101,7 @@ export function App(): JSX.Element {
   const [detailTab, setDetailTab] = useState<"chat" | "settings" | "debug">("chat")
   const [activeSettingsSection, setActiveSettingsSection] = useState<"general" | "presets" | "emotion" | "voice">("general")
   const [compactAssistantBubbleVisible, setCompactAssistantBubbleVisible] = useState(false)
+  const [compactInputPosition, setCompactInputPosition] = useState<{ x: number; y: number } | null>(null)
 
   useEffect(() => {
     if (showInput || showDetail) {
@@ -558,7 +585,10 @@ export function App(): JSX.Element {
     const state = dragStateRef.current
     if (!state || state.pointerId !== event.pointerId) return
     finishPointerInteraction()
-    if (!state.dragging && !state.cancelled) setShowInput(true)
+    if (!state.dragging && !state.cancelled) {
+      setCompactInputPosition(getCompactInputPosition(event.clientX, event.clientY))
+      setShowInput(true)
+    }
   }
 
   function handleStagePointerCancel(event: ReactPointerEvent<HTMLDivElement>): void {
@@ -593,6 +623,9 @@ export function App(): JSX.Element {
     [messages],
   )
   const latestAssistantText = latestAssistantMessage ? messageContentToText(latestAssistantMessage).trim() : ""
+  const compactBarStyle = compactInputPosition
+    ? ({ "--compact-x": `${compactInputPosition.x}px`, "--compact-y": `${compactInputPosition.y}px` } as CSSProperties)
+    : undefined
 
   useEffect(() => {
     if (!latestAssistantMessage || latestAssistantText.length === 0) {
@@ -647,7 +680,7 @@ export function App(): JSX.Element {
 
       {/* Compact input bar */}
       {showInput && (
-        <div className="compact-bar">
+        <div className="compact-bar" style={compactBarStyle}>
           <div className="compact-bar-inner">
             <textarea
               ref={textareaRef}
@@ -1246,4 +1279,3 @@ export function App(): JSX.Element {
     </main>
   )
 }
-

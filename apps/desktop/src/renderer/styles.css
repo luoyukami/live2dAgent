@@ -179,15 +179,15 @@ textarea,
 
 .compact-bar {
   position: fixed;
-  bottom: 20px;
-  left: 50%;
+  top: var(--compact-y, 10px);
+  left: var(--compact-x, 50%);
   transform: translateX(-50%);
   z-index: 100;
   display: flex;
   flex-direction: column;
   gap: 6px;
   -webkit-app-region: no-drag;
-  animation: slideInBottom 0.18s ease both;
+  animation: compactBarIn 0.18s ease both;
 }
 .compact-bar-inner {
   display: flex;
@@ -199,10 +199,13 @@ textarea,
   border: 1px solid var(--border-subtle);
   box-shadow: var(--shadow-md);
   backdrop-filter: blur(20px);
-  min-width: 360px;
+  width: min(420px, calc(100vw - 20px));
+  min-width: min(360px, calc(100vw - 20px));
   max-width: 460px;
 }
 .compact-bar textarea {
+  flex: 1 1 auto;
+  min-width: 0;
   min-height: 36px;
   max-height: 82px;
   resize: none;
@@ -750,9 +753,9 @@ footer { flex-direction: column; align-items: stretch; gap: 6px; }
   from { opacity: 0; transform: translateY(8px); }
   to { opacity: 1; transform: translateY(0); }
 }
-@keyframes slideInBottom {
-  from { opacity: 0; transform: translateY(18px) scale(0.98); }
-  to { opacity: 1; transform: translateY(0) scale(1); }
+@keyframes compactBarIn {
+  from { opacity: 0; transform: translateX(-50%) translateY(18px) scale(0.98); }
+  to { opacity: 1; transform: translateX(-50%) translateY(0) scale(1); }
 }
 @keyframes speechBubbleIn {
   from { opacity: 0; transform: translateX(-50%) translateY(-6px) scale(0.98); }

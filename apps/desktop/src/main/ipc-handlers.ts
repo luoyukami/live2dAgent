@@ -1,5 +1,5 @@
 import { ipcMain, shell } from "electron"
-import { IPC_CHANNELS, type AudioContextAttachment, type AudioMimeType, type AudioArtifactRef, type DebugSnapshot } from "@live2d-agent/shared"
+import { IPC_CHANNELS, type AudioContextAttachment, type AudioMimeType, type AudioArtifactRef, type CompactInputAnchor, type DebugSnapshot } from "@live2d-agent/shared"
 import type { AgentEvent } from "@live2d-agent/agent-core"
 import type { AgentService } from "./services/agent-service.js"
 import type { ArtifactStore } from "./services/artifact-store.js"
@@ -126,8 +126,8 @@ export function registerIpcHandlers(services: IpcServices): void {
   })
 
   /* ---- Dual-window UI control ---- */
-  ipcMain.handle(IPC_CHANNELS.WINDOW_SHOW_COMPACT_INPUT, async () => {
-    services.window.showCompactInput()
+  ipcMain.handle(IPC_CHANNELS.WINDOW_SHOW_COMPACT_INPUT, async (_event, anchor?: CompactInputAnchor) => {
+    services.window.showCompactInput(anchor)
   })
 
   ipcMain.handle(IPC_CHANNELS.WINDOW_SHOW_DETAIL_PANEL, async (_event, tab?: "chat" | "settings" | "debug") => {

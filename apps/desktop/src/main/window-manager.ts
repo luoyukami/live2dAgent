@@ -2,7 +2,7 @@ import { BrowserWindow, screen } from "electron"
 import { join } from "node:path"
 import { IPC_CHANNELS } from "@live2d-agent/shared"
 import type { AgentEvent } from "@live2d-agent/agent-core"
-import type { PublicSettings, UiSettings } from "@live2d-agent/shared"
+import type { CompactInputAnchor, PublicSettings, UiSettings } from "@live2d-agent/shared"
 
 const isDev = process.env.NODE_ENV === "development"
 
@@ -345,7 +345,7 @@ export class WindowManager {
    * - Positions below/near the avatar window
    * - Sends 'compact' command to renderer
    */
-  showCompactInput(): void {
+  showCompactInput(anchor?: CompactInputAnchor): void {
     if (!this.uiWindow || this.uiWindow.isDestroyed()) return
 
     // Clear any pending hide timer
@@ -354,7 +354,9 @@ export class WindowManager {
     const COMPACT_WIDTH = 420
     const COMPACT_HEIGHT = 150
 
-    const uiPos = this.positionBelowAvatar(COMPACT_WIDTH, COMPACT_HEIGHT)
+    const uiPos = isCompactInputAnchor(anchor)
+      ? this.positionNearScreenPoint(anchor, COMPACT_WIDTH, COMPACT_HEIGHT)
+      : this.positionBelowAvatar(COMPACT_WIDTH, COMPACT_HEIGHT)
 
     this.uiWindow.setResizable(false)
     this.uiWindow.setSize(COMPACT_WIDTH, COMPACT_HEIGHT, false)
@@ -509,6 +511,33 @@ export class WindowManager {
   }
 
   /**
+   * Calculate compact input position near the user's click point.
+   * Prefer below the cursor, fall back above, and clamp to the current display.
+   */
+  private positionNearScreenPoint(anchor: CompactInputAnchor, width: number, height: number): { x: number; y: number } {
+    const WINDOW_GAP = 10
+    const display = screen.getDisplayNearestPoint({ x: anchor.screenX, y: anchor.screenY })
+    const { x: workX, y: workY, width: workWidth, height: workHeight } = display.workArea
+
+    const minX = workX + WINDOW_GAP
+    const maxX = workX + workWidth - width - WINDOW_GAP
+    const minY = workY + WINDOW_GAP
+    const maxY = workY + workHeight - height - WINDOW_GAP
+
+    let x = Math.round(anchor.screenX - width / 2)
+    let y = Math.round(anchor.screenY + WINDOW_GAP)
+
+    if (y > maxY) {
+      y = Math.round(anchor.screenY - height - WINDOW_GAP)
+    }
+
+    x = Math.max(minX, Math.min(x, maxX))
+    y = Math.max(minY, Math.min(y, maxY))
+
+    return { x, y }
+  }
+
+  /**
    * Load the renderer HTML/URL into `win`, optionally with a `?window=`
    * query param that the renderer-side `getWindowRole()` will read.
    *
@@ -556,6 +585,12 @@ export class WindowManager {
       height: this.lockedSize.height,
     }, false)
   }
+}
+
+function isCompactInputAnchor(value: unknown): value is CompactInputAnchor {
+  if (!value || typeof value !== "object") return false
+  const anchor = value as Partial<CompactInputAnchor>
+  return Number.isFinite(anchor.screenX) && Number.isFinite(anchor.screenY)
 }
 
 function clampWindowDimension(value: number | undefined, fallback: number): number {

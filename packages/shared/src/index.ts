@@ -53,6 +53,7 @@ export type {
   IpcApproveActionRequest,
   IpcDenyActionRequest,
   IpcSetAgentModeRequest,
+  CompactInputAnchor,
   IpcToolRequest,
   IpcToolResponse,
 } from "./ipc.js"
