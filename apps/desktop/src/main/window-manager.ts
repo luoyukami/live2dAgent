@@ -30,6 +30,9 @@ export class WindowManager {
   /** Timer for delayed hide to avoid race conditions. */
   private hideTimer?: NodeJS.Timeout
 
+  /** Current detail panel tab (for re-show after resize). */
+  private currentDetailTab: "chat" | "settings" | "debug" = "chat"
+
   /** User-configured panel dimensions. */
   private panelWidth = 460
   private panelHeight = 760
@@ -145,7 +148,12 @@ export class WindowManager {
     this.restoreLockedSize(this.combinedWindow)
   }
 
-  setMousePassthrough(enabled: boolean): void {
+  setMousePassthrough(enabled: boolean, windowType: "combined" | "avatar" = "combined"): void {
+    if (windowType === "avatar") {
+      if (!this.avatarWindow || this.avatarWindow.isDestroyed()) return
+      this.avatarWindow.setIgnoreMouseEvents(enabled, { forward: true })
+      return
+    }
     if (!this.combinedWindow || this.combinedWindow.isDestroyed()) return
     this.combinedWindow.setIgnoreMouseEvents(enabled, { forward: true })
   }
@@ -157,10 +165,12 @@ export class WindowManager {
   /**
    * Create separate avatar + UI windows.
    *
-   * - **Avatar window**: transparent, frameless, always-on-top, skip taskbar,
-   *   non-interactive (click-through).  Loads renderer with `?window=avatar`.
-   * - **UI window**: standard interactive window (no transparency, resizable,
-   *   always-on-top).  Loads renderer with `?window=ui`.
+   * - **Avatar window**: transparent, frameless, always-on-top, skip taskbar.
+   *   Interactive only when mouse is over the Live2D model area (dynamic passthrough).
+   *   Loads renderer with `?window=avatar`.
+   * - **UI window**: transparent, frameless, always-on-top, skip taskbar.
+   *   Starts hidden, shown on demand via showCompactInput/showDetailPanel.
+   *   Loads renderer with `?window=ui`.
    *
    * Both windows share the same preload and context‑isolation settings.
    * This is the default startup mode (called from `bootstrap()` in main.ts).
@@ -203,7 +213,7 @@ export class WindowManager {
     // ── UI window ───────────────────────────────────────────────
     // Use compact input dimensions initially; will be resized when switching modes.
     const COMPACT_WIDTH = 420
-    const COMPACT_HEIGHT = 80
+    const COMPACT_HEIGHT = 150
 
     const uiPos = this.positionBelowAvatar(COMPACT_WIDTH, COMPACT_HEIGHT)
 
@@ -342,7 +352,7 @@ export class WindowManager {
     clearTimeout(this.hideTimer)
 
     const COMPACT_WIDTH = 420
-    const COMPACT_HEIGHT = 80
+    const COMPACT_HEIGHT = 150
 
     const uiPos = this.positionBelowAvatar(COMPACT_WIDTH, COMPACT_HEIGHT)
 
@@ -368,6 +378,9 @@ export class WindowManager {
 
     // Clear any pending hide timer
     clearTimeout(this.hideTimer)
+
+    // Record current tab for re-show after resize
+    this.currentDetailTab = tab
 
     const display = screen.getPrimaryDisplay()
     const { width: workWidth, height: workHeight } = display.workAreaSize
@@ -454,6 +467,11 @@ export class WindowManager {
   setPanelDimensions(width: number, height: number): void {
     this.panelWidth = clampWindowDimension(width, 460)
     this.panelHeight = clampWindowDimension(height, 760)
+
+    // If currently in detail mode, apply new dimensions immediately
+    if (this.uiMode === "detail") {
+      this.showDetailPanel(this.currentDetailTab)
+    }
   }
 
   /**

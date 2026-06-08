@@ -98,6 +98,8 @@ async function bootstrap(): Promise<void> {
   permissions.onPending((request) => {
     trace.append(request.event)
     windowManager?.broadcastAgentEvent(request.event)
+    // 自动展开 detail panel 显示 approval 气泡
+    windowManager?.showDetailPanel("chat")
   })
   agentService = new AgentService({ settings, trace, permissions, artifacts, prompts })
   agentService.onEvent((event) => windowManager?.broadcastAgentEvent(event))

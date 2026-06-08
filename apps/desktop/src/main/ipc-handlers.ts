@@ -121,8 +121,8 @@ export function registerIpcHandlers(services: IpcServices): void {
     services.window.endDrag()
   })
 
-  ipcMain.handle(IPC_CHANNELS.WINDOW_SET_MOUSE_PASSTHROUGH, async (_event, enabled: boolean) => {
-    services.window.setMousePassthrough(Boolean(enabled))
+  ipcMain.handle(IPC_CHANNELS.WINDOW_SET_MOUSE_PASSTHROUGH, async (_event, enabled: boolean, windowType?: "combined" | "avatar") => {
+    services.window.setMousePassthrough(Boolean(enabled), windowType ?? "combined")
   })
 
   /* ---- Dual-window UI control ---- */

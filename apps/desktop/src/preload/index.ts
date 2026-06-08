@@ -29,8 +29,8 @@ const api = {
     ipcRenderer.invoke(IPC_CHANNELS.WINDOW_DRAG_START),
   endWindowDrag: (): Promise<void> =>
     ipcRenderer.invoke(IPC_CHANNELS.WINDOW_DRAG_END),
-  setMousePassthrough: (enabled: boolean): Promise<void> =>
-    ipcRenderer.invoke(IPC_CHANNELS.WINDOW_SET_MOUSE_PASSTHROUGH, enabled),
+  setMousePassthrough: (enabled: boolean, windowType?: "combined" | "avatar"): Promise<void> =>
+    ipcRenderer.invoke(IPC_CHANNELS.WINDOW_SET_MOUSE_PASSTHROUGH, enabled, windowType),
 
   /* ---- Dual-window UI control ---- */
   showCompactInput: (): Promise<void> =>
