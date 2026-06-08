@@ -26,6 +26,7 @@ export function AvatarApp(): JSX.Element {
 
   const live2dRef = useRef<Live2DViewHandle>(null)
   const pointerStateRef = useRef<{ pointerId: number; startX: number; startY: number; cancelled: boolean } | null>(null)
+  const passthroughRef = useRef<boolean | null>(null)
 
   /* ---- 1. Subscribe to agent events once ---- */
   useEffect(() => {
@@ -71,24 +72,17 @@ export function AvatarApp(): JSX.Element {
   /* ---- Dynamic mouse passthrough for avatar window ---- */
   useEffect(() => {
     // Default: enable passthrough
-    void window.petAgent.setMousePassthrough?.(true, "avatar")
+    setAvatarPassthrough(true)
 
     function handleMouseMove(e: MouseEvent): void {
-      const hasNoModel = !settings?.live2d?.modelPath
-      if (hasNoModel) {
-        // No model: clicking anywhere opens the input box, so keep passthrough off
-        void window.petAgent.setMousePassthrough?.(false, "avatar")
-        return
-      }
-
-      const isOverModel = live2dRef.current?.containsPoint(e.clientX, e.clientY) ?? false
-      // Disable passthrough when over model, enable when leaving
-      void window.petAgent.setMousePassthrough?.(!isOverModel, "avatar")
+      const isOverInteractiveTarget = live2dRef.current?.containsPoint(e.clientX, e.clientY) ?? false
+      // Disable passthrough when over model/fallback area, enable when leaving
+      setAvatarPassthrough(!isOverInteractiveTarget)
     }
 
     window.addEventListener("mousemove", handleMouseMove)
     return () => window.removeEventListener("mousemove", handleMouseMove)
-  }, [settings?.live2d?.modelPath])
+  }, [])
 
   /* ---- 1c. Subscribe to live2d:reloaded broadcast ---- */
   useEffect(() => {
@@ -152,16 +146,14 @@ export function AvatarApp(): JSX.Element {
 
   /* ---- 7. Render: only Live2D stage + speech bubble ---- */
 
+  function setAvatarPassthrough(next: boolean): void {
+    if (passthroughRef.current === next) return
+    passthroughRef.current = next
+    void window.petAgent.setMousePassthrough?.(next, "avatar")
+  }
+
   function handleStagePointerDown(event: React.PointerEvent<HTMLDivElement>): void {
     if (event.button !== 0) return
-
-    // 如果没有配置模型，点击 fallback 区域也允许打开 compact input
-    const hasNoModel = !settings?.live2d?.modelPath
-    if (hasNoModel) {
-      void window.petAgent.showCompactInput?.()
-      return
-    }
-
     if (!(live2dRef.current?.containsPoint(event.clientX, event.clientY) ?? false)) return
     pointerStateRef.current = {
       pointerId: event.pointerId,

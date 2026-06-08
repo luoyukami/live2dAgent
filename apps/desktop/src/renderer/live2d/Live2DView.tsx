@@ -161,6 +161,7 @@ export const Live2DView = forwardRef<Live2DViewHandle, Live2DViewProps>(function
   ref,
 ): JSX.Element {
   const containerRef = useRef<HTMLDivElement>(null)
+  const fallbackRef = useRef<HTMLDivElement>(null)
   const appRef = useRef<PIXI.Application | null>(null)
   const modelRef = useRef<InstanceType<any> | null>(null)
   /**
@@ -188,7 +189,8 @@ export const Live2DView = forwardRef<Live2DViewHandle, Live2DViewProps>(function
       if (!model) return
       clearExpression(model)
     },
-    containsPoint: (clientX: number, clientY: number) => containsModelPoint(clientX, clientY),
+    containsPoint: (clientX: number, clientY: number) =>
+      containsModelPoint(clientX, clientY) || containsFallbackPoint(clientX, clientY),
   }), [])
 
   /* ---- 1. Create / destroy the Pixi Application ---- */
@@ -444,6 +446,19 @@ export const Live2DView = forwardRef<Live2DViewHandle, Live2DViewProps>(function
     return false
   }
 
+  function containsFallbackPoint(clientX: number, clientY: number): boolean {
+    const fallback = fallbackRef.current
+    if (!fallback) return false
+
+    const rect = fallback.getBoundingClientRect()
+    return (
+      clientX >= rect.left &&
+      clientX <= rect.right &&
+      clientY >= rect.top &&
+      clientY <= rect.bottom
+    )
+  }
+
   function collectHitAreas(model: InstanceType<any>): string[] {
     const names = new Set<string>(["Body", "Head", "body", "head"])
     const rawHitAreas = model?.internalModel?.settings?.hitAreas
@@ -540,7 +555,7 @@ export const Live2DView = forwardRef<Live2DViewHandle, Live2DViewProps>(function
 
   return (
     <div className="live2d-container" ref={containerRef}>
-      {showFallback && <div className={fallbackClass}>{loadError || "Live2D"}</div>}
+      {showFallback && <div ref={fallbackRef} className={fallbackClass}>{loadError || "Live2D"}</div>}
     </div>
   )
 })
