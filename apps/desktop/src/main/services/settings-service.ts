@@ -41,6 +41,8 @@ export const DEFAULT_LIVE2D_SETTINGS: Live2DSettings = {
 export const DEFAULT_UI_SETTINGS: UiSettings = {
   alwaysOnTop: true,
   opacity: 1,
+  width: 360,
+  height: 720,
 }
 
 export const DEFAULT_AGENT_SETTINGS: AgentSettings = {
@@ -649,7 +651,11 @@ function validatePublicSettingsPatch(patch: unknown): AppSettingsPublicPatch {
     const patch: Partial<UiSettings> = {}
     if (ui.alwaysOnTop !== undefined && typeof ui.alwaysOnTop === "boolean") patch.alwaysOnTop = ui.alwaysOnTop
     const opacity = numberInRange(ui.opacity, "ui.opacity", 0.2, 1)
+    const width = integerInRange(ui.width, "ui.width", 200, 4000)
+    const height = integerInRange(ui.height, "ui.height", 200, 4000)
     if (opacity !== undefined) patch.opacity = opacity
+    if (width !== undefined) patch.width = width
+    if (height !== undefined) patch.height = height
     if (Object.keys(patch).length > 0) output.ui = patch
   }
 

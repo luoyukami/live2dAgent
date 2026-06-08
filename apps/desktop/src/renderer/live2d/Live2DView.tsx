@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react"
+import { forwardRef, useEffect, useImperativeHandle, useRef, useState } from "react"
 import * as PIXI from "pixi.js"
 import type { AvatarState } from "@live2d-agent/live2d"
 import {
@@ -145,11 +145,21 @@ export interface Live2DViewProps {
   emotionProfile?: Live2DEmotionProfile
 }
 
+export interface Live2DViewHandle {
+  playMotion: (group: string, index?: number) => void
+  setExpression: (name: string) => void
+  clearExpression: () => void
+  containsPoint: (clientX: number, clientY: number) => boolean
+}
+
 /* ------------------------------------------------------------------ */
 /*  Component                                                          */
 /* ------------------------------------------------------------------ */
 
-export function Live2DView({ modelPath, avatarState, emotion, emotionProfile }: Live2DViewProps): JSX.Element {
+export const Live2DView = forwardRef<Live2DViewHandle, Live2DViewProps>(function Live2DView(
+  { modelPath, avatarState, emotion, emotionProfile },
+  ref,
+): JSX.Element {
   const containerRef = useRef<HTMLDivElement>(null)
   const appRef = useRef<PIXI.Application | null>(null)
   const modelRef = useRef<InstanceType<any> | null>(null)
@@ -161,6 +171,25 @@ export function Live2DView({ modelPath, avatarState, emotion, emotionProfile }: 
   const activeQuirksRef = useRef<ReadonlyArray<{ id: string; value: number }>>([])
   const [loadError, setLoadError] = useState<string | null>(null)
   const [modelEpoch, setModelEpoch] = useState(0)
+
+  useImperativeHandle(ref, () => ({
+    playMotion: (group: string, index?: number) => {
+      const model = modelRef.current
+      if (!model) return
+      playMotion(model, group, index)
+    },
+    setExpression: (name: string) => {
+      const model = modelRef.current
+      if (!model) return
+      trySetExpression(model, name)
+    },
+    clearExpression: () => {
+      const model = modelRef.current
+      if (!model) return
+      clearExpression(model)
+    },
+    containsPoint: (clientX: number, clientY: number) => containsModelPoint(clientX, clientY),
+  }), [])
 
   /* ---- 1. Create / destroy the Pixi Application ---- */
   useEffect(() => {
@@ -341,17 +370,18 @@ export function Live2DView({ modelPath, avatarState, emotion, emotionProfile }: 
     const container = containerRef.current
     if (!app || !container) return
 
-    const cw = container.clientWidth || 300
-    const ch = container.clientHeight || 300
+    const cw = app.screen.width || container.clientWidth || 300
+    const ch = app.screen.height || container.clientHeight || 300
+    model.scale.set(1)
     const mw = model.width || 1
     const mh = model.height || 1
 
-    const scale = Math.min(cw / mw, ch / mh) * 1.15
+    const scale = Math.min(cw / mw, ch / mh) * 1.0
     model.scale.set(scale)
-    model.position.set(app.screen.width / 2, app.screen.height * 0.92)
+    model.position.set(app.screen.width / 2, app.screen.height * 0.5)
 
     if (typeof model.anchor?.set === "function") {
-      model.anchor.set(0.5, 0.88)
+      model.anchor.set(0.5, 0.5)
     }
   }
 
@@ -359,12 +389,18 @@ export function Live2DView({ modelPath, avatarState, emotion, emotionProfile }: 
   useEffect(() => {
     const container = containerRef.current
     if (!container) return
-    const ro = new ResizeObserver(() => {
+    const resizeModel = () => {
+      appRef.current?.resize()
       const model = modelRef.current
       if (model) centerModel(model)
-    })
+    }
+    const ro = new ResizeObserver(resizeModel)
     ro.observe(container)
-    return () => ro.disconnect()
+    window.addEventListener("resize", resizeModel)
+    return () => {
+      ro.disconnect()
+      window.removeEventListener("resize", resizeModel)
+    }
   }, [])
 
   function destroyModel(): void {
@@ -379,6 +415,48 @@ export function Live2DView({ modelPath, avatarState, emotion, emotionProfile }: 
     }
     // 清空 quirk 引用，避免新模型继承上一任的 parameterPins。
     activeQuirksRef.current = []
+  }
+
+  function containsModelPoint(clientX: number, clientY: number): boolean {
+    const model = modelRef.current
+    const container = containerRef.current
+    if (!model || !container) return false
+
+    const rect = container.getBoundingClientRect()
+    const x = clientX - rect.left
+    const y = clientY - rect.top
+    if (x < 0 || y < 0 || x > rect.width || y > rect.height) return false
+
+    if (typeof model.hitTest === "function") {
+      const hitAreas = collectHitAreas(model)
+      for (const name of hitAreas) {
+        try {
+          if (model.hitTest(name, x, y)) return true
+        } catch {
+          // Some pixi-live2d-display versions use a different hitTest shape.
+        }
+      }
+      // Do not fall back to the model bounding rectangle: Live2D bounds include
+      // large transparent pixels, which would make the transparent background
+      // clickable and break OS-level passthrough.
+    }
+
+    return false
+  }
+
+  function collectHitAreas(model: InstanceType<any>): string[] {
+    const names = new Set<string>(["Body", "Head", "body", "head"])
+    const rawHitAreas = model?.internalModel?.settings?.hitAreas
+      ?? model?.internalModel?.settings?.HitAreas
+      ?? model?.settings?.hitAreas
+      ?? []
+    if (Array.isArray(rawHitAreas)) {
+      for (const area of rawHitAreas) {
+        const name = area?.name ?? area?.Name ?? area?.id ?? area?.Id
+        if (typeof name === "string" && name.length > 0) names.add(name)
+      }
+    }
+    return [...names]
   }
 
   /**
@@ -436,6 +514,25 @@ export function Live2DView({ modelPath, avatarState, emotion, emotionProfile }: 
     applyParameterPins(model)
   }
 
+  function clearExpression(model: InstanceType<any>): void {
+    const motionManager = model?.internalModel?.motionManager
+    const expressionManager = motionManager?.expressionManager
+    try {
+      expressionManager?.stopAllMotions?.()
+      expressionManager?.queueManager?.stopAllMotions?.()
+      expressionManager?.motionQueueManager?.stopAllMotions?.()
+      if ("currentExpression" in (expressionManager ?? {})) {
+        expressionManager.currentExpression = undefined
+      }
+      if ("reservedExpression" in (expressionManager ?? {})) {
+        expressionManager.reservedExpression = undefined
+      }
+    } catch (err) {
+      console.warn("[Live2DView] clear expression failed", err)
+    }
+    applyParameterPins(model)
+  }
+
   /* ---- Render ---- */
 
   const showFallback = !modelPath || loadError !== null
@@ -446,4 +543,4 @@ export function Live2DView({ modelPath, avatarState, emotion, emotionProfile }: 
       {showFallback && <div className={fallbackClass}>{loadError || "Live2D"}</div>}
     </div>
   )
-}
+})

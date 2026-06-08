@@ -7,6 +7,7 @@ import type { PermissionService } from "./services/permission-service.js"
 import type { PromptService } from "./services/prompt-service.js"
 import type { SettingsService } from "./services/settings-service.js"
 import type { TraceService } from "./services/trace-service.js"
+import type { WindowManager } from "./window-manager.js"
 
 export interface IpcServices {
   agent: AgentService
@@ -15,6 +16,7 @@ export interface IpcServices {
   trace: TraceService
   artifacts: ArtifactStore
   prompts: PromptService
+  window: WindowManager
 }
 
 /**
@@ -92,8 +94,28 @@ export function registerIpcHandlers(services: IpcServices): void {
   /** Update low-risk public settings fields */
   ipcMain.handle(IPC_CHANNELS.SETTINGS_UPDATE_PUBLIC, async (_event, patch) => {
     services.settings.updatePublicPatch(patch)
+    const ui = services.settings.get().ui
+    if (patch?.ui && ("width" in patch.ui || "height" in patch.ui)) {
+      services.window.setSize(ui.width, ui.height)
+    }
     services.agent.reconfigure()
     services.trace.append({ type: "settings.updated", settings: services.settings.getPublicSettings() })
+  })
+
+  ipcMain.handle(IPC_CHANNELS.WINDOW_MOVE_BY, async (_event, dx: number, dy: number) => {
+    services.window.moveBy(dx, dy)
+  })
+
+  ipcMain.handle(IPC_CHANNELS.WINDOW_DRAG_START, async () => {
+    services.window.startDrag()
+  })
+
+  ipcMain.handle(IPC_CHANNELS.WINDOW_DRAG_END, async () => {
+    services.window.endDrag()
+  })
+
+  ipcMain.handle(IPC_CHANNELS.WINDOW_SET_MOUSE_PASSTHROUGH, async (_event, enabled: boolean) => {
+    services.window.setMousePassthrough(Boolean(enabled))
   })
 
   /** Update API key (stays in main process) */

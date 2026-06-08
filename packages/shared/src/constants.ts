@@ -33,6 +33,12 @@ export const IPC_CHANNELS = {
   SETTINGS_UPDATE_WORKSPACE: "settings:update-workspace",
   SETTINGS_UPDATE_LIVE2D_MODEL_PATH: "settings:update-live2d-path",
 
+  /* ---- Window controls ---- */
+  WINDOW_MOVE_BY: "window:move-by",
+  WINDOW_DRAG_START: "window:drag-start",
+  WINDOW_DRAG_END: "window:drag-end",
+  WINDOW_SET_MOUSE_PASSTHROUGH: "window:set-mouse-passthrough",
+
   /* ---- Debug / Trace / Manual Action (Phase 2) ---- */
   DEBUG_GET_SNAPSHOT: "debug:get-snapshot",
   TRACE_GET_EVENTS: "trace:get-events",

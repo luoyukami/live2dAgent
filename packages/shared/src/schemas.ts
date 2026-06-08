@@ -169,6 +169,8 @@ export interface Live2DSettings {
 export interface UiSettings {
   alwaysOnTop: boolean
   opacity: number
+  width: number
+  height: number
 }
 
 /** Agent runtime settings */

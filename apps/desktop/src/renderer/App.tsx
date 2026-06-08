@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from "react"
+import type { PointerEvent as ReactPointerEvent } from "react"
 import type { AgentEvent, AgentMessage, AgentAction, AudioContextAttachment } from "@live2d-agent/agent-core"
 import { mapEventToState, type AvatarState } from "@live2d-agent/live2d"
 import {
@@ -12,7 +13,7 @@ import {
   type DebugSnapshot,
   type VoiceInputSettings,
 } from "@live2d-agent/shared"
-import { Live2DView } from "./live2d/Live2DView"
+import { Live2DView, type Live2DViewHandle } from "./live2d/Live2DView"
 import { DebugPanel } from "./components/DebugPanel"
 import { AudioAttachmentCard } from "./components/AudioAttachmentCard"
 import { RecorderButton } from "./components/RecorderButton"
@@ -27,6 +28,8 @@ interface SettingsForm {
   workspaceDir: string
   live2dModelPath: string
   permissionMode: PublicSettings["permissions"]["mode"]
+  windowWidth: string
+  windowHeight: string
   promptPresets: PromptPresetSettings
   emotion: EmotionSettings
   voice: VoiceInputSettings
@@ -59,6 +62,12 @@ function shouldRenderAddedMessage(message: AgentMessage): boolean {
   return hasVisibleText(message)
 }
 
+function normalizeFormDimension(value: string, fallback: number): number {
+  const parsed = Number(value)
+  if (!Number.isFinite(parsed)) return fallback
+  return Math.round(Math.min(4000, Math.max(200, parsed)))
+}
+
 function mergeAddedMessage(items: AgentMessage[], message: AgentMessage): AgentMessage[] {
   const existingIndex = items.findIndex((item) => item.id === message.id)
 
@@ -88,6 +97,8 @@ function defaultForm(): SettingsForm {
     workspaceDir: "",
     live2dModelPath: "",
     permissionMode: "permissive",
+    windowWidth: "360",
+    windowHeight: "720",
     promptPresets: { ...DEFAULT_PROMPT_PRESET_SETTINGS },
     emotion: {
       enabled: true,
@@ -122,6 +133,16 @@ export function App(): JSX.Element {
   const [lastManualResult, setLastManualResult] = useState<unknown>(null)
   const [live2dReloadKey, setLive2dReloadKey] = useState(0)
   const textareaRef = useRef<HTMLTextAreaElement>(null)
+  const live2dRef = useRef<Live2DViewHandle>(null)
+  const mousePassthroughRef = useRef(false)
+  const dragStateRef = useRef<{
+    pointerId: number
+    startX: number
+    startY: number
+    dragging: boolean
+    cancelled: boolean
+    target: HTMLDivElement
+  } | null>(null)
 
   /* ---- v0 voice input state ---- */
   const [attachments, setAttachments] = useState<AudioContextAttachment[]>([])
@@ -145,6 +166,16 @@ export function App(): JSX.Element {
       setTimeout(() => textareaRef.current?.focus(), 0)
     }
   }, [showInput, showDetail, detailTab])
+
+  useEffect(() => {
+    // Stopgap: Windows dynamic partial passthrough is unreliable for a single
+    // transparent frameless window. Keep the window interactive, and prevent
+    // blank-area clicks in renderer hit testing instead.
+    void setMousePassthrough(false)
+    return () => {
+      void window.petAgent.setMousePassthrough?.(false)
+    }
+  }, [])
 
   useEffect(() => {
     window.petAgent.getSettings().then(setSettings)
@@ -192,6 +223,8 @@ export function App(): JSX.Element {
         workspaceDir: settings.workspaceDir,
         live2dModelPath: settings.live2d?.modelPath ?? "",
         permissionMode: settings.permissions?.mode ?? "permissive",
+        windowWidth: String(settings.ui?.width ?? prev.windowWidth),
+        windowHeight: String(settings.ui?.height ?? prev.windowHeight),
         promptPresets: settings.promptPresets ?? prev.promptPresets,
         emotion: {
           enabled: settings.emotion?.enabled ?? prev.emotion.enabled,
@@ -298,15 +331,6 @@ export function App(): JSX.Element {
     window.addEventListener("keydown", onKeyDown)
     return () => window.removeEventListener("keydown", onKeyDown)
   }, [settings?.voice?.enabled, recorder.status])
-
-  const assistantStateLabel = useMemo(() => ({
-    idle: "空闲",
-    thinking: "思考中",
-    waiting_approval: "等待授权",
-    running_tool: "执行工具",
-    success: "完成",
-    error: "出错",
-  }[status]), [status])
 
   /* ---- Voice input handlers ---- */
 
@@ -451,6 +475,13 @@ export function App(): JSX.Element {
       if (form.reasoningEffort !== (settings?.reasoningEffort ?? "low")) publicPatch.reasoningEffort = form.reasoningEffort
       if (form.permissionMode !== settings?.permissions?.mode) publicPatch.permissions = { mode: form.permissionMode }
 
+      const nextWindowWidth = normalizeFormDimension(form.windowWidth, settings?.ui?.width ?? 360)
+      const nextWindowHeight = normalizeFormDimension(form.windowHeight, settings?.ui?.height ?? 720)
+      const uiPatch: Record<string, unknown> = {}
+      if (nextWindowWidth !== (settings?.ui?.width ?? 360)) uiPatch.width = nextWindowWidth
+      if (nextWindowHeight !== (settings?.ui?.height ?? 720)) uiPatch.height = nextWindowHeight
+      if (Object.keys(uiPatch).length > 0) publicPatch.ui = uiPatch
+
       const settingsPromptPresets = settings?.promptPresets
       const promptPresetPatch: Record<string, unknown> = {}
       if (form.promptPresets.rolePrompt !== (settingsPromptPresets?.rolePrompt ?? "")) {
@@ -549,6 +580,67 @@ export function App(): JSX.Element {
     setTimeout(() => textareaRef.current?.focus(), 0)
   }
 
+  async function setMousePassthrough(enabled: boolean): Promise<void> {
+    if (mousePassthroughRef.current === enabled) return
+    mousePassthroughRef.current = enabled
+    await window.petAgent.setMousePassthrough?.(enabled)
+  }
+
+  function finishPointerInteraction(): void {
+    const state = dragStateRef.current
+    if (!state) return
+    try {
+      if (state.target.hasPointerCapture(state.pointerId)) {
+        state.target.releasePointerCapture(state.pointerId)
+      }
+    } catch {
+      // Pointer capture may already be gone after native window movement.
+    }
+    dragStateRef.current = null
+  }
+
+  function handleStagePointerDown(event: ReactPointerEvent<HTMLDivElement>): void {
+    if (event.button !== 0 || showDetail) return
+    if (!(live2dRef.current?.containsPoint(event.clientX, event.clientY) ?? false)) {
+      return
+    }
+    void setMousePassthrough(false)
+    const state = {
+      pointerId: event.pointerId,
+      startX: event.screenX,
+      startY: event.screenY,
+      dragging: false,
+      cancelled: false,
+      target: event.currentTarget,
+    }
+    dragStateRef.current = state
+    event.currentTarget.setPointerCapture(event.pointerId)
+  }
+
+  function handleStagePointerMove(event: ReactPointerEvent<HTMLDivElement>): void {
+    const state = dragStateRef.current
+    if (!state || state.pointerId !== event.pointerId) return
+
+    const moved = Math.hypot(event.screenX - state.startX, event.screenY - state.startY)
+    if (moved > 8) {
+      state.cancelled = true
+      return
+    }
+  }
+
+  function handleStagePointerUp(event: ReactPointerEvent<HTMLDivElement>): void {
+    const state = dragStateRef.current
+    if (!state || state.pointerId !== event.pointerId) return
+    finishPointerInteraction()
+    if (!state.dragging && !state.cancelled) setShowInput(true)
+  }
+
+  function handleStagePointerCancel(event: ReactPointerEvent<HTMLDivElement>): void {
+    if (dragStateRef.current?.pointerId === event.pointerId) {
+      finishPointerInteraction()
+    }
+  }
+
   async function sendFromPreset(text: string): Promise<void> {
     if (isSending) return
     setInput("")
@@ -591,9 +683,19 @@ export function App(): JSX.Element {
     <main className="shell">
       {/* Full-screen Live2D stage */}
       <section className="stage" data-state={status}>
-        <div className="drag-region" />
-        <div className="stage-content" onClick={() => setShowInput(true)}>
+        {!showDetail && !showInput && pending.length === 0 && (
+          <div className="window-drag-handle" title="拖动助手窗口" aria-hidden="true" />
+        )}
+        <div
+          className="stage-content"
+          onPointerDown={handleStagePointerDown}
+          onPointerMove={handleStagePointerMove}
+          onPointerUp={handleStagePointerUp}
+          onPointerCancel={handleStagePointerCancel}
+          onLostPointerCapture={finishPointerInteraction}
+        >
           <Live2DView
+            ref={live2dRef}
             key={live2dReloadKey}
             modelPath={settings?.live2d?.modelPath ?? ""}
             avatarState={status}
@@ -605,7 +707,6 @@ export function App(): JSX.Element {
               {summarize(latestAssistantText, 220)}
             </div>
           )}
-          <span className="stage-status">{assistantStateLabel}</span>
         </div>
       </section>
 
@@ -688,13 +789,6 @@ export function App(): JSX.Element {
               )}
             </div>
           )}
-          <small className="compact-hint">
-            {status === "thinking"
-              ? "助手正在思考..."
-              : status === "running_tool"
-                ? "工具执行中..."
-                : "Enter 发送 · Shift+Enter 换行 · 点击助手展开输入"}
-          </small>
         </div>
       )}
 
@@ -931,6 +1025,30 @@ export function App(): JSX.Element {
                             placeholder="model.json 或 .model3.json 路径"
                           />
                         </div>
+
+                        <div className="settings-grid two-cols">
+                          <div className="settings-group">
+                            <label>窗口宽度</label>
+                            <input
+                              type="number"
+                              step={10}
+                              value={form.windowWidth}
+                              onChange={(e) => setForm((f) => ({ ...f, windowWidth: e.target.value }))}
+                              onBlur={() => setForm((f) => ({ ...f, windowWidth: String(normalizeFormDimension(f.windowWidth, settings?.ui?.width ?? 360)) }))}
+                            />
+                          </div>
+                          <div className="settings-group">
+                            <label>窗口高度</label>
+                            <input
+                              type="number"
+                              step={10}
+                              value={form.windowHeight}
+                              onChange={(e) => setForm((f) => ({ ...f, windowHeight: e.target.value }))}
+                              onBlur={() => setForm((f) => ({ ...f, windowHeight: String(normalizeFormDimension(f.windowHeight, settings?.ui?.height ?? 720)) }))}
+                            />
+                          </div>
+                        </div>
+                        <small className="settings-hint">窗口不可自由拖拽缩放；修改宽高并保存后立即生效。</small>
                       </div>
                     </>
                   )}
