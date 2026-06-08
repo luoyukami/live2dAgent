@@ -2,7 +2,7 @@ import { BrowserWindow, screen } from "electron"
 import { join } from "node:path"
 import { IPC_CHANNELS } from "@live2d-agent/shared"
 import type { AgentEvent } from "@live2d-agent/agent-core"
-import type { UiSettings } from "@live2d-agent/shared"
+import type { PublicSettings, UiSettings } from "@live2d-agent/shared"
 
 const isDev = process.env.NODE_ENV === "development"
 
@@ -240,15 +240,51 @@ export class WindowManager {
    * instead of `sendAgentEvent` once dual windows are enabled.
    */
   broadcastAgentEvent(event: AgentEvent): void {
-    const payload = IPC_CHANNELS.ON_AGENT_EVENT
+    const channel = IPC_CHANNELS.ON_AGENT_EVENT
     if (this.combinedWindow && !this.combinedWindow.isDestroyed()) {
-      this.combinedWindow.webContents.send(payload, event)
+      this.combinedWindow.webContents.send(channel, event)
     }
     if (this.avatarWindow && !this.avatarWindow.isDestroyed()) {
-      this.avatarWindow.webContents.send(payload, event)
+      this.avatarWindow.webContents.send(channel, event)
     }
     if (this.uiWindow && !this.uiWindow.isDestroyed()) {
-      this.uiWindow.webContents.send(payload, event)
+      this.uiWindow.webContents.send(channel, event)
+    }
+  }
+
+  /**
+   * Broadcast updated PublicSettings to all open windows.
+   * Used after every settings mutation so that AvatarApp / UiApp / App
+   * receive the latest values without polling.
+   */
+  broadcastSettings(settings: PublicSettings): void {
+    const channel = IPC_CHANNELS.SETTINGS_UPDATED
+    if (this.combinedWindow && !this.combinedWindow.isDestroyed()) {
+      this.combinedWindow.webContents.send(channel, settings)
+    }
+    if (this.avatarWindow && !this.avatarWindow.isDestroyed()) {
+      this.avatarWindow.webContents.send(channel, settings)
+    }
+    if (this.uiWindow && !this.uiWindow.isDestroyed()) {
+      this.uiWindow.webContents.send(channel, settings)
+    }
+  }
+
+  /**
+   * Broadcast a live2d:reloaded event to all windows.
+   * Called when the UiApp requests a Live2D reload via invoke (LIVE2D_RELOAD).
+   * The avatar window can react by bumping its reload key.
+   */
+  broadcastLive2DReloaded(): void {
+    const channel = IPC_CHANNELS.LIVE2D_RELOADED
+    if (this.combinedWindow && !this.combinedWindow.isDestroyed()) {
+      this.combinedWindow.webContents.send(channel)
+    }
+    if (this.avatarWindow && !this.avatarWindow.isDestroyed()) {
+      this.avatarWindow.webContents.send(channel)
+    }
+    if (this.uiWindow && !this.uiWindow.isDestroyed()) {
+      this.uiWindow.webContents.send(channel)
     }
   }
 

@@ -81,7 +81,9 @@ export function registerIpcHandlers(services: IpcServices): void {
   ipcMain.handle(IPC_CHANNELS.SET_AGENT_MODE, async (_event, mode) => {
     services.settings.updatePublicPatch({ mode })
     services.agent.reconfigure()
-    services.trace.append({ type: "settings.updated", settings: services.settings.getPublicSettings() })
+    const publicSettings = services.settings.getPublicSettings()
+    services.trace.append({ type: "settings.updated", settings: publicSettings })
+    services.window.broadcastSettings(publicSettings)
   })
 
   /* ---- Settings (Phase 1) ---- */
@@ -99,7 +101,9 @@ export function registerIpcHandlers(services: IpcServices): void {
       services.window.setSize(ui.width, ui.height)
     }
     services.agent.reconfigure()
-    services.trace.append({ type: "settings.updated", settings: services.settings.getPublicSettings() })
+    const publicSettings = services.settings.getPublicSettings()
+    services.trace.append({ type: "settings.updated", settings: publicSettings })
+    services.window.broadcastSettings(publicSettings)
   })
 
   ipcMain.handle(IPC_CHANNELS.WINDOW_MOVE_BY, async (_event, dx: number, dy: number) => {
@@ -122,20 +126,26 @@ export function registerIpcHandlers(services: IpcServices): void {
   ipcMain.handle(IPC_CHANNELS.SETTINGS_UPDATE_API_KEY, async (_event, apiKey: string) => {
     services.settings.updateApiKey(apiKey)
     services.agent.reconfigure()
-    services.trace.append({ type: "settings.updated", settings: services.settings.getPublicSettings() })
+    const publicSettings = services.settings.getPublicSettings()
+    services.trace.append({ type: "settings.updated", settings: publicSettings })
+    services.window.broadcastSettings(publicSettings)
   })
 
   /** Update workspace directory (creates if missing) */
   ipcMain.handle(IPC_CHANNELS.SETTINGS_UPDATE_WORKSPACE, async (_event, path: string) => {
     services.settings.updateWorkspaceDir(path)
     services.agent.reconfigure()
-    services.trace.append({ type: "settings.updated", settings: services.settings.getPublicSettings() })
+    const publicSettings = services.settings.getPublicSettings()
+    services.trace.append({ type: "settings.updated", settings: publicSettings })
+    services.window.broadcastSettings(publicSettings)
   })
 
   /** Update live2d model path */
   ipcMain.handle(IPC_CHANNELS.SETTINGS_UPDATE_LIVE2D_MODEL_PATH, async (_event, modelPath: string) => {
     services.settings.updateLive2DModelPath(modelPath)
-    services.trace.append({ type: "settings.updated", settings: services.settings.getPublicSettings() })
+    const publicSettings = services.settings.getPublicSettings()
+    services.trace.append({ type: "settings.updated", settings: publicSettings })
+    services.window.broadcastSettings(publicSettings)
   })
 
   /* ---- Debug / Trace / Prompt / Manual Action (v0.2) ---- */
@@ -204,6 +214,7 @@ export function registerIpcHandlers(services: IpcServices): void {
     const publicSettings = services.settings.reload()
     services.agent.reconfigure()
     services.trace.append({ type: "settings.updated", settings: publicSettings })
+    services.window.broadcastSettings(publicSettings)
     return publicSettings
   })
 
@@ -212,7 +223,9 @@ export function registerIpcHandlers(services: IpcServices): void {
     services.agent.reconfigure()
   })
 
-  ipcMain.handle(IPC_CHANNELS.LIVE2D_RELOAD, async () => undefined)
+  ipcMain.handle(IPC_CHANNELS.LIVE2D_RELOAD, async () => {
+    services.window.broadcastLive2DReloaded()
+  })
 
   ipcMain.handle(IPC_CHANNELS.MANUAL_ACTION_RUN, async (_event, tool: string, args: unknown) => {
     await services.agent.runManualAction(tool, args)

@@ -174,6 +174,12 @@ export function UiApp(): JSX.Element {
 
   useEffect(() => {
     window.petAgent.getSettings().then(setSettings)
+    return window.petAgent.onSettingsUpdated?.((updated) => {
+      setSettings(updated)
+    })
+  }, [])
+
+  useEffect(() => {
     return window.petAgent.onAgentEvent((event: AgentEvent) => {
       const nextState = mapEventToState(event)
       if (nextState) setStatus(nextState)

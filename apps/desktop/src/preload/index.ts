@@ -41,6 +41,24 @@ const api = {
     }
   },
 
+  /* ---- Settings broadcast (Phase 5) ---- */
+  onSettingsUpdated: (listener: (settings: PublicSettings) => void) => {
+    const wrapped = (_event: Electron.IpcRendererEvent, payload: PublicSettings) => listener(payload)
+    ipcRenderer.on(IPC_CHANNELS.SETTINGS_UPDATED, wrapped)
+    return () => {
+      ipcRenderer.removeListener(IPC_CHANNELS.SETTINGS_UPDATED, wrapped)
+    }
+  },
+
+  /* ---- Live2D reload broadcast ---- */
+  onLive2DReloaded: (listener: () => void) => {
+    const wrapped = () => listener()
+    ipcRenderer.on(IPC_CHANNELS.LIVE2D_RELOADED, wrapped)
+    return () => {
+      ipcRenderer.removeListener(IPC_CHANNELS.LIVE2D_RELOADED, wrapped)
+    }
+  },
+
   /* ---- Debug / Trace / Manual Action (Phase 2) ---- */
   getDebugSnapshot: (): Promise<DebugSnapshot> =>
     ipcRenderer.invoke(IPC_CHANNELS.DEBUG_GET_SNAPSHOT),

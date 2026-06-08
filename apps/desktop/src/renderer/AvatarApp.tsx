@@ -69,6 +69,7 @@ export function AvatarApp(): JSX.Element {
   const [currentEmotion, setCurrentEmotion] = useState<Emotion | null>(null)
   const [compactAssistantBubbleVisible, setCompactAssistantBubbleVisible] = useState(false)
   const [messages, setMessages] = useState<AgentMessage[]>([])
+  const [live2dReloadKey, setLive2dReloadKey] = useState(0)
 
   /* ---- 1. Subscribe to agent events once ---- */
   useEffect(() => {
@@ -101,6 +102,20 @@ export function AvatarApp(): JSX.Element {
       if (event.type === "emotion.set") {
         setCurrentEmotion(event.emotion)
       }
+    })
+  }, [])
+
+  /* ---- 1b. Subscribe to settings:updated broadcast ---- */
+  useEffect(() => {
+    return window.petAgent.onSettingsUpdated?.((updated) => {
+      setSettings(updated)
+    })
+  }, [])
+
+  /* ---- 1c. Subscribe to live2d:reloaded broadcast ---- */
+  useEffect(() => {
+    return window.petAgent.onLive2DReloaded?.(() => {
+      setLive2dReloadKey((k) => k + 1)
     })
   }, [])
 
@@ -163,6 +178,7 @@ export function AvatarApp(): JSX.Element {
       <section className="stage" data-state={status}>
         <div className="stage-content">
           <Live2DView
+            key={live2dReloadKey}
             modelPath={settings?.live2d?.modelPath ?? ""}
             avatarState={status}
             emotion={currentEmotion}

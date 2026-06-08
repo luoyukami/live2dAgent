@@ -49,7 +49,11 @@ export const IPC_CHANNELS = {
   SETTINGS_RELOAD: "settings:reload",
   PROMPT_RELOAD: "prompt:reload",
   LIVE2D_RELOAD: "live2d:reload",
+  LIVE2D_RELOADED: "live2d:reloaded",
   MANUAL_ACTION_RUN: "manual-action:run",
+
+  /* ---- Settings broadcast (Phase 5) ---- */
+  SETTINGS_UPDATED: "settings:updated",
 } as const
 
 /** Default workspace-relative paths for trace and screenshot storage */

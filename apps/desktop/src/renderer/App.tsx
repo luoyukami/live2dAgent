@@ -179,6 +179,19 @@ export function App(): JSX.Element {
 
   useEffect(() => {
     window.petAgent.getSettings().then(setSettings)
+    return window.petAgent.onSettingsUpdated?.((updated) => {
+      setSettings(updated)
+    })
+  }, [])
+
+  /* ---- Subscribe to live2d:reloaded broadcast ---- */
+  useEffect(() => {
+    return window.petAgent.onLive2DReloaded?.(() => {
+      setLive2dReloadKey((k) => k + 1)
+    })
+  }, [])
+
+  useEffect(() => {
     return window.petAgent.onAgentEvent((event: AgentEvent) => {
       const nextState = mapEventToState(event)
       if (nextState) setStatus(nextState)
