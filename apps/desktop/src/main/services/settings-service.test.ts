@@ -292,6 +292,53 @@ test("updatePublicPatch: a fully-bad profile patch preserves the existing valid 
 /*  3. Round-trip persistence: bad data on disk does not survive reload */
 /* ------------------------------------------------------------------ */
 
+/* ------------------------------------------------------------------ */
+/*  4. Window mode setting (ui.windowMode)                             */
+/* ------------------------------------------------------------------ */
+
+test("default windowMode is dual", () => {
+  const { service, dir } = makeServiceWith({})
+  try {
+    assert.equal(service.getPublicSettings().ui.windowMode, "dual")
+  } finally {
+    cleanup(dir)
+  }
+})
+
+test("deepMergeDefaults: invalid persisted windowMode falls back to dual", () => {
+  const { service, dir } = makeServiceWith({ ui: { windowMode: "triple" } })
+  try {
+    assert.equal(service.getPublicSettings().ui.windowMode, "dual")
+    assert.equal(service.get().ui.windowMode, "dual")
+  } finally {
+    cleanup(dir)
+  }
+})
+
+test("updatePublicPatch: windowMode accepts dual and combined, rejects others", () => {
+  const { service, dir } = makeServiceWith({})
+  try {
+    // Default is dual
+    assert.equal(service.getPublicSettings().ui.windowMode, "dual")
+
+    // Accept combined
+    service.updatePublicPatch({ ui: { windowMode: "combined" } })
+    assert.equal(service.getPublicSettings().ui.windowMode, "combined")
+
+    // Revert to dual
+    service.updatePublicPatch({ ui: { windowMode: "dual" } })
+    assert.equal(service.getPublicSettings().ui.windowMode, "dual")
+
+    // Reject invalid value
+    assert.throws(
+      () => service.updatePublicPatch({ ui: { windowMode: "triple" as never } }),
+      /Invalid ui\.windowMode/,
+    )
+  } finally {
+    cleanup(dir)
+  }
+})
+
 test("reload(): settings.json written by a previous session is re-sanitized on load", () => {
   const dir = makeTempUserDataDir()
   try {

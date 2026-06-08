@@ -171,6 +171,8 @@ export interface UiSettings {
   opacity: number
   width: number
   height: number
+  /** Startup window mode: dual-window (avatar + UI) or combined single window */
+  windowMode: "dual" | "combined"
 }
 
 /** Agent runtime settings */

@@ -43,6 +43,7 @@ export const DEFAULT_UI_SETTINGS: UiSettings = {
   opacity: 1,
   width: 360,
   height: 720,
+  windowMode: "dual",
 }
 
 export const DEFAULT_AGENT_SETTINGS: AgentSettings = {
@@ -181,6 +182,7 @@ function unquoteYamlScalar(value: string): string {
 
 function deepMergeDefaults(parsed: Record<string, unknown>, defaults: AppSettings): AppSettings {
   const parsedLive2d = (parsed.live2d ?? {}) as Partial<Live2DSettings>
+  const parsedUi = (parsed.ui ?? {}) as Partial<UiSettings>
   // Strip `emotionProfile` from the raw parsed payload BEFORE spreading it
   // into the live2d object. The sanitizer below decides whether a cleaned
   // version of the profile should be added back. Spreading the raw value
@@ -197,7 +199,13 @@ function deepMergeDefaults(parsed: Record<string, unknown>, defaults: AppSetting
       ...safeParsedLive2d,
       ...(sanitizedProfile !== undefined ? { emotionProfile: sanitizedProfile } : {}),
     },
-    ui: { ...defaults.ui, ...((parsed.ui ?? {}) as Partial<UiSettings>) },
+    ui: {
+      ...defaults.ui,
+      ...parsedUi,
+      windowMode: parsedUi.windowMode === "dual" || parsedUi.windowMode === "combined"
+        ? parsedUi.windowMode
+        : defaults.ui.windowMode,
+    },
     agent: { ...defaults.agent, ...((parsed.agent ?? {}) as Partial<AgentSettings>) },
     permissions: { ...defaults.permissions, ...((parsed.permissions ?? {}) as Partial<PermissionSettings>) },
     promptPresets: mergePromptPresetSettings(
@@ -656,6 +664,12 @@ function validatePublicSettingsPatch(patch: unknown): AppSettingsPublicPatch {
     if (opacity !== undefined) patch.opacity = opacity
     if (width !== undefined) patch.width = width
     if (height !== undefined) patch.height = height
+    if (ui.windowMode !== undefined) {
+      if (ui.windowMode !== "dual" && ui.windowMode !== "combined") {
+        throw new Error(`Invalid ui.windowMode: must be "dual" or "combined"`)
+      }
+      patch.windowMode = ui.windowMode as "dual" | "combined"
+    }
     if (Object.keys(patch).length > 0) output.ui = patch
   }
 

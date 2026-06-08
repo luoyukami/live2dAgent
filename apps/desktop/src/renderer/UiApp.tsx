@@ -139,6 +139,7 @@ export function UiApp(): JSX.Element {
         permissionMode: settings.permissions?.mode ?? "permissive",
         windowWidth: String(settings.ui?.width ?? prev.windowWidth),
         windowHeight: String(settings.ui?.height ?? prev.windowHeight),
+        windowMode: settings.ui?.windowMode ?? "dual",
         promptPresets: settings.promptPresets ?? prev.promptPresets,
         emotion: {
           enabled: settings.emotion?.enabled ?? prev.emotion.enabled,
@@ -383,6 +384,7 @@ export function UiApp(): JSX.Element {
       const uiPatch: Record<string, unknown> = {}
       if (nextWindowWidth !== (settings?.ui?.width ?? 360)) uiPatch.width = nextWindowWidth
       if (nextWindowHeight !== (settings?.ui?.height ?? 720)) uiPatch.height = nextWindowHeight
+      if (form.windowMode !== (settings?.ui?.windowMode ?? "dual")) uiPatch.windowMode = form.windowMode
       if (Object.keys(uiPatch).length > 0) publicPatch.ui = uiPatch
 
       const settingsPromptPresets = settings?.promptPresets
@@ -846,6 +848,20 @@ export function UiApp(): JSX.Element {
                           </div>
                         </div>
                         <small className="settings-hint">窗口不可自由拖拽缩放；修改宽高并保存后立即生效。</small>
+                      </div>
+
+                      <div className="settings-card">
+                        <h3 className="settings-card-title">窗口模式</h3>
+                        <div className="settings-group">
+                          <select
+                            value={form.windowMode}
+                            onChange={(e) => setForm((f) => ({ ...f, windowMode: e.target.value as "dual" | "combined" }))}
+                          >
+                            <option value="dual">双窗口（Live2D 和 UI 分开）</option>
+                            <option value="combined">单窗口兼容模式</option>
+                          </select>
+                          <small className="settings-hint">修改后需重启应用才能生效。</small>
+                        </div>
                       </div>
                     </>
                   )}
