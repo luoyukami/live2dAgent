@@ -95,14 +95,14 @@ async function bootstrap(): Promise<void> {
   const prompts = new PromptService(userDataDir)
 
   windowManager = new WindowManager()
-  await windowManager.create(settings.get().ui)
+  await windowManager.createDual(settings.get().ui)
 
   permissions.onPending((request) => {
     trace.append(request.event)
-    windowManager?.sendAgentEvent(request.event)
+    windowManager?.broadcastAgentEvent(request.event)
   })
   agentService = new AgentService({ settings, trace, permissions, artifacts, prompts })
-  agentService.onEvent((event) => windowManager?.sendAgentEvent(event))
+  agentService.onEvent((event) => windowManager?.broadcastAgentEvent(event))
 
   registerIpcHandlers({ agent: agentService, permissions, settings, trace, artifacts, prompts, window: windowManager })
 }
@@ -110,9 +110,9 @@ async function bootstrap(): Promise<void> {
 app.whenReady().then(bootstrap)
 
 app.on("activate", async () => {
-  if (windowManager && !windowManager.hasWindow()) {
+  if (windowManager && !windowManager.hasAnyWindow()) {
     const settings = new SettingsService(app.getPath("userData"))
-    await windowManager.create(settings.get().ui)
+    await windowManager.createDual(settings.get().ui)
   }
 })
 

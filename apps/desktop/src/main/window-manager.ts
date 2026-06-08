@@ -75,9 +75,18 @@ export class WindowManager {
   }
 
   setSize(width: number, height: number): void {
-    if (!this.combinedWindow || this.combinedWindow.isDestroyed()) return
     const nextWidth = clampWindowDimension(width, 360)
     const nextHeight = clampWindowDimension(height, 720)
+
+    // In dual mode, resize the avatar window only; the UI window keeps its own size.
+    if (this.avatarWindow && !this.avatarWindow.isDestroyed()) {
+      this.avatarWindow.setMinimumSize(200, 200)
+      this.avatarWindow.setMaximumSize(4000, 4000)
+      this.avatarWindow.setContentSize(nextWidth, nextHeight, false)
+      return
+    }
+
+    if (!this.combinedWindow || this.combinedWindow.isDestroyed()) return
     this.combinedWindow.setMinimumSize(200, 200)
     this.combinedWindow.setMaximumSize(4000, 4000)
     this.combinedWindow.setContentSize(nextWidth, nextHeight, false)
@@ -129,21 +138,20 @@ export class WindowManager {
   }
 
   // ════════════════════════════════════════════════════════════════
-  //  Dual-window skeleton (Phase 2) — NOT enabled by default
+  //  Dual-window mode — default startup (Phase 5+)
   // ════════════════════════════════════════════════════════════════
 
   /**
    * Create separate avatar + UI windows.
    *
-   * - **Avatar window**: transparent, frameless, always-on-top, skip taskbar.
-   *   Loads renderer with `?window=avatar`.
-   * - **UI window**: standard interactive window (no transparency, resizable).
-   *   Loads renderer with `?window=ui`.
+   * - **Avatar window**: transparent, frameless, always-on-top, skip taskbar,
+   *   non-interactive (click-through).  Loads renderer with `?window=avatar`.
+   * - **UI window**: standard interactive window (no transparency, resizable,
+   *   always-on-top).  Loads renderer with `?window=ui`.
    *
    * Both windows share the same preload and context‑isolation settings.
-   * This method is a skeleton — it is **not** called during normal startup
-   * (see `main.ts` which still calls `create()`).  Switch to this when
-   * `AvatarApp` / `UiApp` are ready in Phase 3+.
+   * This is the default startup mode (called from `bootstrap()` in main.ts).
+   * The combined single-window `create()` path remains as a fallback.
    */
   async createDual(ui?: Pick<UiSettings, "width" | "height">): Promise<void> {
     const display = screen.getPrimaryDisplay()
@@ -161,6 +169,7 @@ export class WindowManager {
       transparent: true,
       backgroundColor: "#00000000",
       frame: false,
+      focusable: false,
       resizable: false,
       alwaysOnTop: true,
       skipTaskbar: true,
@@ -174,6 +183,8 @@ export class WindowManager {
     })
     this.avatarWindow.setMenuBarVisibility(false)
     this.avatarWindow.setMaximizable(false)
+    // Avatar window is non-interactive: clicks pass through to desktop
+    this.avatarWindow.setIgnoreMouseEvents(true, { forward: true })
     await this.loadRenderer(this.avatarWindow, "avatar")
 
     // ── UI window ───────────────────────────────────────────────
@@ -184,9 +195,9 @@ export class WindowManager {
       x: Math.max(0, workWidth - 380 - 20),
       y: Math.max(0, workHeight - 740 - 20),
       transparent: false,
-      frame: false,
+      frame: true,
       resizable: true,
-      alwaysOnTop: false,
+      alwaysOnTop: true,
       skipTaskbar: false,
       webPreferences: {
         preload: join(__dirname, "../preload/index.js"),
