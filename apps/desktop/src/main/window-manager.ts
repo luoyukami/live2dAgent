@@ -153,7 +153,7 @@ export class WindowManager {
    * This is the default startup mode (called from `bootstrap()` in main.ts).
    * The combined single-window `create()` path remains as a fallback.
    */
-  async createDual(ui?: Pick<UiSettings, "width" | "height">): Promise<void> {
+  async createDual(ui?: Pick<UiSettings, "width" | "height" | "panelWidth" | "panelHeight">): Promise<void> {
     const display = screen.getPrimaryDisplay()
     const { width: workWidth, height: workHeight } = display.workAreaSize
     const avatarWidth = clampWindowDimension(ui?.width, 360)
@@ -188,13 +188,11 @@ export class WindowManager {
     await this.loadRenderer(this.avatarWindow, "avatar")
 
     // ── UI window ───────────────────────────────────────────────
-    // Independent fixed default layout — not derived from avatar dimensions.
-    const UI_DEFAULT_WIDTH = 460
-    const UI_DEFAULT_HEIGHT = 760
+    // Use persisted panel dimensions, clamped to the work area.
     const WINDOW_GAP = 10
 
-    const uiWidth = Math.min(UI_DEFAULT_WIDTH, Math.max(200, workWidth - WINDOW_GAP * 2))
-    const uiHeight = Math.min(UI_DEFAULT_HEIGHT, Math.max(200, workHeight - WINDOW_GAP * 2))
+    const uiWidth = Math.min(clampWindowDimension(ui?.panelWidth, 460), Math.max(200, workWidth - WINDOW_GAP * 2))
+    const uiHeight = Math.min(clampWindowDimension(ui?.panelHeight, 760), Math.max(200, workHeight - WINDOW_GAP * 2))
 
     // Prefer positioning the UI window to the left of the avatar window
     // with a small gap, so the two windows do not overlap.

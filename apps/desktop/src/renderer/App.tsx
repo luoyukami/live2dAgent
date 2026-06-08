@@ -153,6 +153,8 @@ export function App(): JSX.Element {
         permissionMode: settings.permissions?.mode ?? "permissive",
         windowWidth: String(settings.ui?.width ?? prev.windowWidth),
         windowHeight: String(settings.ui?.height ?? prev.windowHeight),
+        panelWidth: String(settings.ui?.panelWidth ?? prev.panelWidth),
+        panelHeight: String(settings.ui?.panelHeight ?? prev.panelHeight),
         windowMode: settings.ui?.windowMode ?? "dual",
         promptPresets: settings.promptPresets ?? prev.promptPresets,
         emotion: {
@@ -396,9 +398,13 @@ export function App(): JSX.Element {
 
       const nextWindowWidth = normalizeFormDimension(form.windowWidth, settings?.ui?.width ?? 360)
       const nextWindowHeight = normalizeFormDimension(form.windowHeight, settings?.ui?.height ?? 720)
+      const nextPanelWidth = normalizeFormDimension(form.panelWidth, settings?.ui?.panelWidth ?? 460)
+      const nextPanelHeight = normalizeFormDimension(form.panelHeight, settings?.ui?.panelHeight ?? 760)
       const uiPatch: Record<string, unknown> = {}
       if (nextWindowWidth !== (settings?.ui?.width ?? 360)) uiPatch.width = nextWindowWidth
       if (nextWindowHeight !== (settings?.ui?.height ?? 720)) uiPatch.height = nextWindowHeight
+      if (nextPanelWidth !== (settings?.ui?.panelWidth ?? 460)) uiPatch.panelWidth = nextPanelWidth
+      if (nextPanelHeight !== (settings?.ui?.panelHeight ?? 760)) uiPatch.panelHeight = nextPanelHeight
       if (form.windowMode !== (settings?.ui?.windowMode ?? "dual")) uiPatch.windowMode = form.windowMode
       if (Object.keys(uiPatch).length > 0) publicPatch.ui = uiPatch
 
@@ -948,7 +954,7 @@ export function App(): JSX.Element {
 
                         <div className="settings-grid two-cols">
                           <div className="settings-group">
-                            <label>窗口宽度</label>
+                            <label>Live2D展示宽度</label>
                             <input
                               type="number"
                               step={10}
@@ -958,7 +964,7 @@ export function App(): JSX.Element {
                             />
                           </div>
                           <div className="settings-group">
-                            <label>窗口高度</label>
+                            <label>Live2D展示高度</label>
                             <input
                               type="number"
                               step={10}
@@ -968,7 +974,31 @@ export function App(): JSX.Element {
                             />
                           </div>
                         </div>
-                        <small className="settings-hint">窗口不可自由拖拽缩放；修改宽高并保存后立即生效。</small>
+                        <small className="settings-hint">展示宽高修改后立即生效。</small>
+
+                        <div className="settings-grid two-cols">
+                          <div className="settings-group">
+                            <label>UI窗口宽度</label>
+                            <input
+                              type="number"
+                              step={10}
+                              value={form.panelWidth}
+                              onChange={(e) => setForm((f) => ({ ...f, panelWidth: e.target.value }))}
+                              onBlur={() => setForm((f) => ({ ...f, panelWidth: String(normalizeFormDimension(f.panelWidth, settings?.ui?.panelWidth ?? 460)) }))}
+                            />
+                          </div>
+                          <div className="settings-group">
+                            <label>UI窗口高度</label>
+                            <input
+                              type="number"
+                              step={10}
+                              value={form.panelHeight}
+                              onChange={(e) => setForm((f) => ({ ...f, panelHeight: e.target.value }))}
+                              onBlur={() => setForm((f) => ({ ...f, panelHeight: String(normalizeFormDimension(f.panelHeight, settings?.ui?.panelHeight ?? 760)) }))}
+                            />
+                          </div>
+                        </div>
+                        <small className="settings-hint">UI窗口尺寸在双窗口模式下使用，修改后需重启应用才能生效。</small>
                       </div>
 
                       <div className="settings-card">

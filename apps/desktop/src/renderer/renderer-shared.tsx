@@ -24,6 +24,8 @@ export interface SettingsForm {
   permissionMode: PublicSettings["permissions"]["mode"]
   windowWidth: string
   windowHeight: string
+  panelWidth: string
+  panelHeight: string
   windowMode: "dual" | "combined"
   promptPresets: PromptPresetSettings
   emotion: EmotionSettings
@@ -102,6 +104,8 @@ export function defaultForm(): SettingsForm {
     permissionMode: "permissive",
     windowWidth: "360",
     windowHeight: "720",
+    panelWidth: "460",
+    panelHeight: "760",
     windowMode: "dual",
     promptPresets: { ...DEFAULT_PROMPT_PRESET_SETTINGS },
     emotion: {

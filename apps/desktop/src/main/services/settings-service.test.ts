@@ -289,11 +289,79 @@ test("updatePublicPatch: a fully-bad profile patch preserves the existing valid 
 })
 
 /* ------------------------------------------------------------------ */
-/*  3. Round-trip persistence: bad data on disk does not survive reload */
+/*  3. Panel dimensions (ui.panelWidth / ui.panelHeight)               */
+/* ------------------------------------------------------------------ */
+
+test("default panel dimensions are 460 / 760", () => {
+  const { service, dir } = makeServiceWith({})
+  try {
+    assert.equal(service.getPublicSettings().ui.panelWidth, 460)
+    assert.equal(service.getPublicSettings().ui.panelHeight, 760)
+  } finally {
+    cleanup(dir)
+  }
+})
+
+test("deepMergeDefaults: persisted panel dimensions override defaults", () => {
+  const { service, dir } = makeServiceWith({ ui: { panelWidth: 500, panelHeight: 800 } })
+  try {
+    assert.equal(service.getPublicSettings().ui.panelWidth, 500)
+    assert.equal(service.getPublicSettings().ui.panelHeight, 800)
+  } finally {
+    cleanup(dir)
+  }
+})
+
+test("deepMergeDefaults: missing panel dimensions fall back to defaults", () => {
+  // Simulate a settings.json saved by an older version without panel fields.
+  const { service, dir } = makeServiceWith({
+    ui: { width: 360, height: 720, windowMode: "dual" },
+  })
+  try {
+    assert.equal(service.getPublicSettings().ui.panelWidth, 460)
+    assert.equal(service.getPublicSettings().ui.panelHeight, 760)
+  } finally {
+    cleanup(dir)
+  }
+})
+
+test("updatePublicPatch: panelWidth / panelHeight accept valid integers", () => {
+  const { service, dir } = makeServiceWith({})
+  try {
+    service.updatePublicPatch({ ui: { panelWidth: 600, panelHeight: 900 } })
+    assert.equal(service.getPublicSettings().ui.panelWidth, 600)
+    assert.equal(service.getPublicSettings().ui.panelHeight, 900)
+  } finally {
+    cleanup(dir)
+  }
+})
+
+test("updatePublicPatch: panel dimensions reject out-of-range values", () => {
+  const { service, dir } = makeServiceWith({})
+  try {
+    assert.throws(
+      () => service.updatePublicPatch({ ui: { panelWidth: 50 } }),
+      /ui\.panelWidth must be a number between 200 and 4000/,
+    )
+    assert.throws(
+      () => service.updatePublicPatch({ ui: { panelHeight: 5000 } }),
+      /ui\.panelHeight must be a number between 200 and 4000/,
+    )
+    assert.throws(
+      () => service.updatePublicPatch({ ui: { panelWidth: 350.5 } }),
+      /ui\.panelWidth must be an integer between 200 and 4000/,
+    )
+  } finally {
+    cleanup(dir)
+  }
+})
+
+/* ------------------------------------------------------------------ */
+/*  4. Round-trip persistence: bad data on disk does not survive reload */
 /* ------------------------------------------------------------------ */
 
 /* ------------------------------------------------------------------ */
-/*  4. Window mode setting (ui.windowMode)                             */
+/*  5. Window mode setting (ui.windowMode)                             */
 /* ------------------------------------------------------------------ */
 
 test("default windowMode is dual", () => {

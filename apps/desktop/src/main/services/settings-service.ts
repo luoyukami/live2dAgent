@@ -43,6 +43,8 @@ export const DEFAULT_UI_SETTINGS: UiSettings = {
   opacity: 1,
   width: 360,
   height: 720,
+  panelWidth: 460,
+  panelHeight: 760,
   windowMode: "dual",
 }
 
@@ -661,9 +663,13 @@ function validatePublicSettingsPatch(patch: unknown): AppSettingsPublicPatch {
     const opacity = numberInRange(ui.opacity, "ui.opacity", 0.2, 1)
     const width = integerInRange(ui.width, "ui.width", 200, 4000)
     const height = integerInRange(ui.height, "ui.height", 200, 4000)
+    const panelWidth = integerInRange(ui.panelWidth, "ui.panelWidth", 200, 4000)
+    const panelHeight = integerInRange(ui.panelHeight, "ui.panelHeight", 200, 4000)
     if (opacity !== undefined) patch.opacity = opacity
     if (width !== undefined) patch.width = width
     if (height !== undefined) patch.height = height
+    if (panelWidth !== undefined) patch.panelWidth = panelWidth
+    if (panelHeight !== undefined) patch.panelHeight = panelHeight
     if (ui.windowMode !== undefined) {
       if (ui.windowMode !== "dual" && ui.windowMode !== "combined") {
         throw new Error(`Invalid ui.windowMode: must be "dual" or "combined"`)
