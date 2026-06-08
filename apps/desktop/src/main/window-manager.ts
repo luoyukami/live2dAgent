@@ -6,19 +6,37 @@ import type { UiSettings } from "@live2d-agent/shared"
 
 const isDev = process.env.NODE_ENV === "development"
 
+type WindowRole = "avatar" | "ui" | "combined"
+
 export class WindowManager {
-  private win?: BrowserWindow
+  /** Single-window (combined) mode — the default behaviour. */
+  private combinedWindow?: BrowserWindow
+
+  /** Dual-window mode — dedicated avatar / UI windows. */
+  private avatarWindow?: BrowserWindow
+  private uiWindow?: BrowserWindow
+
+  /** Drag state for the combined window (single-window mode). */
   private dragTimer?: NodeJS.Timeout
   private dragStart?: { cursorX: number; cursorY: number; windowX: number; windowY: number }
   private lockedSize?: { width: number; height: number }
 
+  // ════════════════════════════════════════════════════════════════
+  //  Single-window (combined) mode — backward-compatible API
+  // ════════════════════════════════════════════════════════════════
+
+  /**
+   * Create the combined single window (current default behaviour).
+   * The renderer loads without a `?window=` query param, which signals
+   * the monolithic App root (default `"combined"` role).
+   */
   async create(ui?: Pick<UiSettings, "width" | "height">): Promise<void> {
     const display = screen.getPrimaryDisplay()
     const { width: workWidth, height: workHeight } = display.workAreaSize
     const windowWidth = clampWindowDimension(ui?.width, 360)
     const windowHeight = clampWindowDimension(ui?.height, 720)
 
-    this.win = new BrowserWindow({
+    this.combinedWindow = new BrowserWindow({
       width: windowWidth,
       height: windowHeight,
       useContentSize: true,
@@ -39,50 +57,46 @@ export class WindowManager {
       },
     })
 
-    this.win.setMenuBarVisibility(false)
-    this.win.setMaximizable(false)
-    this.lockCurrentWindowSize()
+    this.combinedWindow.setMenuBarVisibility(false)
+    this.combinedWindow.setMaximizable(false)
+    this.lockCurrentWindowSize(this.combinedWindow)
 
-    if (isDev && process.env.ELECTRON_RENDERER_URL) {
-      await this.win.loadURL(process.env.ELECTRON_RENDERER_URL)
-      this.win.webContents.openDevTools({ mode: "detach" })
-      return
-    }
-
-    await this.win.loadFile(join(__dirname, "../renderer/index.html"))
+    await this.loadRenderer(this.combinedWindow)
   }
 
+  /** Whether the combined single-window still exists. */
   hasWindow(): boolean {
-    return !this.win?.isDestroyed()
+    return this.combinedWindow !== undefined && !this.combinedWindow.isDestroyed()
   }
 
+  /** Send an AgentEvent to the combined window (backward compat). */
   sendAgentEvent(event: AgentEvent): void {
-    this.win?.webContents.send(IPC_CHANNELS.ON_AGENT_EVENT, event)
+    this.combinedWindow?.webContents.send(IPC_CHANNELS.ON_AGENT_EVENT, event)
   }
 
   setSize(width: number, height: number): void {
-    if (!this.win || this.win.isDestroyed()) return
+    if (!this.combinedWindow || this.combinedWindow.isDestroyed()) return
     const nextWidth = clampWindowDimension(width, 360)
     const nextHeight = clampWindowDimension(height, 720)
-    this.win.setMinimumSize(200, 200)
-    this.win.setMaximumSize(4000, 4000)
-    this.win.setContentSize(nextWidth, nextHeight, false)
-    this.lockCurrentWindowSize()
+    this.combinedWindow.setMinimumSize(200, 200)
+    this.combinedWindow.setMaximumSize(4000, 4000)
+    this.combinedWindow.setContentSize(nextWidth, nextHeight, false)
+    this.lockCurrentWindowSize(this.combinedWindow)
   }
 
   moveBy(dx: number, dy: number): void {
-    if (!this.win || this.win.isDestroyed()) return
+    if (!this.combinedWindow || this.combinedWindow.isDestroyed()) return
     if (!Number.isFinite(dx) || !Number.isFinite(dy)) return
-    const [x, y] = this.win.getPosition()
-    this.win.setPosition(Math.round(x + dx), Math.round(y + dy), false)
-    this.restoreLockedSize()
+    const [x, y] = this.combinedWindow.getPosition()
+    this.combinedWindow.setPosition(Math.round(x + dx), Math.round(y + dy), false)
+    this.restoreLockedSize(this.combinedWindow)
   }
 
   startDrag(): void {
-    if (!this.win || this.win.isDestroyed()) return
+    if (!this.combinedWindow || this.combinedWindow.isDestroyed()) return
     this.endDrag()
     const cursor = screen.getCursorScreenPoint()
-    const [windowX, windowY] = this.win.getPosition()
+    const [windowX, windowY] = this.combinedWindow.getPosition()
     this.dragStart = { cursorX: cursor.x, cursorY: cursor.y, windowX, windowY }
     this.dragTimer = setInterval(() => this.updateDragPosition(), 16)
   }
@@ -96,37 +110,183 @@ export class WindowManager {
   }
 
   private updateDragPosition(): void {
-    if (!this.win || this.win.isDestroyed() || !this.dragStart) {
+    if (!this.combinedWindow || this.combinedWindow.isDestroyed() || !this.dragStart) {
       this.endDrag()
       return
     }
     const cursor = screen.getCursorScreenPoint()
-    this.win.setPosition(
+    this.combinedWindow.setPosition(
       Math.round(this.dragStart.windowX + cursor.x - this.dragStart.cursorX),
       Math.round(this.dragStart.windowY + cursor.y - this.dragStart.cursorY),
       false,
     )
-    this.restoreLockedSize()
+    this.restoreLockedSize(this.combinedWindow)
   }
 
   setMousePassthrough(enabled: boolean): void {
-    if (!this.win || this.win.isDestroyed()) return
-    this.win.setIgnoreMouseEvents(enabled, { forward: true })
+    if (!this.combinedWindow || this.combinedWindow.isDestroyed()) return
+    this.combinedWindow.setIgnoreMouseEvents(enabled, { forward: true })
   }
 
-  private lockCurrentWindowSize(): void {
-    if (!this.win || this.win.isDestroyed()) return
-    const [width, height] = this.win.getSize()
+  // ════════════════════════════════════════════════════════════════
+  //  Dual-window skeleton (Phase 2) — NOT enabled by default
+  // ════════════════════════════════════════════════════════════════
+
+  /**
+   * Create separate avatar + UI windows.
+   *
+   * - **Avatar window**: transparent, frameless, always-on-top, skip taskbar.
+   *   Loads renderer with `?window=avatar`.
+   * - **UI window**: standard interactive window (no transparency, resizable).
+   *   Loads renderer with `?window=ui`.
+   *
+   * Both windows share the same preload and context‑isolation settings.
+   * This method is a skeleton — it is **not** called during normal startup
+   * (see `main.ts` which still calls `create()`).  Switch to this when
+   * `AvatarApp` / `UiApp` are ready in Phase 3+.
+   */
+  async createDual(ui?: Pick<UiSettings, "width" | "height">): Promise<void> {
+    const display = screen.getPrimaryDisplay()
+    const { width: workWidth, height: workHeight } = display.workAreaSize
+    const avatarWidth = clampWindowDimension(ui?.width, 360)
+    const avatarHeight = clampWindowDimension(ui?.height, 720)
+
+    // ── Avatar window ───────────────────────────────────────────
+    this.avatarWindow = new BrowserWindow({
+      width: avatarWidth,
+      height: avatarHeight,
+      useContentSize: true,
+      x: Math.max(0, workWidth - avatarWidth - 20),
+      y: Math.max(0, workHeight - avatarHeight - 20),
+      transparent: true,
+      backgroundColor: "#00000000",
+      frame: false,
+      resizable: false,
+      alwaysOnTop: true,
+      skipTaskbar: true,
+      hasShadow: false,
+      webPreferences: {
+        preload: join(__dirname, "../preload/index.js"),
+        nodeIntegration: false,
+        contextIsolation: true,
+        sandbox: true,
+      },
+    })
+    this.avatarWindow.setMenuBarVisibility(false)
+    this.avatarWindow.setMaximizable(false)
+    await this.loadRenderer(this.avatarWindow, "avatar")
+
+    // ── UI window ───────────────────────────────────────────────
+    this.uiWindow = new BrowserWindow({
+      width: clampWindowDimension(ui?.width, 360),
+      height: clampWindowDimension(ui?.height, 720),
+      useContentSize: true,
+      x: Math.max(0, workWidth - 380 - 20),
+      y: Math.max(0, workHeight - 740 - 20),
+      transparent: false,
+      frame: false,
+      resizable: true,
+      alwaysOnTop: false,
+      skipTaskbar: false,
+      webPreferences: {
+        preload: join(__dirname, "../preload/index.js"),
+        nodeIntegration: false,
+        contextIsolation: true,
+        sandbox: true,
+      },
+    })
+    this.uiWindow.setMenuBarVisibility(false)
+    await this.loadRenderer(this.uiWindow, "ui")
+  }
+
+  /**
+   * Check whether **any** managed window is alive (combined, avatar,
+   * or UI).  Useful for `app.on("activate")` when dual mode may be active.
+   */
+  hasAnyWindow(): boolean {
+    return (
+      (this.combinedWindow !== undefined && !this.combinedWindow.isDestroyed()) ||
+      (this.avatarWindow !== undefined && !this.avatarWindow.isDestroyed()) ||
+      (this.uiWindow !== undefined && !this.uiWindow.isDestroyed())
+    )
+  }
+
+  /** Send a raw IPC message to the avatar window (if it exists). */
+  sendToAvatar(channel: string, ...args: unknown[]): void {
+    this.avatarWindow?.webContents.send(channel, ...args)
+  }
+
+  /** Send a raw IPC message to the UI window (if it exists). */
+  sendToUi(channel: string, ...args: unknown[]): void {
+    this.uiWindow?.webContents.send(channel, ...args)
+  }
+
+  /**
+   * Broadcast an AgentEvent to every open window.
+   *
+   * In combined mode this sends to the single window; in dual mode it
+   * sends to both avatar and UI windows.  Callers can safely use this
+   * instead of `sendAgentEvent` once dual windows are enabled.
+   */
+  broadcastAgentEvent(event: AgentEvent): void {
+    const payload = IPC_CHANNELS.ON_AGENT_EVENT
+    if (this.combinedWindow && !this.combinedWindow.isDestroyed()) {
+      this.combinedWindow.webContents.send(payload, event)
+    }
+    if (this.avatarWindow && !this.avatarWindow.isDestroyed()) {
+      this.avatarWindow.webContents.send(payload, event)
+    }
+    if (this.uiWindow && !this.uiWindow.isDestroyed()) {
+      this.uiWindow.webContents.send(payload, event)
+    }
+  }
+
+  // ════════════════════════════════════════════════════════════════
+  //  Private helpers
+  // ════════════════════════════════════════════════════════════════
+
+  /**
+   * Load the renderer HTML/URL into `win`, optionally with a `?window=`
+   * query param that the renderer-side `getWindowRole()` will read.
+   *
+   * - **Development**: appends `?window=<role>` to `ELECTRON_RENDERER_URL`.
+   *   DevTools are opened for the combined window only.
+   * - **Production / packaged**: uses `loadFile` with `query` option.
+   */
+  private async loadRenderer(win: BrowserWindow, role?: WindowRole): Promise<void> {
+    if (isDev && process.env.ELECTRON_RENDERER_URL) {
+      let url = process.env.ELECTRON_RENDERER_URL
+      if (role) {
+        const separator = url.includes("?") ? "&" : "?"
+        url = `${url}${separator}window=${role}`
+      }
+      await win.loadURL(url)
+      // Open DevTools only for the combined window in dev mode
+      if (!role || role === "combined") {
+        win.webContents.openDevTools({ mode: "detach" })
+      }
+      return
+    }
+
+    // Packaged / production — pass query via Electron's loadFile API
+    const query = role ? { window: role } : undefined
+    await win.loadFile(join(__dirname, "../renderer/index.html"), { query })
+  }
+
+  private lockCurrentWindowSize(win: BrowserWindow): void {
+    if (win.isDestroyed()) return
+    const [width, height] = win.getSize()
     this.lockedSize = { width, height }
-    this.win.setMinimumSize(width, height)
-    this.win.setMaximumSize(width, height)
+    win.setMinimumSize(width, height)
+    win.setMaximumSize(width, height)
   }
 
-  private restoreLockedSize(): void {
-    if (!this.win || this.win.isDestroyed() || !this.lockedSize) return
-    const bounds = this.win.getBounds()
+  private restoreLockedSize(win?: BrowserWindow): void {
+    const target = win ?? this.combinedWindow
+    if (!target || target.isDestroyed() || !this.lockedSize) return
+    const bounds = target.getBounds()
     if (bounds.width === this.lockedSize.width && bounds.height === this.lockedSize.height) return
-    this.win.setBounds({
+    target.setBounds({
       x: bounds.x,
       y: bounds.y,
       width: this.lockedSize.width,
