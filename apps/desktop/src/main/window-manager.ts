@@ -188,12 +188,37 @@ export class WindowManager {
     await this.loadRenderer(this.avatarWindow, "avatar")
 
     // ── UI window ───────────────────────────────────────────────
+    // Independent fixed default layout — not derived from avatar dimensions.
+    const UI_DEFAULT_WIDTH = 460
+    const UI_DEFAULT_HEIGHT = 760
+    const WINDOW_GAP = 10
+
+    const uiWidth = Math.min(UI_DEFAULT_WIDTH, Math.max(200, workWidth - WINDOW_GAP * 2))
+    const uiHeight = Math.min(UI_DEFAULT_HEIGHT, Math.max(200, workHeight - WINDOW_GAP * 2))
+
+    // Prefer positioning the UI window to the left of the avatar window
+    // with a small gap, so the two windows do not overlap.
+    const avatarX = Math.max(0, workWidth - avatarWidth - 20)
+
+    let uiX = avatarX - WINDOW_GAP - uiWidth
+    if (uiX < 0) {
+      // Not enough room on the left — try right of the avatar instead.
+      uiX = avatarX + avatarWidth + WINDOW_GAP
+      if (uiX + uiWidth > workWidth) {
+        // Neither side works — place at the left edge of the work area.
+        uiX = WINDOW_GAP
+      }
+    }
+
+    // Vertically align the UI window bottom with the work area.
+    const uiY = Math.max(WINDOW_GAP, workHeight - uiHeight - 20)
+
     this.uiWindow = new BrowserWindow({
-      width: clampWindowDimension(ui?.width, 360),
-      height: clampWindowDimension(ui?.height, 720),
+      width: Math.round(uiWidth),
+      height: Math.round(uiHeight),
       useContentSize: true,
-      x: Math.max(0, workWidth - 380 - 20),
-      y: Math.max(0, workHeight - 740 - 20),
+      x: Math.round(uiX),
+      y: Math.round(uiY),
       transparent: false,
       frame: true,
       resizable: true,
