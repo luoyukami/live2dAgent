@@ -1,7 +1,14 @@
 import { contextBridge, ipcRenderer } from "electron"
 import { IPC_CHANNELS } from "@live2d-agent/shared"
 import type { AgentEvent } from "@live2d-agent/agent-core"
-import type { PublicSettings, AppSettingsPublicPatch, DebugSnapshot, IpcSaveAudioRecordingRequest, IpcSaveAudioRecordingResponse, IpcSendUserMessageRequest, CompactInputAnchor, AvatarHitRegionRect } from "@live2d-agent/shared"
+import type {
+  PublicSettings, AppSettingsPublicPatch, DebugSnapshot,
+  IpcSaveAudioRecordingRequest, IpcSaveAudioRecordingResponse,
+  IpcSendUserMessageRequest, CompactInputAnchor, AvatarHitRegionRect,
+  IpcTtsHealthCheckResponse, IpcTtsListVoicesResponse,
+  IpcTtsRegisterVoiceRequest, IpcTtsGenerateRequest, IpcTtsGenerateResponse,
+  LocalTtsSettings,
+} from "@live2d-agent/shared"
 
 const api = {
   /* ---- Agent ---- */
@@ -110,6 +117,32 @@ const api = {
     lastError: string
   }>): Promise<void> =>
     ipcRenderer.invoke(IPC_CHANNELS.VOICE_DEBUG_UPDATE, input),
+
+  /* ---- TTS (Phase 2) ---- */
+  ttsHealthCheck: (): Promise<IpcTtsHealthCheckResponse> =>
+    ipcRenderer.invoke(IPC_CHANNELS.TTS_HEALTH_CHECK),
+  ttsListVoices: (): Promise<IpcTtsListVoicesResponse> =>
+    ipcRenderer.invoke(IPC_CHANNELS.TTS_LIST_VOICES),
+  ttsRegisterVoice: (request: IpcTtsRegisterVoiceRequest): Promise<{ ok: boolean; error?: string }> =>
+    ipcRenderer.invoke(IPC_CHANNELS.TTS_REGISTER_VOICE, request),
+  ttsRenameVoice: (voiceId: string, displayName: string): Promise<{ ok: boolean; error?: string }> =>
+    ipcRenderer.invoke(IPC_CHANNELS.TTS_RENAME_VOICE, voiceId, displayName),
+  ttsDeleteVoice: (voiceId: string): Promise<{ ok: boolean; error?: string }> =>
+    ipcRenderer.invoke(IPC_CHANNELS.TTS_DELETE_VOICE, voiceId),
+  ttsGenerate: (request: IpcTtsGenerateRequest): Promise<IpcTtsGenerateResponse> =>
+    ipcRenderer.invoke(IPC_CHANNELS.TTS_GENERATE, request),
+  ttsPlayAudio: (audioPath: string): Promise<{ ok: boolean; error?: string }> =>
+    ipcRenderer.invoke(IPC_CHANNELS.TTS_PLAY_AUDIO, audioPath),
+  ttsStopAudio: (): Promise<void> =>
+    ipcRenderer.invoke(IPC_CHANNELS.TTS_STOP_AUDIO),
+  ttsGetSettings: (): Promise<LocalTtsSettings> =>
+    ipcRenderer.invoke(IPC_CHANNELS.TTS_GET_SETTINGS),
+  ttsUpdateSettings: (patch: Partial<LocalTtsSettings>): Promise<void> =>
+    ipcRenderer.invoke(IPC_CHANNELS.TTS_UPDATE_SETTINGS, patch),
+  ttsOpenAudioFolder: (): Promise<void> =>
+    ipcRenderer.invoke(IPC_CHANNELS.TTS_OPEN_AUDIO_FOLDER),
+  ttsSelectAudioDir: (): Promise<string | null> =>
+    ipcRenderer.invoke(IPC_CHANNELS.TTS_SELECT_AUDIO_DIR),
 }
 
 contextBridge.exposeInMainWorld("petAgent", api)

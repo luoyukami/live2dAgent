@@ -223,6 +223,7 @@ export interface AppSettings {
   promptPresets: PromptPresetSettings
   emotion: EmotionSettings
   voice: VoiceInputSettings
+  tts: LocalTtsSettings
 }
 
 /** Public-facing settings — API key replaced with a boolean flag */
@@ -252,6 +253,72 @@ export type PromptPresetSettingsPatch = Partial<PromptPresetSettings>
 /** Partial patch for voice input settings (allowed in public patch) */
 export type VoiceInputSettingsPatch = Partial<VoiceInputSettings>
 
+/* ------------------------------------------------------------------ */
+/*  TTS settings (Phase 1)                                             */
+/* ------------------------------------------------------------------ */
+
+export interface LocalTtsSettings {
+  enabled: boolean
+  apiBaseUrl: string
+  selectedVoiceId?: string
+  voiceDisplayNames: Record<string, string>
+  ttsMode: "standard" | "emotion_enhanced"
+  emotionControlMode: "default_mapping" | "llm_controlled"
+  speed: number
+  seed: number
+  audioOutputDir: string
+  autoGenerateOnAssistantMessage: boolean
+  autoPlayAfterGenerate: boolean
+  requestTimeoutMs: number
+}
+
+export const DEFAULT_LOCAL_TTS_SETTINGS: LocalTtsSettings = {
+  enabled: false,
+  apiBaseUrl: "http://127.0.0.1:50001",
+  selectedVoiceId: undefined,
+  voiceDisplayNames: {},
+  ttsMode: "standard",
+  emotionControlMode: "default_mapping",
+  speed: 1.0,
+  seed: -1,
+  audioOutputDir: "",
+  autoGenerateOnAssistantMessage: true,
+  autoPlayAfterGenerate: true,
+  requestTimeoutMs: 120000,
+}
+
+export interface RegisteredVoice {
+  voiceId: string
+  displayName?: string
+  promptText?: string
+  isSelected: boolean
+}
+
+export interface TtsRequestSnapshot {
+  apiBaseUrl: string
+  endpoint: "/v1/tts/zero-shot" | "/v1/tts/instruct"
+  text: string
+  voiceId: string
+  instruction?: string
+  speed: number
+  seed: number
+  mode: "standard" | "emotion_enhanced"
+  emotionControlMode?: "default_mapping" | "llm_controlled"
+}
+
+export interface MessageAudioState {
+  status: "none" | "queued" | "generating" | "ready" | "playing" | "error"
+  currentAudioPath?: string
+  lastError?: string
+  requestSnapshot?: TtsRequestSnapshot
+  parsedEmotion?: string
+  parsedTtsInstruction?: string
+  createdAt?: number
+  updatedAt?: number
+}
+
+export type TtsSettingsPatch = Partial<LocalTtsSettings>
+
 /** Patch payload allowed through updatePublicPatch — no API key or workspace */
 export interface AppSettingsPublicPatch {
   mode?: AgentMode
@@ -265,6 +332,7 @@ export interface AppSettingsPublicPatch {
   promptPresets?: PromptPresetSettingsPatch
   emotion?: EmotionSettingsPatch
   voice?: VoiceInputSettingsPatch
+  tts?: TtsSettingsPatch
 }
 
 /* ------------------------------------------------------------------ */
@@ -326,6 +394,15 @@ export interface DebugSnapshot {
 
   /* ---- Voice input (v0 voice feature) ---- */
   voice?: DebugVoiceInfo
+
+  /* ---- TTS ---- */
+  tts?: {
+    enabled: boolean
+    apiBaseUrl: string
+    selectedVoiceId?: string
+    ttsMode: string
+    connectionStatus: string
+  }
 }
 
 /**

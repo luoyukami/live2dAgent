@@ -121,3 +121,44 @@ test("null/undefined raw text degrades to empty", () => {
   assert.equal(result.emotion, "neutral")
   assert.equal(result.emotionSource, "fallback")
 })
+
+/* ------------------------------------------------------------------ */
+/*  TTS instruction extraction tests                                   */
+/* ------------------------------------------------------------------ */
+
+test("extracts TTS instruction from text with emotion tag", () => {
+  // TTS instruction comes before the trailing emotion tag
+  const input = '你好，主人！\n[[TTS_INSTRUCTION:请用开心的语气说这句话。]]\n<emotion value="happy" />'
+  const result = parseEmotionTag(input, ENABLED)
+  assert.equal(result.emotion, "happy")
+  assert.equal(result.ttsInstruction, "请用开心的语气说这句话。")
+  assert.ok(!result.visibleText.includes("[[TTS_INSTRUCTION:"))
+  assert.ok(!result.visibleText.includes("<emotion"))
+})
+
+test("extracts TTS instruction from text without emotion tag", () => {
+  const input = '你好，主人！\n[[TTS_INSTRUCTION:请用温柔的语气说这句话。]]'
+  const result = parseEmotionTag(input, ENABLED)
+  assert.equal(result.ttsInstruction, "请用温柔的语气说这句话。")
+  assert.equal(result.visibleText, "你好，主人！")
+})
+
+test("extracts first TTS instruction when multiple present", () => {
+  const input = '你好\n[[TTS_INSTRUCTION:第一条指令]]\n再见\n[[TTS_INSTRUCTION:第二条指令]]'
+  const result = parseEmotionTag(input, ENABLED)
+  assert.equal(result.ttsInstruction, "第一条指令")
+  assert.ok(!result.visibleText.includes("[[TTS_INSTRUCTION:"))
+})
+
+test("no TTS instruction when tag not present", () => {
+  const input = '你好，主人！\n<emotion value="happy" />'
+  const result = parseEmotionTag(input, ENABLED)
+  assert.equal(result.ttsInstruction, undefined)
+})
+
+test("TTS instruction extraction works with disabled emotion", () => {
+  const input = '你好，主人！\n[[TTS_INSTRUCTION:请用开心的语气说这句话。]]'
+  const result = parseEmotionTag(input, DISABLED_STRIP)
+  assert.equal(result.ttsInstruction, "请用开心的语气说这句话。")
+  assert.equal(result.visibleText, "你好，主人！")
+})

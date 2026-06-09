@@ -126,3 +126,32 @@ export function resolveEmotionBinding(
   if (emotion === "neutral") return undefined
   return profile.neutral
 }
+
+/* ------------------------------------------------------------------ */
+/*  TTS emotion instruction mapping                                    */
+/* ------------------------------------------------------------------ */
+
+export const DEFAULT_TTS_EMOTION_INSTRUCTIONS: Record<string, string> = {
+  neutral:
+    "You are a helpful assistant. 请用自然、清晰、亲近的语气说一句话。",
+  happy:
+    "You are a helpful assistant. 请用开心、活泼、自然、语速稍快的语气说一句话。",
+  sad: "You are a helpful assistant. 请用伤心、低落、缓慢、轻声的语气说一句话。",
+  angry:
+    "You are a helpful assistant. 请用生气、急促、压低声音的语气说一句话。",
+  surprised:
+    "You are a helpful assistant. 请用惊讶、轻快、略微提高语调的语气说一句话。",
+  thinking:
+    "You are a helpful assistant. 请用思考中、平静、清晰、稍慢的语气说一句话。",
+  embarrassed:
+    "You are a helpful assistant. 请用害羞、轻声、温柔、稍微撒娇的语气说一句话。",
+  scared:
+    "You are a helpful assistant. 请用紧张、害怕、轻声、急促的语气说一句话。",
+  confused:
+    "You are a helpful assistant. 请用困惑、迟疑、稍微缓慢的语调说一句话。",
+  tired:
+    "You are a helpful assistant. 请用有点疲惫、慵懒、语速稍慢的语气说一句话。",
+  love: "You are a helpful assistant. 请用温柔、亲近、甜蜜、充满爱意的语气说一句话。",
+  speechless:
+    "You are a helpful assistant. 请用无语、平静、略带无奈的语气说一句话。",
+}

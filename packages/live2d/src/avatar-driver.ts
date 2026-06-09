@@ -81,6 +81,11 @@ export function mapEventToState(event: AgentEvent): AvatarState | null {
     case "recording.started":
     case "recording.cancelled":
     case "recording.finished":
+    case "tts.generating":
+    case "tts.ready":
+    case "tts.playing":
+    case "tts.error":
+    case "tts.stopped":
       return null
   }
 }

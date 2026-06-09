@@ -5,6 +5,7 @@ import {
   DEFAULT_EMOTION_SETTINGS,
   DEFAULT_PROMPT_PRESET_SETTINGS,
   DEFAULT_VOICE_INPUT_SETTINGS,
+  DEFAULT_LOCAL_TTS_SETTINGS,
   isEmotion,
   type AgentMode,
   type AppSettings,
@@ -25,6 +26,7 @@ import {
   type ReasoningEffort,
   type VoiceInputSettings,
   type VoiceInputSettingsPatch,
+  type TtsSettingsPatch,
 } from "@live2d-agent/shared"
 
 /* ------------------------------------------------------------------ */
@@ -77,6 +79,7 @@ export function createDefaultSettings(userDataDir: string): AppSettings {
     promptPresets: { ...DEFAULT_PROMPT_PRESET_SETTINGS },
     emotion: { ...DEFAULT_EMOTION_SETTINGS },
     voice: { ...DEFAULT_VOICE_INPUT_SETTINGS },
+    tts: { ...DEFAULT_LOCAL_TTS_SETTINGS },
   }
 }
 
@@ -519,6 +522,9 @@ export class SettingsService {
     if (validated.voice !== undefined) {
       this._settings.voice = { ...this._settings.voice, ...validated.voice }
     }
+    if (validated.tts !== undefined) {
+      this._settings.tts = { ...this._settings.tts, ...validated.tts }
+    }
     this.persist()
   }
 
@@ -753,6 +759,51 @@ function validatePublicSettingsPatch(patch: unknown): AppSettingsPublicPatch {
       patch.pushToTalkHotkey = voice.pushToTalkHotkey
     }
     if (Object.keys(patch).length > 0) output.voice = patch
+  }
+
+  if (input.tts !== undefined && typeof input.tts === "object") {
+    const tts = input.tts as Record<string, unknown>
+    const patch: TtsSettingsPatch = {}
+    if (tts.enabled !== undefined && typeof tts.enabled === "boolean") {
+      patch.enabled = tts.enabled
+    }
+    if (tts.apiBaseUrl !== undefined && typeof tts.apiBaseUrl === "string") {
+      patch.apiBaseUrl = tts.apiBaseUrl
+    }
+    if (tts.selectedVoiceId !== undefined && typeof tts.selectedVoiceId === "string") {
+      patch.selectedVoiceId = tts.selectedVoiceId
+    }
+    if (tts.voiceDisplayNames !== undefined && typeof tts.voiceDisplayNames === "object") {
+      patch.voiceDisplayNames = tts.voiceDisplayNames as Record<string, string>
+    }
+    if (tts.ttsMode !== undefined) {
+      if (tts.ttsMode !== "standard" && tts.ttsMode !== "emotion_enhanced") {
+        throw new Error(`Invalid tts.ttsMode: must be "standard" or "emotion_enhanced"`)
+      }
+      patch.ttsMode = tts.ttsMode
+    }
+    if (tts.emotionControlMode !== undefined) {
+      if (tts.emotionControlMode !== "default_mapping" && tts.emotionControlMode !== "llm_controlled") {
+        throw new Error(`Invalid tts.emotionControlMode: must be "default_mapping" or "llm_controlled"`)
+      }
+      patch.emotionControlMode = tts.emotionControlMode
+    }
+    const speed = numberInRange(tts.speed, "tts.speed", 0.5, 2.0)
+    if (speed !== undefined) patch.speed = speed
+    const seed = integerInRange(tts.seed, "tts.seed", -1, 99999)
+    if (seed !== undefined) patch.seed = seed
+    if (tts.audioOutputDir !== undefined && typeof tts.audioOutputDir === "string") {
+      patch.audioOutputDir = tts.audioOutputDir
+    }
+    if (tts.autoGenerateOnAssistantMessage !== undefined && typeof tts.autoGenerateOnAssistantMessage === "boolean") {
+      patch.autoGenerateOnAssistantMessage = tts.autoGenerateOnAssistantMessage
+    }
+    if (tts.autoPlayAfterGenerate !== undefined && typeof tts.autoPlayAfterGenerate === "boolean") {
+      patch.autoPlayAfterGenerate = tts.autoPlayAfterGenerate
+    }
+    const requestTimeoutMs = integerInRange(tts.requestTimeoutMs, "tts.requestTimeoutMs", 1000, 600_000)
+    if (requestTimeoutMs !== undefined) patch.requestTimeoutMs = requestTimeoutMs
+    if (Object.keys(patch).length > 0) output.tts = patch
   }
 
   return output

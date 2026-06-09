@@ -1,0 +1,48 @@
+/**
+ * TTS instruction prompt injection for LLM-controlled emotion mode.
+ *
+ * When TTS is enabled with `emotionControlMode: "llm_controlled"`, this prompt
+ * is injected into the system prompt so the LLM generates a natural language
+ * TTS instruction alongside its regular response.
+ */
+
+/**
+ * The full TTS instruction prompt text.
+ */
+export const TTS_INSTRUCTION_PROMPT = `你还需要为本次回复额外生成一条 TTS 语音控制指令，用于描述这句话应该如何被朗读。
+
+严格要求：
+1. 在回复正文最后单独追加一行，格式必须是：
+[[TTS_INSTRUCTION:这里填写一句中文自然语言朗读指令]]
+2. TTS_INSTRUCTION 只能描述语气、情绪、语速、音量倾向、说话风格。
+3. 不要复述正文内容，不要加入新的事实信息。
+4. 指令长度控制在 10~50 个中文字符。
+5. 不要使用 Markdown 代码块包裹。
+6. 不要输出多个 TTS_INSTRUCTION。
+7. 即使正文很短，也必须输出该标签。
+
+示例：
+[[TTS_INSTRUCTION:请用温柔、亲近、自然的语气，语速适中地说这句话。]]
+[[TTS_INSTRUCTION:请用开心、活泼、稍微撒娇的语气，语速稍快地说这句话。]]
+[[TTS_INSTRUCTION:请用低落、轻声、缓慢的语气说这句话。]]`
+
+/**
+ * Marker prefix used to detect whether TTS instruction has already been injected.
+ */
+export const TTS_INSTRUCTION_MARKER = "[[TTS_INSTRUCTION:"
+
+/**
+ * Return the canonical TTS instruction prompt text.
+ */
+export function getTtsInstructionPrompt(): string {
+  return TTS_INSTRUCTION_PROMPT
+}
+
+/**
+ * Check whether a system prompt already contains the TTS instruction marker.
+ * Used to avoid duplicate injection.
+ */
+export function isTtsInstructionInjected(systemPrompt: string | undefined): boolean {
+  if (!systemPrompt) return false
+  return systemPrompt.includes(TTS_INSTRUCTION_MARKER)
+}

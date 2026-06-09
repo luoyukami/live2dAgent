@@ -1,5 +1,5 @@
-import { ipcMain, shell } from "electron"
-import { IPC_CHANNELS, type AudioContextAttachment, type AudioMimeType, type AudioArtifactRef, type CompactInputAnchor, type DebugSnapshot, type AvatarHitRegionRect } from "@live2d-agent/shared"
+import { ipcMain, shell, dialog } from "electron"
+import { IPC_CHANNELS, type AudioContextAttachment, type AudioMimeType, type AudioArtifactRef, type CompactInputAnchor, type DebugSnapshot, type AvatarHitRegionRect, type IpcTtsGenerateRequest, type IpcTtsRegisterVoiceRequest, type LocalTtsSettings } from "@live2d-agent/shared"
 import type { AgentEvent } from "@live2d-agent/agent-core"
 import type { AgentService } from "./services/agent-service.js"
 import type { ArtifactStore } from "./services/artifact-store.js"
@@ -7,6 +7,7 @@ import type { PermissionService } from "./services/permission-service.js"
 import type { PromptService } from "./services/prompt-service.js"
 import type { SettingsService } from "./services/settings-service.js"
 import type { TraceService } from "./services/trace-service.js"
+import type { TtsService } from "./services/tts/tts-service.js"
 import type { WindowManager } from "./window-manager.js"
 
 export interface IpcServices {
@@ -17,6 +18,7 @@ export interface IpcServices {
   artifacts: ArtifactStore
   prompts: PromptService
   window: WindowManager
+  tts: TtsService
 }
 
 /**
@@ -346,6 +348,57 @@ export function registerIpcHandlers(services: IpcServices): void {
     lastError: string
   }>) => {
     services.agent.setVoiceDebug(input)
+  })
+
+  /* ---- TTS (Phase 1) ---- */
+
+  ipcMain.handle(IPC_CHANNELS.TTS_HEALTH_CHECK, async () => {
+    return services.tts.healthCheck()
+  })
+
+  ipcMain.handle(IPC_CHANNELS.TTS_LIST_VOICES, async () => {
+    return services.tts.listVoices()
+  })
+
+  ipcMain.handle(IPC_CHANNELS.TTS_REGISTER_VOICE, async (_event, req: IpcTtsRegisterVoiceRequest) => {
+    return services.tts.registerVoice(req)
+  })
+
+  ipcMain.handle(IPC_CHANNELS.TTS_RENAME_VOICE, async (_event, voiceId: string, newVoiceId: string, overwrite?: boolean) => {
+    return services.tts.renameVoice(voiceId, newVoiceId, overwrite)
+  })
+
+  ipcMain.handle(IPC_CHANNELS.TTS_DELETE_VOICE, async (_event, voiceId: string) => {
+    return services.tts.deleteVoice(voiceId)
+  })
+
+  ipcMain.handle(IPC_CHANNELS.TTS_GENERATE, async (_event, req: IpcTtsGenerateRequest) => {
+    return services.tts.generate(req)
+  })
+
+  ipcMain.handle(IPC_CHANNELS.TTS_PLAY_AUDIO, async (_event, audioPath: string) => {
+    return services.tts.playAudio(audioPath)
+  })
+
+  ipcMain.handle(IPC_CHANNELS.TTS_STOP_AUDIO, async () => {
+    return services.tts.stopAudio()
+  })
+
+  ipcMain.handle(IPC_CHANNELS.TTS_GET_SETTINGS, async () => {
+    return services.tts.getSettings()
+  })
+
+  ipcMain.handle(IPC_CHANNELS.TTS_UPDATE_SETTINGS, async (_event, patch: Partial<LocalTtsSettings>) => {
+    services.tts.updateSettings(patch)
+  })
+
+  ipcMain.handle(IPC_CHANNELS.TTS_OPEN_AUDIO_FOLDER, async () => {
+    await shell.openPath(services.tts.getAudioOutputDir())
+  })
+
+  ipcMain.handle(IPC_CHANNELS.TTS_SELECT_AUDIO_DIR, async () => {
+    const result = await dialog.showOpenDialog({ properties: ["openDirectory"] })
+    return result.canceled ? null : result.filePaths[0]
   })
 }
 

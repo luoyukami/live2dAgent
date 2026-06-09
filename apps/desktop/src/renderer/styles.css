@@ -782,3 +782,51 @@ footer { flex-direction: column; align-items: stretch; gap: 6px; }
   .settings-body { padding: 10px; }
 }
 
+/* ---- TTS (Text-to-Speech) ---- */
+.message-tts-controls {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-top: 8px;
+  flex-wrap: wrap;
+}
+.tts-btn {
+  font-size: 11px;
+  padding: 3px 8px;
+}
+.tts-loading {
+  font-size: 11px;
+  color: var(--text-muted);
+  animation: pulse 1.2s ease-in-out infinite;
+}
+.tts-error {
+  font-size: 11px;
+  color: var(--danger);
+  cursor: help;
+}
+@keyframes pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.5; }
+}
+.tts-voice-list {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  max-height: 200px;
+  overflow-y: auto;
+}
+.tts-voice-item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 6px 8px;
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.06);
+  border: 1px solid transparent;
+}
+.tts-voice-item.selected {
+  border-color: rgba(56, 189, 248, 0.4);
+  background: rgba(56, 189, 248, 0.1);
+}
+

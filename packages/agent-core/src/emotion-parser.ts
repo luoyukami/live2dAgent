@@ -25,6 +25,8 @@ export interface ParsedEmotionMessage {
   rawEmotionTag?: string
   /** Set when the model failed to emit a valid tag (or emitted an invalid one). */
   parseWarning?: string
+  /** Extracted TTS instruction if LLM-controlled mode is enabled. */
+  ttsInstruction?: string
 }
 
 /**
@@ -45,6 +47,12 @@ const PARSE_WARNING_MISSING = "Missing or invalid emotion tag"
 const PARSE_WARNING_INVALID = "Emotion tag value is not in EMOTION_VALUES"
 
 /**
+ * Regex to match `[[TTS_INSTRUCTION:...]]` tags in the text.
+ * Used to extract and remove TTS instructions from visible text.
+ */
+const TTS_INSTRUCTION_RE = /\[\[TTS_INSTRUCTION:([\s\S]*?)\]\]/g
+
+/**
  * Parse a trailing emotion tag out of an assistant message.
  *
  * Never throws. Any unexpected input degrades to a safe fallback.
@@ -59,64 +67,79 @@ export function parseEmotionTag(
   // Disabled — leave text alone (or strip) and tag the source as disabled.
   if (!options.enabled) {
     if (!options.stripTagWhenDisabled) {
+      // Even when not stripping emotion tags, still extract TTS instructions
+      const ttsResult = extractTtsInstructionFromText(raw)
       return {
-        visibleText: raw,
+        visibleText: ttsResult.visibleText,
         emotion: fallbackEmotion,
         emotionSource: "disabled",
         rawText: raw,
+        ttsInstruction: ttsResult.ttsInstruction,
       }
     }
 
     const stripped = stripEmotionTag(raw)
     if (stripped === null) {
+      const ttsResult = extractTtsInstructionFromText(raw)
       return {
-        visibleText: raw,
+        visibleText: ttsResult.visibleText,
         emotion: fallbackEmotion,
         emotionSource: "disabled",
         rawText: raw,
+        ttsInstruction: ttsResult.ttsInstruction,
       }
     }
 
+    const ttsResult = extractTtsInstructionFromText(stripped.visibleText)
     return {
-      visibleText: stripped.visibleText,
+      visibleText: ttsResult.visibleText,
       emotion: fallbackEmotion,
       emotionSource: "disabled",
       rawText: raw,
       rawEmotionTag: stripped.rawEmotionTag,
+      ttsInstruction: ttsResult.ttsInstruction,
     }
   }
 
   // Enabled — try to parse a trailing tag.
   const stripped = stripEmotionTag(raw)
   if (stripped === null) {
+    const ttsResult = extractTtsInstructionFromText(raw)
     return {
-      visibleText: raw,
+      visibleText: ttsResult.visibleText,
       emotion: fallbackEmotion,
       emotionSource: "fallback",
       rawText: raw,
       parseWarning: PARSE_WARNING_MISSING,
+      ttsInstruction: ttsResult.ttsInstruction,
     }
   }
 
   const { candidate, visibleText, rawEmotionTag } = stripped
   if (!isEmotion(candidate)) {
     // Tag was well-formed but the value is not in our enum.
+    // Keep the original raw text as visibleText (tag not stripped when invalid),
+    // but still extract any TTS instruction.
+    const ttsResult = extractTtsInstructionFromText(raw)
     return {
-      visibleText: raw,
+      visibleText: ttsResult.visibleText || raw,
       emotion: fallbackEmotion,
       emotionSource: "fallback",
       rawText: raw,
       rawEmotionTag,
       parseWarning: PARSE_WARNING_INVALID,
+      ttsInstruction: ttsResult.ttsInstruction,
     }
   }
 
+  const ttsResult = extractTtsInstructionFromText(visibleText)
   return {
-    visibleText,
+    visibleText: ttsResult.visibleText,
     emotion: candidate,
     emotionSource: "llm-tag",
     rawText: raw,
     rawEmotionTag,
+    ttsInstruction: ttsResult.ttsInstruction,
   }
 }
 
@@ -153,6 +176,33 @@ function stripEmotionTag(raw: string): StrippedEmotion | null {
 /** Remove trailing whitespace and blank lines, preserving a single final newline is NOT required. */
 function trimTrailingBlankLines(text: string): string {
   return text.replace(/(?:[ \t]*\r?\n)+[ \t]*$/u, "").replace(/[ \t]+$/u, "")
+}
+
+/**
+ * Extract `[[TTS_INSTRUCTION:...]]` tags from text and return cleaned text
+ * plus the extracted instruction (if any).
+ *
+ * The instruction is truncated to 100 characters.
+ * ALL occurrences of the tag are removed from the visible text.
+ */
+function extractTtsInstructionFromText(text: string): {
+  visibleText: string
+  ttsInstruction: string | undefined
+} {
+  const firstMatch = TTS_INSTRUCTION_RE.exec(text)
+  if (!firstMatch) {
+    return { visibleText: text, ttsInstruction: undefined }
+  }
+
+  const rawInstruction = firstMatch[1]?.trim() ?? ""
+  const ttsInstruction =
+    rawInstruction.length > 100 ? rawInstruction.slice(0, 100) : rawInstruction
+
+  // Reset regex lastIndex for the global replacement
+  TTS_INSTRUCTION_RE.lastIndex = 0
+  const visibleText = text.replace(TTS_INSTRUCTION_RE, "").trim()
+
+  return { visibleText, ttsInstruction }
 }
 
 /* ------------------------------------------------------------------ */

@@ -8,6 +8,7 @@ import {
   EMOTION_PROMPT_MARKER,
 } from "./emotion-prompt.js"
 import { DEFAULT_EMOTION_SETTINGS } from "@live2d-agent/shared"
+import { TTS_INSTRUCTION_MARKER, getTtsInstructionPrompt } from "./tts-instruction-prompt.js"
 
 test("injectPrompt=true + enabled=true appends the emotion block", () => {
   const base = "You are a helpful assistant."
@@ -74,4 +75,78 @@ test("composePromptPresetInstructions slots role and user info into markdown sec
   assert.ok(result.includes("## 角色提示词\n\n你是小花。"))
   assert.ok(result.includes("## 用户信息提示词\n\n用户偏好中文。"))
   assert.ok(result.includes("## 固定行为与工具规则"))
+})
+
+/* ------------------------------------------------------------------ */
+/*  TTS instruction injection tests                                    */
+/* ------------------------------------------------------------------ */
+
+test("ttsSettings with llm_controlled mode injects TTS instruction prompt", () => {
+  const base = "You are a helpful assistant."
+  const result = composeSystemPrompt(
+    base,
+    { enabled: false, injectPrompt: false },
+    { enabled: true, emotionControlMode: "llm_controlled" },
+  )
+  assert.ok(result.includes(base))
+  assert.ok(result.includes(TTS_INSTRUCTION_MARKER))
+  assert.ok(result.includes(getTtsInstructionPrompt()))
+})
+
+test("ttsSettings with default_mapping mode does NOT inject TTS instruction", () => {
+  const base = "You are a helpful assistant."
+  const result = composeSystemPrompt(
+    base,
+    { enabled: false, injectPrompt: false },
+    { enabled: true, emotionControlMode: "default_mapping" },
+  )
+  assert.ok(result.includes(base))
+  assert.ok(!result.includes(TTS_INSTRUCTION_MARKER))
+})
+
+test("ttsSettings disabled does NOT inject TTS instruction", () => {
+  const base = "You are a helpful assistant."
+  const result = composeSystemPrompt(
+    base,
+    { enabled: false, injectPrompt: false },
+    { enabled: false, emotionControlMode: "llm_controlled" },
+  )
+  assert.ok(result.includes(base))
+  assert.ok(!result.includes(TTS_INSTRUCTION_MARKER))
+})
+
+test("TTS instruction comes AFTER emotion instructions when both enabled", () => {
+  const base = "You are a helpful assistant."
+  const result = composeSystemPrompt(
+    base,
+    { enabled: true, injectPrompt: true },
+    { enabled: true, emotionControlMode: "llm_controlled" },
+  )
+  const emotionPos = result.indexOf(EMOTION_PROMPT_MARKER)
+  const ttsPos = result.indexOf(TTS_INSTRUCTION_MARKER)
+  assert.ok(emotionPos >= 0, "emotion marker should be present")
+  assert.ok(ttsPos >= 0, "TTS marker should be present")
+  assert.ok(emotionPos < ttsPos, "emotion instructions should come before TTS instructions")
+})
+
+test("no duplicate TTS injection when marker already present", () => {
+  const base = `Prompt with ${TTS_INSTRUCTION_MARKER}already injected]]`
+  const result = composeSystemPrompt(
+    base,
+    { enabled: false, injectPrompt: false },
+    { enabled: true, emotionControlMode: "llm_controlled" },
+  )
+  const matches = result.match(/\[\[TTS_INSTRUCTION:/g) ?? []
+  assert.equal(matches.length, 1)
+})
+
+test("undefined ttsSettings does not affect output", () => {
+  const base = "You are a helpful assistant."
+  const result = composeSystemPrompt(
+    base,
+    { enabled: true, injectPrompt: true },
+    undefined,
+  )
+  assert.ok(result.includes(EMOTION_PROMPT_MARKER))
+  assert.ok(!result.includes(TTS_INSTRUCTION_MARKER))
 })

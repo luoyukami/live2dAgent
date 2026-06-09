@@ -144,6 +144,12 @@ export type AgentEvent =
   | { type: "recording.started"; maxDurationMs: number; preferredFormat: "wav" | "mp3" }
   | { type: "recording.cancelled"; reason?: string }
   | { type: "recording.finished"; durationMs: number; mimeType: string; size: number }
+  /* ---- TTS lifecycle events ---- */
+  | { type: "tts.generating"; messageId: string }
+  | { type: "tts.ready"; messageId: string; audioPath: string }
+  | { type: "tts.playing"; messageId: string; audioPath: string }
+  | { type: "tts.error"; messageId: string; error: string }
+  | { type: "tts.stopped"; messageId: string }
 
 /* ---- Callback & subscription types ---- */
 export type AgentEventCallback = (event: AgentEvent) => void

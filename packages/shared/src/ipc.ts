@@ -105,3 +105,53 @@ export interface IpcToolResponse {
     recoverable: boolean
   }
 }
+
+/* ------------------------------------------------------------------ */
+/*  TTS IPC payload types (Phase 1)                                    */
+/* ------------------------------------------------------------------ */
+
+export interface IpcTtsHealthCheckResponse {
+  ok: boolean
+  status?: string
+  modelDir?: string
+  sampleRate?: number
+  cuda?: boolean
+  error?: string
+}
+
+export interface IpcTtsListVoicesResponse {
+  voices: Array<{ voiceId: string; promptText?: string }>
+}
+
+export interface IpcTtsRegisterVoiceRequest {
+  voiceId: string
+  displayName?: string
+  promptText: string
+  promptWavPath: string
+  overwrite?: boolean
+}
+
+export interface IpcTtsGenerateRequest {
+  messageId: string
+  text: string
+  voiceId: string
+  mode: "standard" | "emotion_enhanced"
+  emotionControlMode?: "default_mapping" | "llm_controlled"
+  instruction?: string
+  speed?: number
+  seed?: number
+}
+
+export interface IpcTtsGenerateResponse {
+  ok: boolean
+  audioPath?: string
+  error?: string
+}
+
+export interface IpcTtsPlayAudioRequest {
+  audioPath: string
+}
+
+export interface IpcTtsUpdateSettingsRequest {
+  settings: Partial<import("./schemas.js").LocalTtsSettings>
+}

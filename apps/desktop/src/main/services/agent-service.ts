@@ -2,10 +2,11 @@ import { clipboard, desktopCapturer } from "electron"
 import { spawn } from "node:child_process"
 import { existsSync, mkdirSync, readFileSync, realpathSync, writeFileSync } from "node:fs"
 import { dirname, isAbsolute, resolve, relative } from "node:path"
-import { AgentSession, AssistantRuntime, ContextManager, ConversationManager, DefaultProviderRuntimeRegistry, EventBus, RunController, ToolRegistry, WsSessionManager, composePromptPresetInstructions, composeSystemPrompt, isEmotionPromptInjected, ToolResultLimiter, WS_RUNTIME_CONSTANTS, estimateTokens, type AgentEvent, type AgentAction, type AgentRuntimeEvent, type ArtifactWriter, type ToolResult, type ToolRuntime, type ToolArtifact, type ConversationStore, type ConversationStoreMessage, type ContextBuilder, type ToolManager, type ToolValidationResult, type CanonicalToolDefinition, type ModelToolCall, type ValidatedToolCall, type CanonicalToolResult, type CanonicalCreateInput, type CanonicalToolContinuationInput, type AssistantRuntimeEvent, type ProviderRuntime, type ModelMessage, type ModelContentPart } from "@live2d-agent/agent-core"
+import { AgentSession, AssistantRuntime, ContextManager, ConversationManager, DefaultProviderRuntimeRegistry, EventBus, RunController, ToolRegistry, WsSessionManager, composePromptPresetInstructions, composeSystemPrompt, isEmotionPromptInjected, ToolResultLimiter, WS_RUNTIME_CONSTANTS, estimateTokens, sanitizeTextForTts, extractTtsInstruction, isTtsInstructionInjected, type AgentEvent, type AgentAction, type AgentRuntimeEvent, type ArtifactWriter, type ToolResult, type ToolRuntime, type ToolArtifact, type ConversationStore, type ConversationStoreMessage, type ContextBuilder, type ToolManager, type ToolValidationResult, type CanonicalToolDefinition, type ModelToolCall, type ValidatedToolCall, type CanonicalToolResult, type CanonicalCreateInput, type CanonicalToolContinuationInput, type AssistantRuntimeEvent, type ProviderRuntime, type ModelMessage, type ModelContentPart } from "@live2d-agent/agent-core"
 import { OpenAiCompatibleAdapter, OpenAiCompatibleWsClient, MimoWsRuntime } from "@live2d-agent/model-openai-compatible"
 import { createDefaultTools, type RuntimeToolContext } from "@live2d-agent/tools"
-import type { ArtifactRef, AudioArtifactRef, AudioContextAttachment, DebugEmotionInfo, Emotion } from "@live2d-agent/shared"
+import type { ArtifactRef, AudioArtifactRef, AudioContextAttachment, DebugEmotionInfo, Emotion, MessageAudioState } from "@live2d-agent/shared"
+import { DEFAULT_TTS_EMOTION_INSTRUCTIONS } from "@live2d-agent/shared"
 import type { EmotionSource } from "@live2d-agent/agent-core"
 import type { ArtifactRef as ArtifactRefType } from "@live2d-agent/shared"
 import type { ArtifactStore } from "./artifact-store.js"
@@ -13,6 +14,7 @@ import type { PermissionService } from "./permission-service.js"
 import type { PromptService } from "./prompt-service.js"
 import type { SettingsService } from "./settings-service.js"
 import type { TraceService } from "./trace-service.js"
+import type { TtsService } from "./tts/tts-service.js"
 import { AgentRuntimeEventBridge } from "../agent-runtime-event-bridge.js"
 import { resolveRuntimeMode } from "../runtime-mode.js"
 
@@ -22,6 +24,7 @@ export interface AgentServiceDeps {
   permissions: PermissionService
   artifacts: ArtifactStore
   prompts: PromptService
+  tts: TtsService
 }
 
 interface EmotionDebugState {
@@ -69,6 +72,17 @@ export class AgentService implements ToolRuntime {
     lastAudioArtifact: undefined as { id: string; path: string; mimeType: string; size: number; durationMs: number; createdAt: number } | undefined,
     lastSentFormat: undefined as "wav" | "mp3" | undefined,
     lastError: undefined as string | undefined,
+  }
+
+  /**
+   * TTS debug state for the debug panel.
+   */
+  private ttsDebug = {
+    lastAutoGenerateAttempt: false,
+    lastAutoGenerateSuccess: false,
+    lastAutoGenerateError: undefined as string | undefined,
+    lastGeneratedMessageId: undefined as string | undefined,
+    lastInstructionInjected: false,
   }
 
   constructor(private readonly deps: AgentServiceDeps) {
@@ -287,6 +301,7 @@ export class AgentService implements ToolRuntime {
    * Build the system prompt that will be sent to the model:
    *  role prompt + user information prompt in a hard-coded markdown structure
    *  + emotion tag instructions (when settings allow it)
+   *  + TTS instruction prompt (when LLM-controlled emotion mode is active)
    *
    * Prompt presets live in SettingsService so the renderer can edit them.
    * We do NOT persist the composed prompt with emotion instructions — that
@@ -295,7 +310,7 @@ export class AgentService implements ToolRuntime {
   private composeActiveSystemPrompt(): string {
     const settings = this.deps.settings.get()
     const base = composePromptPresetInstructions(settings.promptPresets)
-    return composeSystemPrompt(base, settings.emotion)
+    return composeSystemPrompt(base, settings.emotion, settings.tts)
   }
 
   async sendUserMessage(input: string | { text: string; attachments?: AudioContextAttachment[]; artifactRefs?: ArtifactRefType[]; conversationId?: string }): Promise<void> {
@@ -421,6 +436,17 @@ export class AgentService implements ToolRuntime {
       lastSentFormat?: "wav" | "mp3"
       lastError?: string
     }
+    tts?: {
+      enabled: boolean
+      apiBaseUrl: string
+      selectedVoiceId?: string
+      ttsMode: string
+      connectionStatus: string
+      instructionInjected: boolean
+      lastAutoGenerateAttempt: boolean
+      lastAutoGenerateSuccess: boolean
+      lastAutoGenerateError?: string
+    }
   } {
     const settings = this.deps.settings.get()
     const composedPrompt = this.composeActiveSystemPrompt()
@@ -454,6 +480,17 @@ export class AgentService implements ToolRuntime {
         lastSentFormat: this.voiceDebug.lastSentFormat,
         lastError: this.voiceDebug.lastError,
       },
+      tts: {
+        enabled: settings.tts.enabled,
+        apiBaseUrl: settings.tts.apiBaseUrl,
+        selectedVoiceId: settings.tts.selectedVoiceId,
+        ttsMode: settings.tts.ttsMode,
+        connectionStatus: "unknown",
+        instructionInjected: isTtsInstructionInjected(composedPrompt),
+        lastAutoGenerateAttempt: this.ttsDebug.lastAutoGenerateAttempt,
+        lastAutoGenerateSuccess: this.ttsDebug.lastAutoGenerateSuccess,
+        lastAutoGenerateError: this.ttsDebug.lastAutoGenerateError,
+      },
     }
   }
 
@@ -475,6 +512,188 @@ export class AgentService implements ToolRuntime {
     if (input.lastAudioArtifact !== undefined) this.voiceDebug.lastAudioArtifact = input.lastAudioArtifact
     if (input.lastSentFormat !== undefined) this.voiceDebug.lastSentFormat = input.lastSentFormat
     if (input.lastError !== undefined) this.voiceDebug.lastError = input.lastError
+  }
+
+  /**
+   * Schedule TTS auto-generation for an assistant message.
+   * This is non-blocking — it fires and forgets the async TTS generation.
+   */
+  private scheduleTtsAutoGeneration(messageId: string, rawContent: string): void {
+    const settings = this.deps.settings.get()
+    if (!settings.tts.enabled || !settings.tts.autoGenerateOnAssistantMessage) return
+
+    // Fire and forget — do not block the chat flow
+    this.generateTtsForMessage(messageId, rawContent).catch((err) => {
+      console.error("[agent-service] TTS auto-generation failed:", err)
+      this.ttsDebug.lastAutoGenerateError = err instanceof Error ? err.message : String(err)
+    })
+  }
+
+  /**
+   * Generate TTS audio for an assistant message.
+   * Extracts emotion and TTS instruction, cleans text, and calls the TTS service.
+   */
+  private async generateTtsForMessage(messageId: string, rawContent: string): Promise<void> {
+    const settings = this.deps.settings.get()
+    this.ttsDebug.lastAutoGenerateAttempt = true
+    this.ttsDebug.lastGeneratedMessageId = messageId
+
+    try {
+      // Clean the text for TTS
+      const cleanedText = sanitizeTextForTts(rawContent)
+      if (!cleanedText) {
+        this.ttsDebug.lastAutoGenerateError = "Empty text after sanitization"
+        return
+      }
+
+      // Determine TTS parameters based on mode
+      let instruction: string | undefined
+      let endpoint: "/v1/tts/zero-shot" | "/v1/tts/instruct"
+      let parsedEmotion: string | undefined
+
+      if (settings.tts.ttsMode === "standard") {
+        endpoint = "/v1/tts/zero-shot"
+      } else {
+        // emotion_enhanced mode
+        endpoint = "/v1/tts/instruct"
+
+        if (settings.tts.emotionControlMode === "default_mapping") {
+          // Extract emotion from the message and map to default instruction
+          const emotionResult = this.parseEmotionFromMessage(rawContent)
+          parsedEmotion = emotionResult.emotion
+          instruction = DEFAULT_TTS_EMOTION_INSTRUCTIONS[parsedEmotion] ?? DEFAULT_TTS_EMOTION_INSTRUCTIONS.neutral
+        } else {
+          // llm_controlled mode — extract instruction from the message
+          const ttsResult = extractTtsInstruction(rawContent)
+          if (ttsResult) {
+            instruction = ttsResult.instruction
+            this.ttsDebug.lastInstructionInjected = true
+          } else {
+            // Fallback to default mapping if no instruction found
+            const emotionResult = this.parseEmotionFromMessage(rawContent)
+            parsedEmotion = emotionResult.emotion
+            instruction = DEFAULT_TTS_EMOTION_INSTRUCTIONS[parsedEmotion] ?? DEFAULT_TTS_EMOTION_INSTRUCTIONS.neutral
+          }
+        }
+      }
+
+      // Emit TTS generating state
+      this.emit({
+        type: "tts.generating",
+        messageId,
+      } as unknown as AgentEvent)
+
+      // Call TTS service
+      const result = await this.deps.tts.generate({
+        messageId,
+        text: cleanedText,
+        voiceId: settings.tts.selectedVoiceId!,
+        mode: settings.tts.ttsMode,
+        emotionControlMode: settings.tts.emotionControlMode,
+        instruction,
+        speed: settings.tts.speed,
+        seed: settings.tts.seed,
+      })
+
+      if (result.ok && result.audioPath) {
+        this.ttsDebug.lastAutoGenerateSuccess = true
+        this.ttsDebug.lastAutoGenerateError = undefined
+        this.emit({
+          type: "tts.ready",
+          messageId,
+          audioPath: result.audioPath,
+        } as unknown as AgentEvent)
+
+        if (settings.tts.autoPlayAfterGenerate) {
+          await this.playTtsAudio(messageId, result.audioPath)
+        }
+      } else {
+        this.ttsDebug.lastAutoGenerateSuccess = false
+        this.ttsDebug.lastAutoGenerateError = result.error ?? "TTS generation failed"
+        this.emit({
+          type: "tts.error",
+          messageId,
+          error: result.error ?? "TTS generation failed",
+        } as unknown as AgentEvent)
+      }
+
+    } catch (err) {
+      this.ttsDebug.lastAutoGenerateError = err instanceof Error ? err.message : String(err)
+      this.ttsDebug.lastAutoGenerateSuccess = false
+    }
+  }
+
+  /**
+   * Parse emotion from raw message content.
+   * Returns the emotion value if found, or the default emotion.
+   */
+  private parseEmotionFromMessage(rawContent: string): { emotion: string; source: "llm-tag" | "fallback" } {
+    const settings = this.deps.settings.get()
+    const emotionTagMatch = rawContent.match(/<emotion\s+value\s*=\s*["']([a-z_]+)["']\s*\/>/i)
+    if (emotionTagMatch && emotionTagMatch[1]) {
+      return { emotion: emotionTagMatch[1], source: "llm-tag" }
+    }
+    return { emotion: settings.emotion.defaultEmotion, source: "fallback" }
+  }
+
+  /**
+   * Regenerate TTS audio for a specific message (manual trigger).
+   * Called from the "重新生成" button in the renderer.
+   */
+  async regenerateTts(messageId: string, text: string, emotion?: string, ttsInstruction?: string): Promise<void> {
+    const settings = this.deps.settings.get()
+    if (!settings.tts.enabled) return
+
+    const cleanedText = sanitizeTextForTts(text)
+    if (!cleanedText) return
+
+    let instruction = ttsInstruction
+    let endpoint: "/v1/tts/zero-shot" | "/v1/tts/instruct"
+
+    if (settings.tts.ttsMode === "standard") {
+      endpoint = "/v1/tts/zero-shot"
+    } else {
+      endpoint = "/v1/tts/instruct"
+      if (!instruction && emotion) {
+        instruction = DEFAULT_TTS_EMOTION_INSTRUCTIONS[emotion] ?? DEFAULT_TTS_EMOTION_INSTRUCTIONS.neutral
+      }
+    }
+
+    // Emit TTS generating state
+    this.emit({
+      type: "tts.generating",
+      messageId,
+    } as unknown as AgentEvent)
+
+    // Call TTS service
+    const result = await this.deps.tts.generate({
+      messageId,
+      text: cleanedText,
+      voiceId: settings.tts.selectedVoiceId!,
+      mode: settings.tts.ttsMode,
+      emotionControlMode: settings.tts.emotionControlMode,
+      instruction,
+      speed: settings.tts.speed,
+      seed: settings.tts.seed,
+    })
+
+    if (result.ok && result.audioPath) {
+      this.emit({ type: "tts.ready", messageId, audioPath: result.audioPath } as unknown as AgentEvent)
+    } else {
+      this.emit({ type: "tts.error", messageId, error: result.error ?? "TTS generation failed" } as unknown as AgentEvent)
+    }
+  }
+
+  /**
+   * Play TTS audio for a specific message.
+   */
+  async playTtsAudio(messageId: string, audioPath: string): Promise<void> {
+    const result = await this.deps.tts.playAudio(audioPath)
+    if (result.ok) {
+      this.emit({ type: "tts.playing", messageId, audioPath } as unknown as AgentEvent)
+    } else {
+      this.emit({ type: "tts.error", messageId, error: result.error ?? "Playback failed" } as unknown as AgentEvent)
+    }
   }
 
   emitEvent(event: AgentEvent): void {
@@ -678,6 +897,8 @@ export class AgentService implements ToolRuntime {
               createdAt: message.createdAt,
             },
           })
+          // Trigger TTS auto-generation if enabled
+          this.scheduleTtsAutoGeneration(message.id, message.content)
         }
         break
       }

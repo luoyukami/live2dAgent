@@ -10,6 +10,7 @@ import { PermissionService } from "./services/permission-service.js"
 import { PromptService } from "./services/prompt-service.js"
 import { SettingsService } from "./services/settings-service.js"
 import { TraceService } from "./services/trace-service.js"
+import { TtsService } from "./services/tts/tts-service.js"
 import { patchLive2DModelJsonFileReferences } from "./services/live2d-model-json.js"
 
 // 增加mcp调试的默认端口暴露
@@ -101,10 +102,12 @@ async function bootstrap(): Promise<void> {
     // 自动展开 detail panel 显示 approval 气泡
     windowManager?.showDetailPanel("chat")
   })
-  agentService = new AgentService({ settings, trace, permissions, artifacts, prompts })
+
+  const tts = new TtsService(settings)
+  agentService = new AgentService({ settings, trace, permissions, artifacts, prompts, tts })
   agentService.onEvent((event) => windowManager?.broadcastAgentEvent(event))
 
-  registerIpcHandlers({ agent: agentService, permissions, settings, trace, artifacts, prompts, window: windowManager })
+  registerIpcHandlers({ agent: agentService, permissions, settings, trace, artifacts, prompts, window: windowManager, tts })
   const ui = settings.get().ui
   if (ui.windowMode === "combined") {
     await windowManager.create(ui)

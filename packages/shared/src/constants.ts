@@ -61,6 +61,20 @@ export const IPC_CHANNELS = {
 
   /* ---- Settings broadcast (Phase 5) ---- */
   SETTINGS_UPDATED: "settings:updated",
+
+  /* ---- TTS ---- */
+  TTS_HEALTH_CHECK: "tts:health-check",
+  TTS_LIST_VOICES: "tts:list-voices",
+  TTS_REGISTER_VOICE: "tts:register-voice",
+  TTS_RENAME_VOICE: "tts:rename-voice",
+  TTS_DELETE_VOICE: "tts:delete-voice",
+  TTS_GENERATE: "tts:generate",
+  TTS_PLAY_AUDIO: "tts:play-audio",
+  TTS_STOP_AUDIO: "tts:stop-audio",
+  TTS_GET_SETTINGS: "tts:get-settings",
+  TTS_UPDATE_SETTINGS: "tts:update-settings",
+  TTS_OPEN_AUDIO_FOLDER: "tts:open-audio-folder",
+  TTS_SELECT_AUDIO_DIR: "tts:select-audio-dir",
 } as const
 
 /** Default workspace-relative paths for trace and screenshot storage */

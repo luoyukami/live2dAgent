@@ -34,6 +34,11 @@ export type {
   DebugSnapshot,
   DebugEmotionInfo,
   DebugVoiceInfo,
+  LocalTtsSettings,
+  RegisteredVoice,
+  TtsRequestSnapshot,
+  MessageAudioState,
+  TtsSettingsPatch,
 } from "./schemas.js"
 export {
   DEFAULT_PERMISSION_POLICY,
@@ -42,6 +47,7 @@ export {
   DEFAULT_EMOTION_SETTINGS,
   DEFAULT_LIVE2D_EMOTION_PROFILE,
   DEFAULT_VOICE_INPUT_SETTINGS,
+  DEFAULT_LOCAL_TTS_SETTINGS,
   EMOTION_VALUES,
   isEmotion,
   resolveEmotionBinding,
@@ -58,4 +64,12 @@ export type {
   IpcToolResponse,
   AvatarHitRegionRect,
   IpcSetAvatarHitRegionRequest,
+  IpcTtsHealthCheckResponse,
+  IpcTtsListVoicesResponse,
+  IpcTtsRegisterVoiceRequest,
+  IpcTtsGenerateRequest,
+  IpcTtsGenerateResponse,
+  IpcTtsPlayAudioRequest,
+  IpcTtsUpdateSettingsRequest,
 } from "./ipc.js"
+export { DEFAULT_TTS_EMOTION_INSTRUCTIONS } from "./emotion.js"

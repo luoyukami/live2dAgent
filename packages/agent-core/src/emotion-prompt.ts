@@ -1,4 +1,5 @@
 import { EMOTION_VALUES, type Emotion, type EmotionSettings, type PromptPresetSettings } from "@live2d-agent/shared"
+import { getTtsInstructionPrompt, TTS_INSTRUCTION_MARKER } from "./tts-instruction-prompt.js"
 
 /**
  * The trailing-tag protocol is described in the emotion requirements doc.
@@ -77,22 +78,43 @@ export const EMOTION_PROMPT_MARKER = "## Assistant Emotion Tag"
 
 /**
  * Compose the final system prompt from a base prompt plus the emotion tag
- * section, gated by the user's EmotionSettings.
+ * section, gated by the user's EmotionSettings, and optionally the TTS
+ * instruction prompt for LLM-controlled emotion mode.
  *
  * - When the system is disabled, the base prompt is returned unchanged.
  * - When the system is enabled but already contains the marker, we do not
  *   inject a duplicate.
- * - The injection happens at the *end* of the prompt, separated by a blank
- *   line, so it doesn't disturb user-defined system content.
+ * - The emotion injection happens at the *end* of the prompt, separated by
+ *   a blank line, so it doesn't disturb user-defined system content.
+ * - When TTS is enabled with `emotionControlMode: "llm_controlled"`, the
+ *   TTS instruction prompt is appended after the emotion instructions.
  */
 export function composeSystemPrompt(
   basePrompt: string | undefined,
   settings: Pick<EmotionSettings, "enabled" | "injectPrompt">,
+  ttsSettings?: { enabled: boolean; emotionControlMode: "default_mapping" | "llm_controlled" },
 ): string {
   const base = (basePrompt ?? "").trim()
-  if (!settings.enabled || !settings.injectPrompt) return base
-  if (base.includes(EMOTION_PROMPT_MARKER)) return base
-  return base.length === 0 ? getEmotionTagInstructions() : `${base}\n\n${getEmotionTagInstructions()}`
+
+  // Build the prompt without TTS injection first
+  let result: string
+  if (!settings.enabled || !settings.injectPrompt) {
+    result = base
+  } else if (base.includes(EMOTION_PROMPT_MARKER)) {
+    result = base
+  } else {
+    result = base.length === 0 ? getEmotionTagInstructions() : `${base}\n\n${getEmotionTagInstructions()}`
+  }
+
+  // Inject TTS instruction prompt when LLM-controlled mode is active
+  if (ttsSettings?.enabled && ttsSettings.emotionControlMode === "llm_controlled") {
+    if (!result.includes(TTS_INSTRUCTION_MARKER)) {
+      const ttsPrompt = getTtsInstructionPrompt()
+      result = result.length === 0 ? ttsPrompt : `${result}\n\n${ttsPrompt}`
+    }
+  }
+
+  return result
 }
 
 /**

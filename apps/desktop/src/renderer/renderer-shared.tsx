@@ -1,12 +1,14 @@
 import type { AgentMessage, AudioContextAttachment } from "@live2d-agent/agent-core"
 import {
   DEFAULT_PROMPT_PRESET_SETTINGS,
+  DEFAULT_LOCAL_TTS_SETTINGS,
   type Emotion,
   type EmotionSettings,
   type PromptPresetSettings,
   type PublicSettings,
   type ReasoningEffort,
   type VoiceInputSettings,
+  type LocalTtsSettings,
 } from "@live2d-agent/shared"
 
 /* ------------------------------------------------------------------ */
@@ -30,6 +32,20 @@ export interface SettingsForm {
   promptPresets: PromptPresetSettings
   emotion: EmotionSettings
   voice: VoiceInputSettings
+  tts: {
+    enabled: boolean
+    apiBaseUrl: string
+    selectedVoiceId: string
+    voiceDisplayNames: Record<string, string>
+    ttsMode: "standard" | "emotion_enhanced"
+    emotionControlMode: "default_mapping" | "llm_controlled"
+    speed: number
+    seed: number
+    audioOutputDir: string
+    autoGenerateOnAssistantMessage: boolean
+    autoPlayAfterGenerate: boolean
+    requestTimeoutMs: number
+  }
 }
 
 /* ------------------------------------------------------------------ */
@@ -121,6 +137,20 @@ export function defaultForm(): SettingsForm {
       maxDurationMs: 30_000,
       pushToTalkHotkey: "CommandOrControl+Alt+V",
     },
+    tts: {
+      enabled: DEFAULT_LOCAL_TTS_SETTINGS.enabled,
+      apiBaseUrl: DEFAULT_LOCAL_TTS_SETTINGS.apiBaseUrl,
+      selectedVoiceId: DEFAULT_LOCAL_TTS_SETTINGS.selectedVoiceId ?? "",
+      voiceDisplayNames: { ...DEFAULT_LOCAL_TTS_SETTINGS.voiceDisplayNames },
+      ttsMode: DEFAULT_LOCAL_TTS_SETTINGS.ttsMode,
+      emotionControlMode: DEFAULT_LOCAL_TTS_SETTINGS.emotionControlMode,
+      speed: DEFAULT_LOCAL_TTS_SETTINGS.speed,
+      seed: DEFAULT_LOCAL_TTS_SETTINGS.seed,
+      audioOutputDir: DEFAULT_LOCAL_TTS_SETTINGS.audioOutputDir,
+      autoGenerateOnAssistantMessage: DEFAULT_LOCAL_TTS_SETTINGS.autoGenerateOnAssistantMessage,
+      autoPlayAfterGenerate: DEFAULT_LOCAL_TTS_SETTINGS.autoPlayAfterGenerate,
+      requestTimeoutMs: DEFAULT_LOCAL_TTS_SETTINGS.requestTimeoutMs,
+    },
   }
 }
 
@@ -135,13 +165,21 @@ export function formatAttachmentSubLabel(att: AudioContextAttachment): string {
 }
 
 export function messageContentToText(message: AgentMessage): string {
-  if (typeof message.content === "string") return message.content
-  return message.content.map((block) => {
-    if (block.type === "text") return block.text ?? ""
-    if (block.type === "image_url") return "[图片输入]"
-    if (block.type === "input_audio") return "[音频输入]"
-    return JSON.stringify(block)
-  }).filter(Boolean).join("\n")
+  let text: string
+  if (typeof message.content === "string") {
+    text = message.content
+  } else {
+    text = message.content.map((block) => {
+      if (block.type === "text") return block.text ?? ""
+      if (block.type === "image_url") return "[图片输入]"
+      if (block.type === "input_audio") return "[音频输入]"
+      return JSON.stringify(block)
+    }).filter(Boolean).join("\n")
+  }
+  // Strip control tags for display
+  text = text.replace(/(?:\r?\n)?[ \t]*<emotion\s+value\s*=\s*["']([a-z_]+)["']\s*\/>[ \t]*(?:\r?\n)?[ \t]*$/gi, "")
+  text = text.replace(/\[\[TTS_INSTRUCTION:[\s\S]*?\]\]/g, "")
+  return text.replace(/(?:[ \t]*\r?\n)+[ \t]*$/u, "").replace(/[ \t]+$/u, "").trim()
 }
 
 export function riskForTool(tool: string): string {
