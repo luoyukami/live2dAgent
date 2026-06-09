@@ -22,15 +22,24 @@ export class WindowManager {
   /** Set to true when the app is quitting, to allow window destruction. */
   private isQuitting = false
 
-  /** Drag state for the combined window (single-window mode). */
+  /** Drag state — supports both combined and avatar windows. */
   private dragTimer?: NodeJS.Timeout
-  private dragStart?: { windowType: "combined" | "avatar"; cursorX: number; cursorY: number; windowX: number; windowY: number }
+  private dragStart?: {
+    windowType: "combined" | "avatar"
+    cursorX: number; cursorY: number
+    windowX: number; windowY: number
+    windowWidth: number; windowHeight: number
+    contentWidth: number; contentHeight: number
+  }
 
   private getDragWindow(windowType: "combined" | "avatar"): BrowserWindow | undefined {
     return windowType === "avatar" ? this.avatarWindow : this.combinedWindow
   }
 
   private lockedSize?: { width: number; height: number }
+
+  /** Per-window content-size locks to prevent DPI drift during drag/resize. */
+  private lockedContentSizes = new Map<WindowRole, { width: number; height: number }>()
 
   /** Timer for delayed hide to avoid race conditions. */
   private hideTimer?: NodeJS.Timeout
@@ -44,6 +53,10 @@ export class WindowManager {
 
   /** Cached normalized hit-region rects for OS-level shape on avatar window. */
   private cachedAvatarHitRects: AvatarHitRegionRect[] = []
+
+  /** Suspend setShape during avatar drag to avoid size feedback loops. */
+  private isDraggingAvatar = false
+  private pendingAvatarHitShape = false
 
   /** Last applied avatar mouse-ignore state, used to avoid noisy native calls/logs. */
   private avatarMouseIgnored?: boolean
@@ -134,8 +147,22 @@ export class WindowManager {
     if (!target || target.isDestroyed()) return
     this.endDrag()
     const cursor = screen.getCursorScreenPoint()
-    const [windowX, windowY] = target.getPosition()
-    this.dragStart = { windowType, cursorX: cursor.x, cursorY: cursor.y, windowX, windowY }
+    const bounds = target.getBounds()
+    const [contentWidth, contentHeight] = target.getContentSize()
+    this.dragStart = {
+      windowType,
+      cursorX: cursor.x,
+      cursorY: cursor.y,
+      windowX: bounds.x,
+      windowY: bounds.y,
+      windowWidth: bounds.width,
+      windowHeight: bounds.height,
+      contentWidth,
+      contentHeight,
+    }
+    if (windowType === "avatar") {
+      this.isDraggingAvatar = true
+    }
     this.dragTimer = setInterval(() => this.updateDragPosition(), 16)
   }
 
@@ -144,7 +171,15 @@ export class WindowManager {
       clearInterval(this.dragTimer)
       this.dragTimer = undefined
     }
+    const wasDraggingAvatar = this.dragStart?.windowType === "avatar"
     this.dragStart = undefined
+    if (wasDraggingAvatar) {
+      this.isDraggingAvatar = false
+      if (this.pendingAvatarHitShape) {
+        this.pendingAvatarHitShape = false
+        this.applyAvatarHitShape()
+      }
+    }
   }
 
   private updateDragPosition(): void {
@@ -160,7 +195,21 @@ export class WindowManager {
     const cursor = screen.getCursorScreenPoint()
     const nextX = Math.round(this.dragStart.windowX + cursor.x - this.dragStart.cursorX)
     const nextY = Math.round(this.dragStart.windowY + cursor.y - this.dragStart.cursorY)
-    target.setPosition(nextX, nextY, false)
+
+    // Atomic position + fixed size to prevent DPI-induced drift
+    target.setBounds({
+      x: nextX,
+      y: nextY,
+      width: this.dragStart.windowWidth,
+      height: this.dragStart.windowHeight,
+    }, false)
+
+    // Restore content size if it drifted during the setBounds call
+    const [cw, ch] = target.getContentSize()
+    if (cw !== this.dragStart.contentWidth || ch !== this.dragStart.contentHeight) {
+      target.setContentSize(this.dragStart.contentWidth, this.dragStart.contentHeight, false)
+    }
+
     if (this.dragStart.windowType === "combined") {
       this.restoreLockedSize(target)
     }
@@ -204,6 +253,12 @@ export class WindowManager {
 
     // macOS: only cache — no setShape, dynamic passthrough via mousemove is the fallback
     if (process.platform === "darwin") return
+
+    // During avatar drag, defer shape application to avoid size feedback loops
+    if (this.isDraggingAvatar) {
+      this.pendingAvatarHitShape = true
+      return
+    }
 
     // Windows / Linux: apply OS-level shape
     this.applyAvatarHitShape()
@@ -367,6 +422,7 @@ export class WindowManager {
     this.avatarMouseIgnored = undefined
     this.setAvatarIgnoreMouseEvents(true, "initial")
     await this.loadRenderer(this.avatarWindow, "avatar")
+    this.lockWindowContentSize("avatar", this.avatarWindow)
 
     // ── UI window ───────────────────────────────────────────────
     // Use compact input dimensions initially; will be resized when switching modes.
@@ -555,7 +611,7 @@ export class WindowManager {
     let avatarHeight = 720
     if (this.avatarWindow && !this.avatarWindow.isDestroyed()) {
       ;[avatarX, avatarY] = this.avatarWindow.getPosition()
-      ;[avatarWidth, avatarHeight] = this.avatarWindow.getSize()
+      ;[avatarWidth, avatarHeight] = this.avatarWindow.getContentSize()
     }
 
     // Use configured panel dimensions, clamped to work area
@@ -652,7 +708,7 @@ export class WindowManager {
     let avatarHeight = 720
     if (this.avatarWindow && !this.avatarWindow.isDestroyed()) {
       ;[avatarX, avatarY] = this.avatarWindow.getPosition()
-      ;[avatarWidth, avatarHeight] = this.avatarWindow.getSize()
+      ;[avatarWidth, avatarHeight] = this.avatarWindow.getContentSize()
     }
 
     // Position below avatar, centered horizontally
@@ -732,6 +788,24 @@ export class WindowManager {
     this.lockedSize = { width, height }
     win.setMinimumSize(width, height)
     win.setMaximumSize(width, height)
+  }
+
+  private lockWindowContentSize(role: WindowRole, win: BrowserWindow): void {
+    if (win.isDestroyed()) return
+    const [width, height] = win.getContentSize()
+    this.lockedContentSizes.set(role, { width, height })
+    // Lock frame bounds too (frameless windows: bounds ≅ content size).
+    const bounds = win.getBounds()
+    win.setMinimumSize(bounds.width, bounds.height)
+    win.setMaximumSize(bounds.width, bounds.height)
+  }
+
+  private restoreWindowContentSize(role: WindowRole, win: BrowserWindow): void {
+    const locked = this.lockedContentSizes.get(role)
+    if (!locked || win.isDestroyed()) return
+    const [width, height] = win.getContentSize()
+    if (width === locked.width && height === locked.height) return
+    win.setContentSize(locked.width, locked.height, false)
   }
 
   private restoreLockedSize(win?: BrowserWindow): void {
