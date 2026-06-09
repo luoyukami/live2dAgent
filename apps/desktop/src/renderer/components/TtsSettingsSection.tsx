@@ -28,9 +28,18 @@ export function TtsSettingsSection({ form, setForm, settings }: TtsSettingsSecti
     setConnectionStatus("checking")
     setTestError(null)
     try {
+      // Temporarily update settings to test the current form URL
+      const previousUrl = settings?.tts?.apiBaseUrl
+      if (form.tts.apiBaseUrl !== previousUrl) {
+        await window.petAgent.ttsUpdateSettings({ apiBaseUrl: form.tts.apiBaseUrl })
+      }
       const result = await window.petAgent.ttsHealthCheck()
       setConnectionStatus(result.ok ? "ok" : "error")
       if (!result.ok) setTestError(result.error ?? "连接失败")
+      // Restore previous URL if test failed and we had temporarily changed it
+      if (!result.ok && form.tts.apiBaseUrl !== previousUrl && previousUrl !== undefined) {
+        await window.petAgent.ttsUpdateSettings({ apiBaseUrl: previousUrl })
+      }
     } catch (err) {
       setConnectionStatus("error")
       setTestError(err instanceof Error ? err.message : String(err))
@@ -67,9 +76,24 @@ export function TtsSettingsSection({ form, setForm, settings }: TtsSettingsSecti
       })
       if (result.ok) {
         setOperationStatus("注册成功")
+        const newVoiceId = result.voiceId ?? registerForm.voiceId
         setRegisterForm({ voiceId: "", displayName: "", promptText: "" })
         setPromptWavPath("")
         setVoiceIdError(null)
+        // Auto-select the newly registered voice
+        if (newVoiceId) {
+          setForm((f) => ({
+            ...f,
+            tts: {
+              ...f.tts,
+              selectedVoiceId: newVoiceId,
+              voiceDisplayNames: {
+                ...f.tts.voiceDisplayNames,
+                [newVoiceId]: registerForm.displayName || newVoiceId,
+              },
+            },
+          }))
+        }
         await handleRefreshVoices()
       } else {
         setOperationStatus("注册失败: " + (result.error ?? "未知错误"))
@@ -100,30 +124,59 @@ export function TtsSettingsSection({ form, setForm, settings }: TtsSettingsSecti
     }
   }
 
-  async function handleRenameVoice(voiceId: string): Promise<void> {
+  async function handleRenameDisplayName(voiceId: string): Promise<void> {
     const currentName = form.tts.voiceDisplayNames[voiceId] ?? voiceId
-    const newName = prompt(`重命名音色 ${voiceId}`, currentName)
+    const newName = prompt(`修改显示名（本地）`, currentName)
     if (!newName || newName === currentName) return
+    setForm((f) => ({
+      ...f,
+      tts: { ...f.tts, voiceDisplayNames: { ...f.tts.voiceDisplayNames, [voiceId]: newName } },
+    }))
+    setOperationStatus("显示名已更新，保存设置后生效")
+  }
+
+  async function handleChangeVoiceId(voiceId: string): Promise<void> {
+    const newVoiceId = prompt(`修改音色 ID（服务端操作）`, voiceId)
+    if (!newVoiceId || newVoiceId === voiceId) return
+    if (!/^[a-zA-Z0-9_-]{1,64}$/.test(newVoiceId)) {
+      setOperationStatus("音色 ID 只能包含字母、数字、下划线、短横线，长度 1-64")
+      return
+    }
     setOperationStatus(null)
     try {
-      const result = await window.petAgent.ttsRenameVoice(voiceId, newName)
+      const result = await window.petAgent.ttsRenameVoice(voiceId, newVoiceId)
       if (result.ok) {
+        // Migrate local display name
+        const newDisplayNames = { ...form.tts.voiceDisplayNames }
+        if (newDisplayNames[voiceId]) {
+          newDisplayNames[newVoiceId] = newDisplayNames[voiceId]
+          delete newDisplayNames[voiceId]
+        }
+        // Update selected voice if it was the renamed one
+        let selectedVoiceId = form.tts.selectedVoiceId
+        if (selectedVoiceId === voiceId) {
+          selectedVoiceId = newVoiceId
+        }
         setForm((f) => ({
           ...f,
-          tts: { ...f.tts, voiceDisplayNames: { ...f.tts.voiceDisplayNames, [voiceId]: newName } },
+          tts: {
+            ...f.tts,
+            selectedVoiceId,
+            voiceDisplayNames: newDisplayNames,
+          },
         }))
         await handleRefreshVoices()
       } else {
-        setOperationStatus("重命名失败: " + (result.error ?? "未知错误"))
+        setOperationStatus("修改音色 ID 失败: " + (result.error ?? "未知错误"))
       }
     } catch (err) {
-      setOperationStatus("重命名失败: " + (err instanceof Error ? err.message : String(err)))
+      setOperationStatus("修改音色 ID 失败: " + (err instanceof Error ? err.message : String(err)))
     }
   }
 
   async function handleSelectPromptWav(): Promise<void> {
     try {
-      const result = await window.petAgent.ttsSelectAudioDir()
+      const result = await window.petAgent.ttsSelectPromptWav()
       if (result) setPromptWavPath(result)
     } catch {
       // ignore
@@ -199,7 +252,8 @@ export function TtsSettingsSection({ form, setForm, settings }: TtsSettingsSecti
                       <span>{displayName}{v.promptText ? ` (${v.promptText.slice(0, 20)}...)` : ""}</span>
                     </label>
                     <div className="settings-row" style={{ gap: 4 }}>
-                      <button className="ghost-btn" onClick={() => void handleRenameVoice(v.voiceId)} title="重命名">R</button>
+                      <button className="ghost-btn" onClick={() => void handleRenameDisplayName(v.voiceId)} title="修改显示名">R</button>
+                      <button className="ghost-btn" onClick={() => void handleChangeVoiceId(v.voiceId)} title="修改音色 ID">ID</button>
                       <button className="ghost-btn" onClick={() => void handleDeleteVoice(v.voiceId)} title="删除">X</button>
                     </div>
                   </div>

@@ -69,12 +69,14 @@ export const IPC_CHANNELS = {
   TTS_RENAME_VOICE: "tts:rename-voice",
   TTS_DELETE_VOICE: "tts:delete-voice",
   TTS_GENERATE: "tts:generate",
+  TTS_GENERATE_FOR_MESSAGE: "tts:generate-for-message",
   TTS_PLAY_AUDIO: "tts:play-audio",
   TTS_STOP_AUDIO: "tts:stop-audio",
   TTS_GET_SETTINGS: "tts:get-settings",
   TTS_UPDATE_SETTINGS: "tts:update-settings",
   TTS_OPEN_AUDIO_FOLDER: "tts:open-audio-folder",
   TTS_SELECT_AUDIO_DIR: "tts:select-audio-dir",
+  TTS_SELECT_PROMPT_WAV: "tts:select-prompt-wav",
 } as const
 
 /** Default workspace-relative paths for trace and screenshot storage */

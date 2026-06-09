@@ -368,12 +368,28 @@ export function registerIpcHandlers(services: IpcServices): void {
     return services.tts.renameVoice(voiceId, newVoiceId, overwrite)
   })
 
+  ipcMain.handle(IPC_CHANNELS.TTS_SELECT_PROMPT_WAV, async () => {
+    const result = await dialog.showOpenDialog({
+      properties: ["openFile"],
+      filters: [
+        { name: "Audio", extensions: ["wav", "mp3", "flac", "m4a", "ogg", "webm"] },
+      ],
+    })
+    return result.canceled ? null : result.filePaths[0]
+  })
+
   ipcMain.handle(IPC_CHANNELS.TTS_DELETE_VOICE, async (_event, voiceId: string) => {
     return services.tts.deleteVoice(voiceId)
   })
 
   ipcMain.handle(IPC_CHANNELS.TTS_GENERATE, async (_event, req: IpcTtsGenerateRequest) => {
     return services.tts.generate(req)
+  })
+
+  ipcMain.handle(IPC_CHANNELS.TTS_GENERATE_FOR_MESSAGE, async (_event, messageId: string, rawContent: string) => {
+    await services.agent.generateTtsForMessage(messageId, rawContent)
+    // The result is communicated via agent events (tts.ready / tts.error)
+    return { ok: true }
   })
 
   ipcMain.handle(IPC_CHANNELS.TTS_PLAY_AUDIO, async (_event, audioPath: string) => {

@@ -530,96 +530,98 @@ export class AgentService implements ToolRuntime {
   }
 
   /**
-   * Generate TTS audio for an assistant message.
-   * Extracts emotion and TTS instruction, cleans text, and calls the TTS service.
+   * Build a TTS generation request for a given assistant message.
+   * Unified logic used by both auto-generation and manual regeneration.
    */
-  private async generateTtsForMessage(messageId: string, rawContent: string): Promise<void> {
+  private buildTtsRequestForMessage(
+    messageId: string,
+    rawContent: string,
+  ): { messageId: string; text: string; voiceId: string; mode: "standard" | "emotion_enhanced"; emotionControlMode: "default_mapping" | "llm_controlled"; instruction?: string; speed: number; seed: number } | null {
+    const settings = this.deps.settings.get()
+
+    if (!settings.tts.enabled) {
+      this.emit({ type: "tts.error", messageId, error: "TTS 未启用" })
+      return null
+    }
+
+    if (!settings.tts.selectedVoiceId) {
+      this.emit({ type: "tts.error", messageId, error: "请先在设置页选择一个 TTS 音色" })
+      return null
+    }
+
+    const cleanedText = sanitizeTextForTts(rawContent)
+    if (!cleanedText) {
+      this.emit({ type: "tts.error", messageId, error: "清理后的文本为空，无法生成语音" })
+      return null
+    }
+
+    let instruction: string | undefined
+
+    if (settings.tts.ttsMode === "emotion_enhanced") {
+      if (settings.tts.emotionControlMode === "default_mapping") {
+        const emotionResult = this.parseEmotionFromMessage(rawContent)
+        instruction = DEFAULT_TTS_EMOTION_INSTRUCTIONS[emotionResult.emotion] ?? DEFAULT_TTS_EMOTION_INSTRUCTIONS.neutral
+      } else {
+        // llm_controlled mode — extract instruction from the message
+        const ttsResult = extractTtsInstruction(rawContent)
+        if (ttsResult) {
+          instruction = ttsResult.instruction
+          this.ttsDebug.lastInstructionInjected = true
+        } else {
+          // Fallback to default mapping if no instruction found
+          const emotionResult = this.parseEmotionFromMessage(rawContent)
+          instruction = DEFAULT_TTS_EMOTION_INSTRUCTIONS[emotionResult.emotion] ?? DEFAULT_TTS_EMOTION_INSTRUCTIONS.neutral
+        }
+      }
+    }
+
+    return {
+      messageId,
+      text: cleanedText,
+      voiceId: settings.tts.selectedVoiceId,
+      mode: settings.tts.ttsMode,
+      emotionControlMode: settings.tts.emotionControlMode,
+      instruction,
+      speed: settings.tts.speed,
+      seed: settings.tts.seed,
+    }
+  }
+
+  /**
+   * Generate TTS audio for an assistant message.
+   * Unified entry point for both auto-generation and manual regeneration.
+   */
+  async generateTtsForMessage(messageId: string, rawContent: string): Promise<void> {
     const settings = this.deps.settings.get()
     this.ttsDebug.lastAutoGenerateAttempt = true
     this.ttsDebug.lastGeneratedMessageId = messageId
 
+    const req = this.buildTtsRequestForMessage(messageId, rawContent)
+    if (!req) {
+      this.ttsDebug.lastAutoGenerateSuccess = false
+      return
+    }
+
     try {
-      // Clean the text for TTS
-      const cleanedText = sanitizeTextForTts(rawContent)
-      if (!cleanedText) {
-        this.ttsDebug.lastAutoGenerateError = "Empty text after sanitization"
-        return
-      }
+      this.emit({ type: "tts.generating", messageId })
 
-      // Determine TTS parameters based on mode
-      let instruction: string | undefined
-      let endpoint: "/v1/tts/zero-shot" | "/v1/tts/instruct"
-      let parsedEmotion: string | undefined
-
-      if (settings.tts.ttsMode === "standard") {
-        endpoint = "/v1/tts/zero-shot"
-      } else {
-        // emotion_enhanced mode
-        endpoint = "/v1/tts/instruct"
-
-        if (settings.tts.emotionControlMode === "default_mapping") {
-          // Extract emotion from the message and map to default instruction
-          const emotionResult = this.parseEmotionFromMessage(rawContent)
-          parsedEmotion = emotionResult.emotion
-          instruction = DEFAULT_TTS_EMOTION_INSTRUCTIONS[parsedEmotion] ?? DEFAULT_TTS_EMOTION_INSTRUCTIONS.neutral
-        } else {
-          // llm_controlled mode — extract instruction from the message
-          const ttsResult = extractTtsInstruction(rawContent)
-          if (ttsResult) {
-            instruction = ttsResult.instruction
-            this.ttsDebug.lastInstructionInjected = true
-          } else {
-            // Fallback to default mapping if no instruction found
-            const emotionResult = this.parseEmotionFromMessage(rawContent)
-            parsedEmotion = emotionResult.emotion
-            instruction = DEFAULT_TTS_EMOTION_INSTRUCTIONS[parsedEmotion] ?? DEFAULT_TTS_EMOTION_INSTRUCTIONS.neutral
-          }
-        }
-      }
-
-      // Emit TTS generating state
-      this.emit({
-        type: "tts.generating",
-        messageId,
-      } as unknown as AgentEvent)
-
-      // Call TTS service
-      const result = await this.deps.tts.generate({
-        messageId,
-        text: cleanedText,
-        voiceId: settings.tts.selectedVoiceId!,
-        mode: settings.tts.ttsMode,
-        emotionControlMode: settings.tts.emotionControlMode,
-        instruction,
-        speed: settings.tts.speed,
-        seed: settings.tts.seed,
-      })
+      const result = await this.deps.tts.generate(req)
 
       if (result.ok && result.audioPath) {
         this.ttsDebug.lastAutoGenerateSuccess = true
         this.ttsDebug.lastAutoGenerateError = undefined
-        this.emit({
-          type: "tts.ready",
-          messageId,
-          audioPath: result.audioPath,
-        } as unknown as AgentEvent)
-
-        if (settings.tts.autoPlayAfterGenerate) {
-          await this.playTtsAudio(messageId, result.audioPath)
-        }
+        const audioUrl = new URL(`file://${result.audioPath}`).href
+        this.emit({ type: "tts.ready", messageId, audioPath: result.audioPath, audioUrl })
       } else {
         this.ttsDebug.lastAutoGenerateSuccess = false
         this.ttsDebug.lastAutoGenerateError = result.error ?? "TTS generation failed"
-        this.emit({
-          type: "tts.error",
-          messageId,
-          error: result.error ?? "TTS generation failed",
-        } as unknown as AgentEvent)
+        this.emit({ type: "tts.error", messageId, error: result.error ?? "TTS generation failed" })
       }
-
     } catch (err) {
-      this.ttsDebug.lastAutoGenerateError = err instanceof Error ? err.message : String(err)
+      const msg = err instanceof Error ? err.message : String(err)
+      this.ttsDebug.lastAutoGenerateError = msg
       this.ttsDebug.lastAutoGenerateSuccess = false
+      this.emit({ type: "tts.error", messageId, error: msg })
     }
   }
 
@@ -638,62 +640,15 @@ export class AgentService implements ToolRuntime {
 
   /**
    * Regenerate TTS audio for a specific message (manual trigger).
-   * Called from the "重新生成" button in the renderer.
+   * Delegates to the unified generateTtsForMessage.
    */
-  async regenerateTts(messageId: string, text: string, emotion?: string, ttsInstruction?: string): Promise<void> {
+  async regenerateTts(messageId: string, text: string): Promise<void> {
     const settings = this.deps.settings.get()
-    if (!settings.tts.enabled) return
-
-    const cleanedText = sanitizeTextForTts(text)
-    if (!cleanedText) return
-
-    let instruction = ttsInstruction
-    let endpoint: "/v1/tts/zero-shot" | "/v1/tts/instruct"
-
-    if (settings.tts.ttsMode === "standard") {
-      endpoint = "/v1/tts/zero-shot"
-    } else {
-      endpoint = "/v1/tts/instruct"
-      if (!instruction && emotion) {
-        instruction = DEFAULT_TTS_EMOTION_INSTRUCTIONS[emotion] ?? DEFAULT_TTS_EMOTION_INSTRUCTIONS.neutral
-      }
+    if (!settings.tts.enabled) {
+      this.emit({ type: "tts.error", messageId, error: "TTS 未启用" })
+      return
     }
-
-    // Emit TTS generating state
-    this.emit({
-      type: "tts.generating",
-      messageId,
-    } as unknown as AgentEvent)
-
-    // Call TTS service
-    const result = await this.deps.tts.generate({
-      messageId,
-      text: cleanedText,
-      voiceId: settings.tts.selectedVoiceId!,
-      mode: settings.tts.ttsMode,
-      emotionControlMode: settings.tts.emotionControlMode,
-      instruction,
-      speed: settings.tts.speed,
-      seed: settings.tts.seed,
-    })
-
-    if (result.ok && result.audioPath) {
-      this.emit({ type: "tts.ready", messageId, audioPath: result.audioPath } as unknown as AgentEvent)
-    } else {
-      this.emit({ type: "tts.error", messageId, error: result.error ?? "TTS generation failed" } as unknown as AgentEvent)
-    }
-  }
-
-  /**
-   * Play TTS audio for a specific message.
-   */
-  async playTtsAudio(messageId: string, audioPath: string): Promise<void> {
-    const result = await this.deps.tts.playAudio(audioPath)
-    if (result.ok) {
-      this.emit({ type: "tts.playing", messageId, audioPath } as unknown as AgentEvent)
-    } else {
-      this.emit({ type: "tts.error", messageId, error: result.error ?? "Playback failed" } as unknown as AgentEvent)
-    }
+    await this.generateTtsForMessage(messageId, text)
   }
 
   emitEvent(event: AgentEvent): void {

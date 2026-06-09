@@ -7,13 +7,16 @@ import {
   type PublicSettings,
   type ReasoningEffort,
   type DebugSnapshot,
+  DEFAULT_LOCAL_TTS_SETTINGS,
 } from "@live2d-agent/shared"
 import { DebugPanel } from "./components/DebugPanel"
 import { MessageBubble } from "./components/MessageBubble"
 import { ApprovalBubble } from "./components/ApprovalBubble"
 import { AudioAttachmentCard } from "./components/AudioAttachmentCard"
 import { RecorderButton } from "./components/RecorderButton"
+import { TtsSettingsSection } from "./components/TtsSettingsSection"
 import { useAudioRecorder } from "./audio/useAudioRecorder"
+import { useTtsManager } from "./hooks/useTtsManager"
 import {
   SettingsForm,
   HOTKEY_HINT,
@@ -75,7 +78,10 @@ export function UiApp(): JSX.Element {
   const [showInput, setShowInput] = useState(false)
   const [showDetail, setShowDetail] = useState(false)
   const [detailTab, setDetailTab] = useState<"chat" | "settings" | "debug">("chat")
-  const [activeSettingsSection, setActiveSettingsSection] = useState<"general" | "presets" | "emotion" | "voice">("general")
+  const [activeSettingsSection, setActiveSettingsSection] = useState<"general" | "presets" | "emotion" | "voice" | "tts">("general")
+
+  /* ---- TTS state ---- */
+  const ttsManager = useTtsManager()
 
   /* ---- Effects ---- */
 
@@ -123,6 +129,9 @@ export function UiApp(): JSX.Element {
       if (event.type === "emotion.set") {
         setCurrentEmotion(event.emotion)
       }
+      if (event.type === "tts.generating" || event.type === "tts.ready" || event.type === "tts.error" || event.type === "tts.playing" || event.type === "tts.stopped") {
+        ttsManager.handleAgentEvent(event)
+      }
     })
   }, [])
 
@@ -150,6 +159,20 @@ export function UiApp(): JSX.Element {
           stripTagWhenDisabled: settings.emotion?.stripTagWhenDisabled ?? prev.emotion.stripTagWhenDisabled,
         },
         voice: settings.voice ?? prev.voice,
+        tts: {
+          enabled: settings.tts?.enabled ?? prev.tts.enabled,
+          apiBaseUrl: settings.tts?.apiBaseUrl ?? prev.tts.apiBaseUrl,
+          selectedVoiceId: settings.tts?.selectedVoiceId ?? prev.tts.selectedVoiceId,
+          voiceDisplayNames: settings.tts?.voiceDisplayNames ?? prev.tts.voiceDisplayNames,
+          ttsMode: settings.tts?.ttsMode ?? prev.tts.ttsMode,
+          emotionControlMode: settings.tts?.emotionControlMode ?? prev.tts.emotionControlMode,
+          speed: settings.tts?.speed ?? prev.tts.speed,
+          seed: settings.tts?.seed ?? prev.tts.seed,
+          audioOutputDir: settings.tts?.audioOutputDir ?? prev.tts.audioOutputDir,
+          autoGenerateOnAssistantMessage: settings.tts?.autoGenerateOnAssistantMessage ?? prev.tts.autoGenerateOnAssistantMessage,
+          autoPlayAfterGenerate: settings.tts?.autoPlayAfterGenerate ?? prev.tts.autoPlayAfterGenerate,
+          requestTimeoutMs: settings.tts?.requestTimeoutMs ?? prev.tts.requestTimeoutMs,
+        },
       }))
     }
   }, [settings])
@@ -460,6 +483,24 @@ export function UiApp(): JSX.Element {
         }
       }
 
+      /* ---- TTS patch ---- */
+      const settingsTts = settings?.tts
+      const ttsPatch: Record<string, unknown> = {}
+      if (form.tts.enabled !== (settingsTts?.enabled ?? false)) ttsPatch.enabled = form.tts.enabled
+      if (form.tts.apiBaseUrl !== (settingsTts?.apiBaseUrl ?? DEFAULT_LOCAL_TTS_SETTINGS.apiBaseUrl)) ttsPatch.apiBaseUrl = form.tts.apiBaseUrl
+      if (form.tts.selectedVoiceId !== (settingsTts?.selectedVoiceId ?? "")) ttsPatch.selectedVoiceId = form.tts.selectedVoiceId
+      if (form.tts.ttsMode !== (settingsTts?.ttsMode ?? "standard")) ttsPatch.ttsMode = form.tts.ttsMode
+      if (form.tts.emotionControlMode !== (settingsTts?.emotionControlMode ?? "default_mapping")) ttsPatch.emotionControlMode = form.tts.emotionControlMode
+      if (form.tts.speed !== (settingsTts?.speed ?? 1.0)) ttsPatch.speed = form.tts.speed
+      if (form.tts.seed !== (settingsTts?.seed ?? -1)) ttsPatch.seed = form.tts.seed
+      if (form.tts.audioOutputDir !== (settingsTts?.audioOutputDir ?? "")) ttsPatch.audioOutputDir = form.tts.audioOutputDir
+      if (form.tts.autoGenerateOnAssistantMessage !== (settingsTts?.autoGenerateOnAssistantMessage ?? true)) ttsPatch.autoGenerateOnAssistantMessage = form.tts.autoGenerateOnAssistantMessage
+      if (form.tts.autoPlayAfterGenerate !== (settingsTts?.autoPlayAfterGenerate ?? true)) ttsPatch.autoPlayAfterGenerate = form.tts.autoPlayAfterGenerate
+      if (form.tts.requestTimeoutMs !== (settingsTts?.requestTimeoutMs ?? 120000)) ttsPatch.requestTimeoutMs = form.tts.requestTimeoutMs
+      if (Object.keys(ttsPatch).length > 0) {
+        publicPatch.tts = ttsPatch
+      }
+
       if (Object.keys(publicPatch).length > 0) {
         await window.petAgent.updatePublicSettings(publicPatch)
       }
@@ -532,6 +573,7 @@ export function UiApp(): JSX.Element {
     { key: "presets" as const, label: "预设" },
     { key: "emotion" as const, label: "情绪" },
     { key: "voice" as const, label: "语音" },
+    { key: "tts" as const, label: "TTS" },
   ]
 
   const canSubmit = !isSending && (input.trim().length > 0 || attachments.length > 0)
@@ -673,7 +715,17 @@ export function UiApp(): JSX.Element {
                 <div className="messages">
                   {messages
                     .filter((message) => message.role !== "system")
-                    .map((message) => <MessageBubble key={message.id} message={message} />)}
+                    .map((message) => (
+                      <MessageBubble
+                        key={message.id}
+                        message={message}
+                        messageAudioState={ttsManager.messageAudioStates.get(message.id)}
+                        onGenerateTts={(id, text) => void ttsManager.generateForMessage(id, text)}
+                        onPlayTts={(id) => ttsManager.playMessageAudio(id)}
+                        onStopTts={() => ttsManager.stopPlayback()}
+                        onRetryTts={(id, text) => void ttsManager.retryMessage(id, text)}
+                      />
+                    ))}
                 </div>
                 <footer>
                   {(attachments.length > 0 || recordingError) && (
@@ -1096,6 +1148,14 @@ export function UiApp(): JSX.Element {
                         <small className="settings-hint">{HOTKEY_HINT}</small>
                       </div>
                     </div>
+                  )}
+
+                  {activeSettingsSection === "tts" && (
+                    <TtsSettingsSection
+                      form={form}
+                      setForm={setForm}
+                      settings={settings}
+                    />
                   )}
 
                   {settingsError && <div className="settings-error">{settingsError}</div>}

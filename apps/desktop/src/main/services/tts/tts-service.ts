@@ -35,7 +35,7 @@ export class TtsService {
   ) {
     const ttsSettings = this.settings.get().tts
     this.currentApiBaseUrl = ttsSettings.apiBaseUrl
-    this.client = new LocalTtsClient(this.currentApiBaseUrl)
+    this.client = new LocalTtsClient(this.currentApiBaseUrl, ttsSettings.requestTimeoutMs)
   }
 
   /* ---- Settings access ---- */
@@ -206,13 +206,14 @@ export class TtsService {
 
   /* ---- Audio playback helpers ---- */
 
-  async playAudio(audioPath: string): Promise<{ ok: boolean; error?: string }> {
+  async playAudio(audioPath: string): Promise<{ ok: boolean; audioUrl?: string; error?: string }> {
     if (!existsSync(audioPath)) {
       return { ok: false, error: `Audio file not found: ${audioPath}` }
     }
     // Playback is handled by the renderer via HTML5 Audio.
-    // Main process only validates the file exists.
-    return { ok: true }
+    // Main process only validates the file exists and returns a safe file URL.
+    const audioUrl = new URL(`file://${audioPath}`).href
+    return { ok: true, audioUrl }
   }
 
   async stopAudio(): Promise<void> {
@@ -238,7 +239,7 @@ export class TtsService {
     const ttsSettings = this.settings.get().tts
     if (ttsSettings.apiBaseUrl !== this.currentApiBaseUrl) {
       this.currentApiBaseUrl = ttsSettings.apiBaseUrl
-      this.client = new LocalTtsClient(this.currentApiBaseUrl)
+      this.client = new LocalTtsClient(this.currentApiBaseUrl, ttsSettings.requestTimeoutMs)
     }
 
     // Ensure the output directory exists

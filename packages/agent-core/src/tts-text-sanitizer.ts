@@ -13,8 +13,14 @@ const EMOTION_TAG_RE = /<emotion\s+value\s*=\s*["'][a-z_]+["']\s*\/>/gi
 
 /**
  * Regex to match `[[TTS_INSTRUCTION:...]]` tags anywhere in the text.
+ * NOTE: Not using the `g` flag to avoid lastIndex state issues on repeated calls.
  */
-const TTS_INSTRUCTION_TAG_RE = /\[\[TTS_INSTRUCTION:([\s\S]*?)\]\]/g
+const TTS_INSTRUCTION_TAG_RE = /\[\[TTS_INSTRUCTION:([\s\S]*?)\]\]/
+
+/**
+ * Regex to match ALL `[[TTS_INSTRUCTION:...]]` tags for removal.
+ */
+const TTS_INSTRUCTION_TAG_RE_GLOBAL = /\[\[TTS_INSTRUCTION:[\s\S]*?\]\]/g
 
 /**
  * Regex to match markdown links: [title](url) → "title"
@@ -89,7 +95,7 @@ export function extractTtsInstruction(
 ): { instruction: string; cleanedText: string } | null {
   if (!rawText) return null
 
-  // Find the first match
+  // Find the first match (non-global regex to avoid lastIndex state issues)
   const firstMatch = TTS_INSTRUCTION_TAG_RE.exec(rawText)
   if (!firstMatch) return null
 
@@ -99,8 +105,8 @@ export function extractTtsInstruction(
   const truncatedInstruction =
     instruction.length > 100 ? instruction.slice(0, 100) : instruction
 
-  // Remove ALL TTS instruction tags from the text
-  const cleanedText = rawText.replace(TTS_INSTRUCTION_TAG_RE, "").trim()
+  // Remove ALL TTS instruction tags from the text (global regex for replacement)
+  const cleanedText = rawText.replace(TTS_INSTRUCTION_TAG_RE_GLOBAL, "").trim()
 
   return {
     instruction: truncatedInstruction,

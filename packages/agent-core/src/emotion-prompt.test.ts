@@ -86,7 +86,7 @@ test("ttsSettings with llm_controlled mode injects TTS instruction prompt", () =
   const result = composeSystemPrompt(
     base,
     { enabled: false, injectPrompt: false },
-    { enabled: true, emotionControlMode: "llm_controlled" },
+    { enabled: true, ttsMode: "emotion_enhanced", emotionControlMode: "llm_controlled" },
   )
   assert.ok(result.includes(base))
   assert.ok(result.includes(TTS_INSTRUCTION_MARKER))
@@ -98,7 +98,7 @@ test("ttsSettings with default_mapping mode does NOT inject TTS instruction", ()
   const result = composeSystemPrompt(
     base,
     { enabled: false, injectPrompt: false },
-    { enabled: true, emotionControlMode: "default_mapping" },
+    { enabled: true, ttsMode: "emotion_enhanced", emotionControlMode: "default_mapping" },
   )
   assert.ok(result.includes(base))
   assert.ok(!result.includes(TTS_INSTRUCTION_MARKER))
@@ -109,7 +109,7 @@ test("ttsSettings disabled does NOT inject TTS instruction", () => {
   const result = composeSystemPrompt(
     base,
     { enabled: false, injectPrompt: false },
-    { enabled: false, emotionControlMode: "llm_controlled" },
+    { enabled: false, ttsMode: "emotion_enhanced", emotionControlMode: "llm_controlled" },
   )
   assert.ok(result.includes(base))
   assert.ok(!result.includes(TTS_INSTRUCTION_MARKER))
@@ -120,7 +120,7 @@ test("TTS instruction comes AFTER emotion instructions when both enabled", () =>
   const result = composeSystemPrompt(
     base,
     { enabled: true, injectPrompt: true },
-    { enabled: true, emotionControlMode: "llm_controlled" },
+    { enabled: true, ttsMode: "emotion_enhanced", emotionControlMode: "llm_controlled" },
   )
   const emotionPos = result.indexOf(EMOTION_PROMPT_MARKER)
   const ttsPos = result.indexOf(TTS_INSTRUCTION_MARKER)
@@ -134,7 +134,7 @@ test("no duplicate TTS injection when marker already present", () => {
   const result = composeSystemPrompt(
     base,
     { enabled: false, injectPrompt: false },
-    { enabled: true, emotionControlMode: "llm_controlled" },
+    { enabled: true, ttsMode: "emotion_enhanced", emotionControlMode: "llm_controlled" },
   )
   const matches = result.match(/\[\[TTS_INSTRUCTION:/g) ?? []
   assert.equal(matches.length, 1)

@@ -92,7 +92,7 @@ export const EMOTION_PROMPT_MARKER = "## Assistant Emotion Tag"
 export function composeSystemPrompt(
   basePrompt: string | undefined,
   settings: Pick<EmotionSettings, "enabled" | "injectPrompt">,
-  ttsSettings?: { enabled: boolean; emotionControlMode: "default_mapping" | "llm_controlled" },
+  ttsSettings?: { enabled: boolean; ttsMode?: "standard" | "emotion_enhanced"; emotionControlMode?: "default_mapping" | "llm_controlled" },
 ): string {
   const base = (basePrompt ?? "").trim()
 
@@ -106,8 +106,15 @@ export function composeSystemPrompt(
     result = base.length === 0 ? getEmotionTagInstructions() : `${base}\n\n${getEmotionTagInstructions()}`
   }
 
-  // Inject TTS instruction prompt when LLM-controlled mode is active
-  if (ttsSettings?.enabled && ttsSettings.emotionControlMode === "llm_controlled") {
+  // Inject TTS instruction prompt only when:
+  // - TTS is enabled
+  // - TTS mode is emotion_enhanced
+  // - emotion control mode is llm_controlled
+  if (
+    ttsSettings?.enabled &&
+    ttsSettings.ttsMode === "emotion_enhanced" &&
+    ttsSettings.emotionControlMode === "llm_controlled"
+  ) {
     if (!result.includes(TTS_INSTRUCTION_MARKER)) {
       const ttsPrompt = getTtsInstructionPrompt()
       result = result.length === 0 ? ttsPrompt : `${result}\n\n${ttsPrompt}`

@@ -41,7 +41,10 @@ export interface GenerateInstructInput {
 const DEFAULT_TIMEOUT_MS = 120_000
 
 export class LocalTtsClient {
-  constructor(private readonly baseUrl: string) {}
+  constructor(
+    private readonly baseUrl: string,
+    private readonly requestTimeoutMs: number = DEFAULT_TIMEOUT_MS,
+  ) {}
 
   /* ---- Health ---- */
 
@@ -54,8 +57,11 @@ export class LocalTtsClient {
 
   async listVoices(): Promise<Array<{ voiceId: string; promptText?: string }>> {
     const res = await this.get("/v1/voices")
-    const data = (await res.json()) as { voices: Array<{ voiceId: string; promptText?: string }> }
-    return data.voices ?? []
+    const data = (await res.json()) as { voices: Array<{ voice_id: string; prompt_text?: string }> }
+    return (data.voices ?? []).map((v) => ({
+      voiceId: v.voice_id,
+      promptText: v.prompt_text,
+    }))
   }
 
   async registerVoice(input: RegisterVoiceInput): Promise<{ ok: boolean; voiceId: string; error?: string }> {
@@ -73,7 +79,8 @@ export class LocalTtsClient {
     }
 
     const res = await this.post("/v1/voices/register", form)
-    return (await res.json()) as { ok: boolean; voiceId: string; error?: string }
+    const data = (await res.json()) as { ok: boolean; voice_id: string; error?: string }
+    return { ok: data.ok, voiceId: data.voice_id, error: data.error }
   }
 
   async renameVoice(
@@ -131,7 +138,7 @@ export class LocalTtsClient {
 
   private async get(path: string): Promise<Response> {
     const controller = new AbortController()
-    const timer = setTimeout(() => controller.abort(), DEFAULT_TIMEOUT_MS)
+    const timer = setTimeout(() => controller.abort(), this.requestTimeoutMs)
 
     try {
       const res = await fetch(`${this.baseUrl}${path}`, {
@@ -150,7 +157,7 @@ export class LocalTtsClient {
 
   private async post(path: string, body: FormData): Promise<Response> {
     const controller = new AbortController()
-    const timer = setTimeout(() => controller.abort(), DEFAULT_TIMEOUT_MS)
+    const timer = setTimeout(() => controller.abort(), this.requestTimeoutMs)
 
     try {
       const res = await fetch(`${this.baseUrl}${path}`, {
@@ -170,7 +177,7 @@ export class LocalTtsClient {
 
   private async patch(path: string, body: FormData): Promise<Response> {
     const controller = new AbortController()
-    const timer = setTimeout(() => controller.abort(), DEFAULT_TIMEOUT_MS)
+    const timer = setTimeout(() => controller.abort(), this.requestTimeoutMs)
 
     try {
       const res = await fetch(`${this.baseUrl}${path}`, {
@@ -190,7 +197,7 @@ export class LocalTtsClient {
 
   private async delete(path: string): Promise<Response> {
     const controller = new AbortController()
-    const timer = setTimeout(() => controller.abort(), DEFAULT_TIMEOUT_MS)
+    const timer = setTimeout(() => controller.abort(), this.requestTimeoutMs)
 
     try {
       const res = await fetch(`${this.baseUrl}${path}`, {
@@ -213,7 +220,7 @@ export class LocalTtsClient {
    */
   private async postAudio(path: string, body: FormData, signal?: AbortSignal): Promise<ArrayBuffer> {
     const controller = new AbortController()
-    const timer = setTimeout(() => controller.abort(), DEFAULT_TIMEOUT_MS)
+    const timer = setTimeout(() => controller.abort(), this.requestTimeoutMs)
 
     // Link external signal to internal controller
     if (signal) {

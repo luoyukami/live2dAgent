@@ -6,9 +6,9 @@ export interface TtsPlayerState {
 }
 
 export interface TtsPlayerControls {
-  play: (audioPath: string, messageId: string) => void
+  play: (audioUrl: string, messageId: string) => void
   stop: () => void
-  toggle: (audioPath: string, messageId: string) => void
+  toggle: (audioUrl: string, messageId: string) => void
 }
 
 export function useTtsPlayer(): TtsPlayerState & TtsPlayerControls {
@@ -28,13 +28,13 @@ export function useTtsPlayer(): TtsPlayerState & TtsPlayerControls {
     }
   }, [])
 
-  const play = useCallback((audioPath: string, messageId: string) => {
+  const play = useCallback((audioUrl: string, messageId: string) => {
     cleanup()
 
     const audio = new Audio()
     audioRef.current = audio
 
-    audio.src = `file://${audioPath}`
+    audio.src = audioUrl
     audio.onended = () => {
       setState({ playingMessageId: null, isPlaying: false })
       audioRef.current = null
@@ -53,13 +53,13 @@ export function useTtsPlayer(): TtsPlayerState & TtsPlayerControls {
     setState({ playingMessageId: null, isPlaying: false })
   }, [cleanup])
 
-  const toggle = useCallback((audioPath: string, messageId: string) => {
+  const toggle = useCallback((audioUrl: string, messageId: string) => {
     setState((prev) => {
       if (prev.playingMessageId === messageId && prev.isPlaying) {
         cleanup()
         return { playingMessageId: null, isPlaying: false }
       }
-      play(audioPath, messageId)
+      play(audioUrl, messageId)
       return prev
     })
   }, [cleanup, play])

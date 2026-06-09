@@ -309,6 +309,7 @@ export interface TtsRequestSnapshot {
 export interface MessageAudioState {
   status: "none" | "queued" | "generating" | "ready" | "playing" | "error"
   currentAudioPath?: string
+  currentAudioUrl?: string
   lastError?: string
   requestSnapshot?: TtsRequestSnapshot
   parsedEmotion?: string

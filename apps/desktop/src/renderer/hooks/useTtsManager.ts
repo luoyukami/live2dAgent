@@ -134,8 +134,23 @@ export function useTtsManager(): TtsManagerState & TtsManagerControls {
   }, [settings.selectedVoiceId, refreshVoices])
 
   const generateForMessage = useCallback(async (messageId: string, text: string) => {
-    const voiceId = settings.selectedVoiceId
-    if (!voiceId) return
+    if (!settings.enabled) {
+      setMessageAudioStates((prev) => {
+        const next = new Map(prev)
+        next.set(messageId, { status: "error", lastError: "TTS 未启用", updatedAt: Date.now() })
+        return next
+      })
+      return
+    }
+
+    if (!settings.selectedVoiceId) {
+      setMessageAudioStates((prev) => {
+        const next = new Map(prev)
+        next.set(messageId, { status: "error", lastError: "请先在设置页选择一个 TTS 音色", updatedAt: Date.now() })
+        return next
+      })
+      return
+    }
 
     setMessageAudioStates((prev) => {
       const next = new Map(prev)
@@ -150,50 +165,8 @@ export function useTtsManager(): TtsManagerState & TtsManagerControls {
         return next
       })
 
-      const result = await window.petAgent.ttsGenerate({
-        messageId,
-        text,
-        voiceId,
-        mode: settings.ttsMode,
-        emotionControlMode: settings.emotionControlMode,
-        speed: settings.speed,
-        seed: settings.seed,
-      })
-
-      if (result.ok && result.audioPath) {
-        setMessageAudioStates((prev) => {
-          const next = new Map(prev)
-          next.set(messageId, {
-            status: "ready",
-            currentAudioPath: result.audioPath,
-            createdAt: Date.now(),
-            updatedAt: Date.now(),
-          })
-          return next
-        })
-
-        if (settings.autoPlayAfterGenerate) {
-          player.play(result.audioPath, messageId)
-          setMessageAudioStates((prev) => {
-            const next = new Map(prev)
-            const existing = next.get(messageId)
-            if (existing) {
-              next.set(messageId, { ...existing, status: "playing" })
-            }
-            return next
-          })
-        }
-      } else {
-        setMessageAudioStates((prev) => {
-          const next = new Map(prev)
-          next.set(messageId, {
-            status: "error",
-            lastError: result.error ?? "生成失败",
-            updatedAt: Date.now(),
-          })
-          return next
-        })
-      }
+      // Delegate request construction to main process for unified logic
+      await window.petAgent.ttsGenerateForMessage(messageId, text)
     } catch (err) {
       setMessageAudioStates((prev) => {
         const next = new Map(prev)
@@ -205,13 +178,14 @@ export function useTtsManager(): TtsManagerState & TtsManagerControls {
         return next
       })
     }
-  }, [settings.selectedVoiceId, settings.ttsMode, settings.emotionControlMode, settings.speed, settings.seed, settings.autoPlayAfterGenerate, player])
+  }, [settings.enabled, settings.selectedVoiceId])
 
   const playMessageAudio = useCallback((messageId: string) => {
     const audioState = messageAudioStates.get(messageId)
-    if (!audioState?.currentAudioPath) return
+    const audioUrl = audioState?.currentAudioUrl ?? (audioState?.currentAudioPath ? new URL(`file://${audioState.currentAudioPath}`).href : undefined)
+    if (!audioUrl) return
 
-    player.play(audioState.currentAudioPath, messageId)
+    player.play(audioUrl, messageId)
     setMessageAudioStates((prev) => {
       const next = new Map(prev)
       next.set(messageId, { ...audioState, status: "playing" })
@@ -266,18 +240,20 @@ export function useTtsManager(): TtsManagerState & TtsManagerControls {
         break
       }
       case "tts.ready": {
+        const audioUrl = event.audioUrl ?? new URL(`file://${event.audioPath}`).href
         setMessageAudioStates((prev) => {
           const next = new Map(prev)
           next.set(event.messageId, {
             status: "ready",
             currentAudioPath: event.audioPath,
+            currentAudioUrl: audioUrl,
             updatedAt: Date.now(),
           })
           return next
         })
-        // Auto-play if enabled
+        // Auto-play if enabled (renderer-only playback)
         if (settings.autoPlayAfterGenerate) {
-          player.play(event.audioPath, event.messageId)
+          player.play(audioUrl, event.messageId)
         }
         break
       }

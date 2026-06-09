@@ -27,6 +27,7 @@ import {
   type VoiceInputSettings,
   type VoiceInputSettingsPatch,
   type TtsSettingsPatch,
+  type LocalTtsSettings,
 } from "@live2d-agent/shared"
 
 /* ------------------------------------------------------------------ */
@@ -224,6 +225,14 @@ function deepMergeDefaults(parsed: Record<string, unknown>, defaults: AppSetting
     voice: {
       ...defaults.voice,
       ...((parsed.voice ?? {}) as Partial<VoiceInputSettings>),
+    },
+    tts: {
+      ...defaults.tts,
+      ...((parsed.tts ?? {}) as Partial<LocalTtsSettings>),
+      voiceDisplayNames: {
+        ...defaults.tts.voiceDisplayNames,
+        ...(((parsed.tts ?? {}) as Partial<LocalTtsSettings>).voiceDisplayNames ?? {}),
+      },
     },
   }
 }

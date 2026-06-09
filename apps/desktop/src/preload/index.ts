@@ -123,7 +123,7 @@ const api = {
     ipcRenderer.invoke(IPC_CHANNELS.TTS_HEALTH_CHECK),
   ttsListVoices: (): Promise<IpcTtsListVoicesResponse> =>
     ipcRenderer.invoke(IPC_CHANNELS.TTS_LIST_VOICES),
-  ttsRegisterVoice: (request: IpcTtsRegisterVoiceRequest): Promise<{ ok: boolean; error?: string }> =>
+  ttsRegisterVoice: (request: IpcTtsRegisterVoiceRequest): Promise<{ ok: boolean; voiceId?: string; error?: string }> =>
     ipcRenderer.invoke(IPC_CHANNELS.TTS_REGISTER_VOICE, request),
   ttsRenameVoice: (voiceId: string, displayName: string): Promise<{ ok: boolean; error?: string }> =>
     ipcRenderer.invoke(IPC_CHANNELS.TTS_RENAME_VOICE, voiceId, displayName),
@@ -131,6 +131,8 @@ const api = {
     ipcRenderer.invoke(IPC_CHANNELS.TTS_DELETE_VOICE, voiceId),
   ttsGenerate: (request: IpcTtsGenerateRequest): Promise<IpcTtsGenerateResponse> =>
     ipcRenderer.invoke(IPC_CHANNELS.TTS_GENERATE, request),
+  ttsGenerateForMessage: (messageId: string, rawContent: string): Promise<IpcTtsGenerateResponse> =>
+    ipcRenderer.invoke(IPC_CHANNELS.TTS_GENERATE_FOR_MESSAGE, messageId, rawContent),
   ttsPlayAudio: (audioPath: string): Promise<{ ok: boolean; error?: string }> =>
     ipcRenderer.invoke(IPC_CHANNELS.TTS_PLAY_AUDIO, audioPath),
   ttsStopAudio: (): Promise<void> =>
@@ -143,6 +145,8 @@ const api = {
     ipcRenderer.invoke(IPC_CHANNELS.TTS_OPEN_AUDIO_FOLDER),
   ttsSelectAudioDir: (): Promise<string | null> =>
     ipcRenderer.invoke(IPC_CHANNELS.TTS_SELECT_AUDIO_DIR),
+  ttsSelectPromptWav: (): Promise<string | null> =>
+    ipcRenderer.invoke(IPC_CHANNELS.TTS_SELECT_PROMPT_WAV),
 }
 
 contextBridge.exposeInMainWorld("petAgent", api)
