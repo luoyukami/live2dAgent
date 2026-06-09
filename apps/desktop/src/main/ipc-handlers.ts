@@ -113,12 +113,12 @@ export function registerIpcHandlers(services: IpcServices): void {
     services.window.moveBy(dx, dy)
   })
 
-  ipcMain.handle(IPC_CHANNELS.WINDOW_DRAG_START, async () => {
-    services.window.startDrag()
+  ipcMain.handle(IPC_CHANNELS.WINDOW_DRAG_START, async (_event, windowType?: "combined" | "avatar") => {
+    services.window.startDrag(windowType ?? "combined")
   })
 
-  ipcMain.handle(IPC_CHANNELS.WINDOW_DRAG_END, async () => {
-    services.window.endDrag()
+  ipcMain.handle(IPC_CHANNELS.WINDOW_DRAG_END, async (_event, windowType?: "combined" | "avatar") => {
+    services.window.endDrag(windowType ?? "combined")
   })
 
   ipcMain.handle(IPC_CHANNELS.WINDOW_SET_MOUSE_PASSTHROUGH, async (_event, enabled: boolean, windowType?: "combined" | "avatar") => {

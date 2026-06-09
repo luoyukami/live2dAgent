@@ -25,10 +25,10 @@ const api = {
     ipcRenderer.invoke(IPC_CHANNELS.SETTINGS_UPDATE_LIVE2D_MODEL_PATH, modelPath),
   moveWindowBy: (dx: number, dy: number): Promise<void> =>
     ipcRenderer.invoke(IPC_CHANNELS.WINDOW_MOVE_BY, dx, dy),
-  startWindowDrag: (): Promise<void> =>
-    ipcRenderer.invoke(IPC_CHANNELS.WINDOW_DRAG_START),
-  endWindowDrag: (): Promise<void> =>
-    ipcRenderer.invoke(IPC_CHANNELS.WINDOW_DRAG_END),
+  startWindowDrag: (windowType?: "combined" | "avatar"): Promise<void> =>
+    ipcRenderer.invoke(IPC_CHANNELS.WINDOW_DRAG_START, windowType),
+  endWindowDrag: (windowType?: "combined" | "avatar"): Promise<void> =>
+    ipcRenderer.invoke(IPC_CHANNELS.WINDOW_DRAG_END, windowType),
   setMousePassthrough: (enabled: boolean, windowType?: "combined" | "avatar"): Promise<void> =>
     ipcRenderer.invoke(IPC_CHANNELS.WINDOW_SET_MOUSE_PASSTHROUGH, enabled, windowType),
   setAvatarHitRegion: (rects: AvatarHitRegionRect[]): Promise<void> =>

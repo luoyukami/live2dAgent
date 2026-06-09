@@ -24,7 +24,12 @@ export class WindowManager {
 
   /** Drag state for the combined window (single-window mode). */
   private dragTimer?: NodeJS.Timeout
-  private dragStart?: { cursorX: number; cursorY: number; windowX: number; windowY: number }
+  private dragStart?: { windowType: "combined" | "avatar"; cursorX: number; cursorY: number; windowX: number; windowY: number }
+
+  private getDragWindow(windowType: "combined" | "avatar"): BrowserWindow | undefined {
+    return windowType === "avatar" ? this.avatarWindow : this.combinedWindow
+  }
+
   private lockedSize?: { width: number; height: number }
 
   /** Timer for delayed hide to avoid race conditions. */
@@ -124,16 +129,17 @@ export class WindowManager {
     this.restoreLockedSize(this.combinedWindow)
   }
 
-  startDrag(): void {
-    if (!this.combinedWindow || this.combinedWindow.isDestroyed()) return
+  startDrag(windowType: "combined" | "avatar" = "combined"): void {
+    const target = this.getDragWindow(windowType)
+    if (!target || target.isDestroyed()) return
     this.endDrag()
     const cursor = screen.getCursorScreenPoint()
-    const [windowX, windowY] = this.combinedWindow.getPosition()
-    this.dragStart = { cursorX: cursor.x, cursorY: cursor.y, windowX, windowY }
+    const [windowX, windowY] = target.getPosition()
+    this.dragStart = { windowType, cursorX: cursor.x, cursorY: cursor.y, windowX, windowY }
     this.dragTimer = setInterval(() => this.updateDragPosition(), 16)
   }
 
-  endDrag(): void {
+  endDrag(_windowType?: "combined" | "avatar"): void {
     if (this.dragTimer) {
       clearInterval(this.dragTimer)
       this.dragTimer = undefined
@@ -142,17 +148,22 @@ export class WindowManager {
   }
 
   private updateDragPosition(): void {
-    if (!this.combinedWindow || this.combinedWindow.isDestroyed() || !this.dragStart) {
+    if (!this.dragStart) {
+      this.endDrag()
+      return
+    }
+    const target = this.getDragWindow(this.dragStart.windowType)
+    if (!target || target.isDestroyed()) {
       this.endDrag()
       return
     }
     const cursor = screen.getCursorScreenPoint()
-    this.combinedWindow.setPosition(
-      Math.round(this.dragStart.windowX + cursor.x - this.dragStart.cursorX),
-      Math.round(this.dragStart.windowY + cursor.y - this.dragStart.cursorY),
-      false,
-    )
-    this.restoreLockedSize(this.combinedWindow)
+    const nextX = Math.round(this.dragStart.windowX + cursor.x - this.dragStart.cursorX)
+    const nextY = Math.round(this.dragStart.windowY + cursor.y - this.dragStart.cursorY)
+    target.setPosition(nextX, nextY, false)
+    if (this.dragStart.windowType === "combined") {
+      this.restoreLockedSize(target)
+    }
   }
 
   setMousePassthrough(enabled: boolean, windowType: "combined" | "avatar" = "combined"): void {

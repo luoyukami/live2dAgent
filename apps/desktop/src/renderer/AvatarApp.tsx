@@ -25,6 +25,9 @@ function isDarwin(): boolean {
 /* ------------------------------------------------------------------ */
 
 export function AvatarApp(): JSX.Element {
+  const LONG_PRESS_MS = 300
+  const MOVE_CANCEL_PX = 8
+
   const [status, setStatus] = useState<AvatarState>("idle")
   const [settings, setSettings] = useState<PublicSettings | null>(null)
   const [currentEmotion, setCurrentEmotion] = useState<Emotion | null>(null)
@@ -33,7 +36,7 @@ export function AvatarApp(): JSX.Element {
   const [live2dReloadKey, setLive2dReloadKey] = useState(0)
 
   const live2dRef = useRef<Live2DViewHandle>(null)
-  const pointerStateRef = useRef<{ pointerId: number; startX: number; startY: number; cancelled: boolean } | null>(null)
+  const pointerStateRef = useRef<{ pointerId: number; startX: number; startY: number; dragging: boolean; cancelled: boolean; timer: number } | null>(null)
   const passthroughRef = useRef<boolean | null>(null)
 
   /* ---- 1. Subscribe to agent events once ---- */
@@ -194,26 +197,47 @@ export function AvatarApp(): JSX.Element {
   function handleStagePointerDown(event: React.PointerEvent<HTMLDivElement>): void {
     if (event.button !== 0) return
     if (!(live2dRef.current?.containsPoint(event.clientX, event.clientY) ?? false)) return
-    pointerStateRef.current = {
+    const state = {
       pointerId: event.pointerId,
       startX: event.screenX,
       startY: event.screenY,
+      dragging: false,
       cancelled: false,
+      timer: window.setTimeout(() => {
+        const current = pointerStateRef.current
+        if (!current || current.pointerId !== event.pointerId || current.cancelled) return
+        current.dragging = true
+        void window.petAgent.hideUiWindow?.()
+        void window.petAgent.setMousePassthrough?.(false, "avatar")
+        void window.petAgent.startWindowDrag?.("avatar")
+      }, LONG_PRESS_MS),
     }
+    pointerStateRef.current = state
     event.currentTarget.setPointerCapture(event.pointerId)
   }
 
   function handleStagePointerMove(event: React.PointerEvent<HTMLDivElement>): void {
     const state = pointerStateRef.current
-    if (!state || state.pointerId !== event.pointerId) return
+    if (!state || state.pointerId !== event.pointerId || state.dragging) return
     const moved = Math.hypot(event.screenX - state.startX, event.screenY - state.startY)
-    if (moved > 8) state.cancelled = true
+    if (moved > MOVE_CANCEL_PX) {
+      state.cancelled = true
+      window.clearTimeout(state.timer)
+    }
   }
 
-  function handleStagePointerUp(event: React.PointerEvent<HTMLDivElement>): void {
+  function finishPointer(event: React.PointerEvent<HTMLDivElement>): void {
     const state = pointerStateRef.current
     if (!state || state.pointerId !== event.pointerId) return
+    window.clearTimeout(state.timer)
     pointerStateRef.current = null
+    try {
+      event.currentTarget.releasePointerCapture(event.pointerId)
+    } catch { /* ignore */ }
+    if (state.dragging) {
+      void window.petAgent.endWindowDrag?.("avatar")
+      return
+    }
     if (!state.cancelled) {
       void window.petAgent.showCompactInput?.({ screenX: event.screenX, screenY: event.screenY })
     }
@@ -226,7 +250,9 @@ export function AvatarApp(): JSX.Element {
           className="stage-content"
           onPointerDown={handleStagePointerDown}
           onPointerMove={handleStagePointerMove}
-          onPointerUp={handleStagePointerUp}
+          onPointerUp={finishPointer}
+          onPointerCancel={finishPointer}
+          onLostPointerCapture={finishPointer}
         >
           <Live2DView
             ref={live2dRef}
