@@ -587,6 +587,10 @@ export class AgentService implements ToolRuntime {
     const rawContent = normalizeMessageContentToText(message.content)
     if (!rawContent.trim()) return
 
+    // 自动TTS字数限制：清理后的纯文本超过100字时不自动生成，保留手动生成能力
+    const cleanedText = sanitizeTextForTts(rawContent)
+    if (cleanedText.length > 100) return
+
     this.scheduledTtsMessageIds.add(message.id)
 
     this.generateTtsForMessage({
