@@ -39,6 +39,10 @@ export function useTtsPlayer(): TtsPlayerState & TtsPlayerControls {
     const audio = new Audio()
     audioRef.current = audio
 
+    if (audioUrl.startsWith("blob:")) {
+      blobUrlRef.current = audioUrl
+    }
+
     audio.src = audioUrl
     audio.onended = () => {
       setState({ playingMessageId: null, isPlaying: false })
@@ -63,13 +67,15 @@ export function useTtsPlayer(): TtsPlayerState & TtsPlayerControls {
     try {
       await audio.play()
     } catch (err) {
+      const error = err instanceof Error ? err : new Error(String(err))
       setState({ playingMessageId: null, isPlaying: false })
       audioRef.current = null
       if (blobUrlRef.current) {
         URL.revokeObjectURL(blobUrlRef.current)
         blobUrlRef.current = null
       }
-      onError?.(messageId, err instanceof Error ? err : new Error(String(err)))
+      onError?.(messageId, error)
+      throw error
     }
   }, [cleanup])
 
