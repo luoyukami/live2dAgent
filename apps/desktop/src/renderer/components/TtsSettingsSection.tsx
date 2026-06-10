@@ -93,6 +93,16 @@ export function TtsSettingsSection({ form, setForm, settings }: TtsSettingsSecti
               },
             },
           }))
+          // Immediately save so the main process sees the new selectedVoiceId
+          void window.petAgent.updatePublicSettings({
+            tts: {
+              selectedVoiceId: newVoiceId,
+              voiceDisplayNames: {
+                ...form.tts.voiceDisplayNames,
+                [newVoiceId]: registerForm.displayName || newVoiceId,
+              },
+            },
+          })
         }
         await handleRefreshVoices()
       } else {
@@ -113,6 +123,9 @@ export function TtsSettingsSection({ form, setForm, settings }: TtsSettingsSecti
         setOperationStatus("已删除")
         if (form.tts.selectedVoiceId === voiceId) {
           setForm((f) => ({ ...f, tts: { ...f.tts, selectedVoiceId: "" } }))
+          void window.petAgent.updatePublicSettings({
+            tts: { selectedVoiceId: "" },
+          })
           setOperationStatus("已删除。当前音色已被清空，请重新选择。")
         }
         await handleRefreshVoices()
@@ -165,6 +178,13 @@ export function TtsSettingsSection({ form, setForm, settings }: TtsSettingsSecti
             voiceDisplayNames: newDisplayNames,
           },
         }))
+        // Immediately save
+        void window.petAgent.updatePublicSettings({
+          tts: {
+            selectedVoiceId,
+            voiceDisplayNames: newDisplayNames,
+          },
+        })
         await handleRefreshVoices()
       } else {
         setOperationStatus("修改音色 ID 失败: " + (result.error ?? "未知错误"))

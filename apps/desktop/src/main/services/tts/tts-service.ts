@@ -1,4 +1,5 @@
-import { existsSync, mkdirSync, writeFileSync } from "node:fs"
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs"
+import { pathToFileURL } from "node:url"
 import { join } from "node:path"
 import {
   DEFAULT_LOCAL_TTS_SETTINGS,
@@ -212,8 +213,15 @@ export class TtsService {
     }
     // Playback is handled by the renderer via HTML5 Audio.
     // Main process only validates the file exists and returns a safe file URL.
-    const audioUrl = new URL(`file://${audioPath}`).href
+    const audioUrl = pathToFileURL(audioPath).href
     return { ok: true, audioUrl }
+  }
+
+  async readAudio(audioPath: string): Promise<ArrayBuffer> {
+    if (!existsSync(audioPath)) {
+      throw new Error(`Audio file not found: ${audioPath}`)
+    }
+    return readFileSync(audioPath).buffer
   }
 
   async stopAudio(): Promise<void> {

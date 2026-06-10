@@ -43,6 +43,13 @@ export function useTtsManager(): TtsManagerState & TtsManagerControls {
     })
   }, [])
 
+  /* ---- Subscribe to settings updates from main ---- */
+  useEffect(() => {
+    return window.petAgent.onSettingsUpdated?.((updated) => {
+      setSettings(updated.tts ?? DEFAULT_LOCAL_TTS_SETTINGS)
+    })
+  }, [])
+
   /* ---- Periodic health check when enabled ---- */
   useEffect(() => {
     if (settings.enabled) {
@@ -134,37 +141,16 @@ export function useTtsManager(): TtsManagerState & TtsManagerControls {
   }, [settings.selectedVoiceId, refreshVoices])
 
   const generateForMessage = useCallback(async (messageId: string, text: string) => {
-    if (!settings.enabled) {
-      setMessageAudioStates((prev) => {
-        const next = new Map(prev)
-        next.set(messageId, { status: "error", lastError: "TTS 未启用", updatedAt: Date.now() })
-        return next
-      })
-      return
-    }
-
-    if (!settings.selectedVoiceId) {
-      setMessageAudioStates((prev) => {
-        const next = new Map(prev)
-        next.set(messageId, { status: "error", lastError: "请先在设置页选择一个 TTS 音色", updatedAt: Date.now() })
-        return next
-      })
-      return
-    }
+    // Do NOT pre-check settings.enabled or settings.selectedVoiceId here.
+    // Main process is the single source of truth; it will emit tts.error if needed.
 
     setMessageAudioStates((prev) => {
       const next = new Map(prev)
-      next.set(messageId, { status: "queued", updatedAt: Date.now() })
+      next.set(messageId, { status: "generating", updatedAt: Date.now() })
       return next
     })
 
     try {
-      setMessageAudioStates((prev) => {
-        const next = new Map(prev)
-        next.set(messageId, { status: "generating", updatedAt: Date.now() })
-        return next
-      })
-
       // Delegate request construction to main process for unified logic
       await window.petAgent.ttsGenerateForMessage(messageId, text)
     } catch (err) {
@@ -178,19 +164,48 @@ export function useTtsManager(): TtsManagerState & TtsManagerControls {
         return next
       })
     }
-  }, [settings.enabled, settings.selectedVoiceId])
+  }, [])
 
-  const playMessageAudio = useCallback((messageId: string) => {
+  const playMessageAudio = useCallback(async (messageId: string) => {
     const audioState = messageAudioStates.get(messageId)
-    const audioUrl = audioState?.currentAudioUrl ?? (audioState?.currentAudioPath ? new URL(`file://${audioState.currentAudioPath}`).href : undefined)
-    if (!audioUrl) return
+    const audioPath = audioState?.currentAudioPath
+    if (!audioPath) return
 
-    player.play(audioUrl, messageId)
-    setMessageAudioStates((prev) => {
-      const next = new Map(prev)
-      next.set(messageId, { ...audioState, status: "playing" })
-      return next
-    })
+    try {
+      const buffer = await window.petAgent.ttsReadAudio(audioPath)
+      const blob = new Blob([buffer], { type: "audio/wav" })
+      const url = URL.createObjectURL(blob)
+
+      await player.play(url, messageId, (mid, err) => {
+        setMessageAudioStates((prev) => {
+          const next = new Map(prev)
+          next.set(mid, {
+            ...prev.get(mid),
+            status: "error",
+            lastError: err.message,
+            updatedAt: Date.now(),
+          })
+          return next
+        })
+      })
+
+      setMessageAudioStates((prev) => {
+        const next = new Map(prev)
+        next.set(messageId, { ...audioState, status: "playing" })
+        return next
+      })
+    } catch (err) {
+      setMessageAudioStates((prev) => {
+        const next = new Map(prev)
+        next.set(messageId, {
+          ...audioState,
+          status: "error",
+          lastError: err instanceof Error ? err.message : String(err),
+          updatedAt: Date.now(),
+        })
+        return next
+      })
+    }
   }, [messageAudioStates, player])
 
   const stopPlayback = useCallback(() => {
@@ -240,20 +255,19 @@ export function useTtsManager(): TtsManagerState & TtsManagerControls {
         break
       }
       case "tts.ready": {
-        const audioUrl = event.audioUrl ?? new URL(`file://${event.audioPath}`).href
         setMessageAudioStates((prev) => {
           const next = new Map(prev)
           next.set(event.messageId, {
             status: "ready",
             currentAudioPath: event.audioPath,
-            currentAudioUrl: audioUrl,
+            currentAudioUrl: event.audioUrl,
             updatedAt: Date.now(),
           })
           return next
         })
-        // Auto-play if enabled (renderer-only playback)
+        // Auto-play if enabled — but we must use ttsReadAudio to create a Blob URL
         if (settings.autoPlayAfterGenerate) {
-          player.play(audioUrl, event.messageId)
+          void playMessageAudio(event.messageId)
         }
         break
       }
@@ -292,7 +306,7 @@ export function useTtsManager(): TtsManagerState & TtsManagerControls {
         break
       }
     }
-  }, [settings.autoPlayAfterGenerate, player])
+  }, [settings.autoPlayAfterGenerate, player, playMessageAudio])
 
   /* Sync player state back into messageAudioStates */
   useEffect(() => {

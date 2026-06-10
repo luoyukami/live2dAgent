@@ -387,7 +387,7 @@ export function registerIpcHandlers(services: IpcServices): void {
   })
 
   ipcMain.handle(IPC_CHANNELS.TTS_GENERATE_FOR_MESSAGE, async (_event, messageId: string, rawContent: string) => {
-    await services.agent.generateTtsForMessage(messageId, rawContent)
+    await services.agent.generateTtsForMessage({ messageId, rawContent })
     // The result is communicated via agent events (tts.ready / tts.error)
     return { ok: true }
   })
@@ -415,6 +415,10 @@ export function registerIpcHandlers(services: IpcServices): void {
   ipcMain.handle(IPC_CHANNELS.TTS_SELECT_AUDIO_DIR, async () => {
     const result = await dialog.showOpenDialog({ properties: ["openDirectory"] })
     return result.canceled ? null : result.filePaths[0]
+  })
+
+  ipcMain.handle(IPC_CHANNELS.TTS_READ_AUDIO, async (_event, audioPath: string) => {
+    return services.tts.readAudio(audioPath)
   })
 }
 

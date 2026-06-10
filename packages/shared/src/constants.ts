@@ -77,6 +77,7 @@ export const IPC_CHANNELS = {
   TTS_OPEN_AUDIO_FOLDER: "tts:open-audio-folder",
   TTS_SELECT_AUDIO_DIR: "tts:select-audio-dir",
   TTS_SELECT_PROMPT_WAV: "tts:select-prompt-wav",
+  TTS_READ_AUDIO: "tts:read-audio",
 } as const
 
 /** Default workspace-relative paths for trace and screenshot storage */

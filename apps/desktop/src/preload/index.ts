@@ -147,6 +147,8 @@ const api = {
     ipcRenderer.invoke(IPC_CHANNELS.TTS_SELECT_AUDIO_DIR),
   ttsSelectPromptWav: (): Promise<string | null> =>
     ipcRenderer.invoke(IPC_CHANNELS.TTS_SELECT_PROMPT_WAV),
+  ttsReadAudio: (audioPath: string): Promise<ArrayBuffer> =>
+    ipcRenderer.invoke(IPC_CHANNELS.TTS_READ_AUDIO, audioPath),
 }
 
 contextBridge.exposeInMainWorld("petAgent", api)

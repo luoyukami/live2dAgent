@@ -2,7 +2,8 @@ import { clipboard, desktopCapturer } from "electron"
 import { spawn } from "node:child_process"
 import { existsSync, mkdirSync, readFileSync, realpathSync, writeFileSync } from "node:fs"
 import { dirname, isAbsolute, resolve, relative } from "node:path"
-import { AgentSession, AssistantRuntime, ContextManager, ConversationManager, DefaultProviderRuntimeRegistry, EventBus, RunController, ToolRegistry, WsSessionManager, composePromptPresetInstructions, composeSystemPrompt, isEmotionPromptInjected, ToolResultLimiter, WS_RUNTIME_CONSTANTS, estimateTokens, sanitizeTextForTts, extractTtsInstruction, isTtsInstructionInjected, type AgentEvent, type AgentAction, type AgentRuntimeEvent, type ArtifactWriter, type ToolResult, type ToolRuntime, type ToolArtifact, type ConversationStore, type ConversationStoreMessage, type ContextBuilder, type ToolManager, type ToolValidationResult, type CanonicalToolDefinition, type ModelToolCall, type ValidatedToolCall, type CanonicalToolResult, type CanonicalCreateInput, type CanonicalToolContinuationInput, type AssistantRuntimeEvent, type ProviderRuntime, type ModelMessage, type ModelContentPart } from "@live2d-agent/agent-core"
+import { pathToFileURL } from "node:url"
+import { AgentSession, AssistantRuntime, ContextManager, ConversationManager, DefaultProviderRuntimeRegistry, EventBus, RunController, ToolRegistry, WsSessionManager, composePromptPresetInstructions, composeSystemPrompt, isEmotionPromptInjected, ToolResultLimiter, WS_RUNTIME_CONSTANTS, estimateTokens, sanitizeTextForTts, extractTtsInstruction, isTtsInstructionInjected, type AgentEvent, type AgentAction, type AgentRuntimeEvent, type ArtifactWriter, type ToolResult, type ToolRuntime, type ToolArtifact, type ConversationStore, type ConversationStoreMessage, type ContextBuilder, type ToolManager, type ToolValidationResult, type CanonicalToolDefinition, type ModelToolCall, type ValidatedToolCall, type CanonicalToolResult, type CanonicalCreateInput, type CanonicalToolContinuationInput, type AssistantRuntimeEvent, type ProviderRuntime, type ModelMessage, type ModelContentPart, type AgentMessageMetadata, type AgentMessage } from "@live2d-agent/agent-core"
 import { OpenAiCompatibleAdapter, OpenAiCompatibleWsClient, MimoWsRuntime } from "@live2d-agent/model-openai-compatible"
 import { createDefaultTools, type RuntimeToolContext } from "@live2d-agent/tools"
 import type { ArtifactRef, AudioArtifactRef, AudioContextAttachment, DebugEmotionInfo, Emotion, MessageAudioState } from "@live2d-agent/shared"
@@ -84,6 +85,8 @@ export class AgentService implements ToolRuntime {
     lastGeneratedMessageId: undefined as string | undefined,
     lastInstructionInjected: false,
   }
+
+  private scheduledTtsMessageIds = new Set<string>()
 
   constructor(private readonly deps: AgentServiceDeps) {
     this.events.subscribe((event) => this.captureEvent(event))
@@ -518,12 +521,23 @@ export class AgentService implements ToolRuntime {
    * Schedule TTS auto-generation for an assistant message.
    * This is non-blocking — it fires and forgets the async TTS generation.
    */
-  private scheduleTtsAutoGeneration(messageId: string, rawContent: string): void {
+  private scheduleTtsAutoGenerationForMessage(message: AgentMessage): void {
     const settings = this.deps.settings.get()
-    if (!settings.tts.enabled || !settings.tts.autoGenerateOnAssistantMessage) return
 
-    // Fire and forget — do not block the chat flow
-    this.generateTtsForMessage(messageId, rawContent).catch((err) => {
+    if (!settings.tts.enabled) return
+    if (!settings.tts.autoGenerateOnAssistantMessage) return
+    if (this.scheduledTtsMessageIds.has(message.id)) return
+
+    const rawContent = normalizeMessageContentToText(message.content)
+    if (!rawContent.trim()) return
+
+    this.scheduledTtsMessageIds.add(message.id)
+
+    this.generateTtsForMessage({
+      messageId: message.id,
+      rawContent,
+      metadata: message.metadata,
+    }).catch((err) => {
       console.error("[agent-service] TTS auto-generation failed:", err)
       this.ttsDebug.lastAutoGenerateError = err instanceof Error ? err.message : String(err)
     })
@@ -536,6 +550,7 @@ export class AgentService implements ToolRuntime {
   private buildTtsRequestForMessage(
     messageId: string,
     rawContent: string,
+    metadata?: AgentMessageMetadata,
   ): { messageId: string; text: string; voiceId: string; mode: "standard" | "emotion_enhanced"; emotionControlMode: "default_mapping" | "llm_controlled"; instruction?: string; speed: number; seed: number } | null {
     const settings = this.deps.settings.get()
 
@@ -559,7 +574,7 @@ export class AgentService implements ToolRuntime {
 
     if (settings.tts.ttsMode === "emotion_enhanced") {
       if (settings.tts.emotionControlMode === "default_mapping") {
-        const emotionResult = this.parseEmotionFromMessage(rawContent)
+        const emotionResult = this.parseEmotionFromMessage(rawContent, metadata)
         instruction = DEFAULT_TTS_EMOTION_INSTRUCTIONS[emotionResult.emotion] ?? DEFAULT_TTS_EMOTION_INSTRUCTIONS.neutral
       } else {
         // llm_controlled mode — extract instruction from the message
@@ -569,7 +584,7 @@ export class AgentService implements ToolRuntime {
           this.ttsDebug.lastInstructionInjected = true
         } else {
           // Fallback to default mapping if no instruction found
-          const emotionResult = this.parseEmotionFromMessage(rawContent)
+          const emotionResult = this.parseEmotionFromMessage(rawContent, metadata)
           instruction = DEFAULT_TTS_EMOTION_INSTRUCTIONS[emotionResult.emotion] ?? DEFAULT_TTS_EMOTION_INSTRUCTIONS.neutral
         }
       }
@@ -591,12 +606,13 @@ export class AgentService implements ToolRuntime {
    * Generate TTS audio for an assistant message.
    * Unified entry point for both auto-generation and manual regeneration.
    */
-  async generateTtsForMessage(messageId: string, rawContent: string): Promise<void> {
+  async generateTtsForMessage(input: { messageId: string; rawContent: string; metadata?: AgentMessageMetadata }): Promise<void> {
+    const { messageId, rawContent, metadata } = input
     const settings = this.deps.settings.get()
     this.ttsDebug.lastAutoGenerateAttempt = true
     this.ttsDebug.lastGeneratedMessageId = messageId
 
-    const req = this.buildTtsRequestForMessage(messageId, rawContent)
+    const req = this.buildTtsRequestForMessage(messageId, rawContent, metadata)
     if (!req) {
       this.ttsDebug.lastAutoGenerateSuccess = false
       return
@@ -610,7 +626,7 @@ export class AgentService implements ToolRuntime {
       if (result.ok && result.audioPath) {
         this.ttsDebug.lastAutoGenerateSuccess = true
         this.ttsDebug.lastAutoGenerateError = undefined
-        const audioUrl = new URL(`file://${result.audioPath}`).href
+        const audioUrl = pathToFileURL(result.audioPath).href
         this.emit({ type: "tts.ready", messageId, audioPath: result.audioPath, audioUrl })
       } else {
         this.ttsDebug.lastAutoGenerateSuccess = false
@@ -629,8 +645,13 @@ export class AgentService implements ToolRuntime {
    * Parse emotion from raw message content.
    * Returns the emotion value if found, or the default emotion.
    */
-  private parseEmotionFromMessage(rawContent: string): { emotion: string; source: "llm-tag" | "fallback" } {
+  private parseEmotionFromMessage(rawContent: string, metadata?: AgentMessageMetadata): { emotion: string; source: "llm-tag" | "fallback" } {
     const settings = this.deps.settings.get()
+    // Priority 1: metadata.emotion (set by HTTP legacy / WS bridge)
+    if (metadata?.emotion) {
+      return { emotion: metadata.emotion, source: "llm-tag" }
+    }
+    // Priority 2: raw content emotion tag
     const emotionTagMatch = rawContent.match(/<emotion\s+value\s*=\s*["']([a-z_]+)["']\s*\/>/i)
     if (emotionTagMatch && emotionTagMatch[1]) {
       return { emotion: emotionTagMatch[1], source: "llm-tag" }
@@ -642,13 +663,25 @@ export class AgentService implements ToolRuntime {
    * Regenerate TTS audio for a specific message (manual trigger).
    * Delegates to the unified generateTtsForMessage.
    */
-  async regenerateTts(messageId: string, text: string): Promise<void> {
+  async regenerateTts(messageId: string): Promise<void> {
     const settings = this.deps.settings.get()
     if (!settings.tts.enabled) {
       this.emit({ type: "tts.error", messageId, error: "TTS 未启用" })
       return
     }
-    await this.generateTtsForMessage(messageId, text)
+    // Look up the original message to get its content and metadata
+    const message = this.conversationManager?.getMessages(this.activeConversationId ?? "")
+      .find((m) => m.id === messageId)
+    if (!message) {
+      this.emit({ type: "tts.error", messageId, error: "找不到原始消息" })
+      return
+    }
+    const rawContent = normalizeMessageContentToText(message.content)
+    await this.generateTtsForMessage({
+      messageId,
+      rawContent,
+      metadata: (message as any).metadata,
+    })
   }
 
   emitEvent(event: AgentEvent): void {
@@ -852,8 +885,6 @@ export class AgentService implements ToolRuntime {
               createdAt: message.createdAt,
             },
           })
-          // Trigger TTS auto-generation if enabled
-          this.scheduleTtsAutoGeneration(message.id, message.content)
         }
         break
       }
@@ -928,6 +959,9 @@ export class AgentService implements ToolRuntime {
           lastParseWarning: meta.parseWarning,
         }
       }
+    }
+    if (event.type === "message.added" && event.message.role === "assistant" && !event.message.extra?.error) {
+      this.scheduleTtsAutoGenerationForMessage(event.message)
     }
   }
 }
@@ -1639,4 +1673,9 @@ function killProcessTree(pid: number | undefined): void {
   } catch {
     // Process may already have exited.
   }
+}
+
+function normalizeMessageContentToText(content: string | Array<{ type: string; text?: string }>): string {
+  if (typeof content === "string") return content
+  return content.map((c) => (c.type === "text" ? (c.text ?? "") : "")).join("")
 }
