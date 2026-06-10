@@ -7,10 +7,10 @@ import { messageContentToText, summarize } from "../renderer-shared"
 interface MessageBubbleProps {
   message: AgentMessage
   messageAudioState?: MessageAudioState
-  onGenerateTts?: (messageId: string, text: string) => void
+  onGenerateTts?: (messageId: string) => void
   onPlayTts?: (messageId: string) => void
   onStopTts?: () => void
-  onRetryTts?: (messageId: string, text: string) => void
+  onRetryTts?: (messageId: string) => void
 }
 
 function sanitizeDisplayText(raw: string): string {
@@ -71,7 +71,7 @@ export function MessageBubble({
       {message.role === "assistant" && onGenerateTts && (
         <div className="message-tts-controls">
           {ttsStatus === "none" && (
-            <button className="ghost-btn tts-btn" onClick={() => onGenerateTts(message.id, displayText)}>
+            <button className="ghost-btn tts-btn" onClick={() => onGenerateTts(message.id)}>
               生成语音
             </button>
           )}
@@ -83,7 +83,7 @@ export function MessageBubble({
               <button className="ghost-btn tts-btn" onClick={() => onPlayTts?.(message.id)}>
                 播放
               </button>
-              <button className="ghost-btn tts-btn" onClick={() => onRetryTts?.(message.id, displayText)}>
+              <button className="ghost-btn tts-btn" onClick={() => onRetryTts?.(message.id)}>
                 重新生成
               </button>
             </>
@@ -93,14 +93,14 @@ export function MessageBubble({
               <button className="ghost-btn tts-btn" onClick={() => onStopTts?.()}>
                 停止
               </button>
-              <button className="ghost-btn tts-btn" onClick={() => onRetryTts?.(message.id, displayText)}>
+              <button className="ghost-btn tts-btn" onClick={() => onRetryTts?.(message.id)}>
                 重新生成
               </button>
             </>
           )}
           {ttsStatus === "error" && (
             <>
-              <button className="ghost-btn tts-btn" onClick={() => onRetryTts?.(message.id, displayText)}>
+              <button className="ghost-btn tts-btn" onClick={() => onRetryTts?.(message.id)}>
                 重试
               </button>
               {messageAudioState?.lastError && (

@@ -131,8 +131,8 @@ const api = {
     ipcRenderer.invoke(IPC_CHANNELS.TTS_DELETE_VOICE, voiceId),
   ttsGenerate: (request: IpcTtsGenerateRequest): Promise<IpcTtsGenerateResponse> =>
     ipcRenderer.invoke(IPC_CHANNELS.TTS_GENERATE, request),
-  ttsGenerateForMessage: (messageId: string, rawContent: string): Promise<IpcTtsGenerateResponse> =>
-    ipcRenderer.invoke(IPC_CHANNELS.TTS_GENERATE_FOR_MESSAGE, messageId, rawContent),
+  ttsGenerateForMessage: (messageId: string): Promise<IpcTtsGenerateResponse> =>
+    ipcRenderer.invoke(IPC_CHANNELS.TTS_GENERATE_FOR_MESSAGE, messageId),
   ttsPlayAudio: (audioPath: string): Promise<{ ok: boolean; error?: string }> =>
     ipcRenderer.invoke(IPC_CHANNELS.TTS_PLAY_AUDIO, audioPath),
   ttsStopAudio: (): Promise<void> =>

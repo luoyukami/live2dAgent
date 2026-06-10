@@ -386,8 +386,8 @@ export function registerIpcHandlers(services: IpcServices): void {
     return services.tts.generate(req)
   })
 
-  ipcMain.handle(IPC_CHANNELS.TTS_GENERATE_FOR_MESSAGE, async (_event, messageId: string, rawContent: string) => {
-    await services.agent.generateTtsForMessage({ messageId, rawContent })
+  ipcMain.handle(IPC_CHANNELS.TTS_GENERATE_FOR_MESSAGE, async (_event, messageId: string) => {
+    await services.agent.regenerateTts(messageId)
     // The result is communicated via agent events (tts.ready / tts.error)
     return { ok: true }
   })
@@ -406,6 +406,10 @@ export function registerIpcHandlers(services: IpcServices): void {
 
   ipcMain.handle(IPC_CHANNELS.TTS_UPDATE_SETTINGS, async (_event, patch: Partial<LocalTtsSettings>) => {
     services.tts.updateSettings(patch)
+    services.agent.reconfigure()
+    const publicSettings = services.settings.getPublicSettings()
+    services.trace.append({ type: "settings.updated", settings: publicSettings })
+    services.window.broadcastSettings(publicSettings)
   })
 
   ipcMain.handle(IPC_CHANNELS.TTS_OPEN_AUDIO_FOLDER, async () => {

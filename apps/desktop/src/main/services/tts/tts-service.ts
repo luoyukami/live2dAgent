@@ -221,7 +221,11 @@ export class TtsService {
     if (!existsSync(audioPath)) {
       throw new Error(`Audio file not found: ${audioPath}`)
     }
-    return readFileSync(audioPath).buffer
+    const buffer = readFileSync(audioPath)
+    return buffer.buffer.slice(
+      buffer.byteOffset,
+      buffer.byteOffset + buffer.byteLength,
+    )
   }
 
   async stopAudio(): Promise<void> {

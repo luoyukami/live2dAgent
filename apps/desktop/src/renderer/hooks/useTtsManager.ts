@@ -17,10 +17,10 @@ export interface TtsManagerControls {
   registerVoice: (voiceId: string, displayName: string, promptText: string, promptWavPath: string) => Promise<{ ok: boolean; error?: string }>
   renameVoice: (voiceId: string, displayName: string) => Promise<{ ok: boolean; error?: string }>
   deleteVoice: (voiceId: string) => Promise<{ ok: boolean; error?: string }>
-  generateForMessage: (messageId: string, text: string) => Promise<void>
-  playMessageAudio: (messageId: string) => void
+  generateForMessage: (messageId: string) => Promise<void>
+  playMessageAudio: (messageId: string) => Promise<void>
   stopPlayback: () => void
-  retryMessage: (messageId: string, text: string) => Promise<void>
+  retryMessage: (messageId: string) => Promise<void>
   updateSettings: (patch: Partial<LocalTtsSettings>) => Promise<void>
   selectAudioDir: () => Promise<void>
   handleAgentEvent: (event: AgentEvent) => void
@@ -140,7 +140,7 @@ export function useTtsManager(): TtsManagerState & TtsManagerControls {
     return result
   }, [settings.selectedVoiceId, refreshVoices])
 
-  const generateForMessage = useCallback(async (messageId: string, text: string) => {
+  const generateForMessage = useCallback(async (messageId: string) => {
     // Do NOT pre-check settings.enabled or settings.selectedVoiceId here.
     // Main process is the single source of truth; it will emit tts.error if needed.
 
@@ -151,8 +151,8 @@ export function useTtsManager(): TtsManagerState & TtsManagerControls {
     })
 
     try {
-      // Delegate request construction to main process for unified logic
-      await window.petAgent.ttsGenerateForMessage(messageId, text)
+      // Delegate to main process — it will look up the original message
+      await window.petAgent.ttsGenerateForMessage(messageId)
     } catch (err) {
       setMessageAudioStates((prev) => {
         const next = new Map(prev)
@@ -166,11 +166,7 @@ export function useTtsManager(): TtsManagerState & TtsManagerControls {
     }
   }, [])
 
-  const playMessageAudio = useCallback(async (messageId: string) => {
-    const audioState = messageAudioStates.get(messageId)
-    const audioPath = audioState?.currentAudioPath
-    if (!audioPath) return
-
+  const playAudioPath = useCallback(async (messageId: string, audioPath: string) => {
     try {
       const buffer = await window.petAgent.ttsReadAudio(audioPath)
       const blob = new Blob([buffer], { type: "audio/wav" })
@@ -191,14 +187,19 @@ export function useTtsManager(): TtsManagerState & TtsManagerControls {
 
       setMessageAudioStates((prev) => {
         const next = new Map(prev)
-        next.set(messageId, { ...audioState, status: "playing" })
+        next.set(messageId, {
+          ...prev.get(messageId),
+          currentAudioPath: audioPath,
+          status: "playing",
+          updatedAt: Date.now(),
+        })
         return next
       })
     } catch (err) {
       setMessageAudioStates((prev) => {
         const next = new Map(prev)
         next.set(messageId, {
-          ...audioState,
+          ...prev.get(messageId),
           status: "error",
           lastError: err instanceof Error ? err.message : String(err),
           updatedAt: Date.now(),
@@ -206,7 +207,14 @@ export function useTtsManager(): TtsManagerState & TtsManagerControls {
         return next
       })
     }
-  }, [messageAudioStates, player])
+  }, [player])
+
+  const playMessageAudio = useCallback(async (messageId: string) => {
+    const audioState = messageAudioStates.get(messageId)
+    const audioPath = audioState?.currentAudioPath
+    if (!audioPath) return
+    await playAudioPath(messageId, audioPath)
+  }, [messageAudioStates, playAudioPath])
 
   const stopPlayback = useCallback(() => {
     player.stop()
@@ -221,14 +229,14 @@ export function useTtsManager(): TtsManagerState & TtsManagerControls {
     })
   }, [player])
 
-  const retryMessage = useCallback(async (messageId: string, text: string) => {
+  const retryMessage = useCallback(async (messageId: string) => {
     player.stop()
     setMessageAudioStates((prev) => {
       const next = new Map(prev)
       next.set(messageId, { status: "none" })
       return next
     })
-    await generateForMessage(messageId, text)
+    await generateForMessage(messageId)
   }, [player, generateForMessage])
 
   const updateSettings = useCallback(async (patch: Partial<LocalTtsSettings>) => {
@@ -265,9 +273,9 @@ export function useTtsManager(): TtsManagerState & TtsManagerControls {
           })
           return next
         })
-        // Auto-play if enabled — but we must use ttsReadAudio to create a Blob URL
+        // Auto-play if enabled — use event.audioPath directly, not state lookup
         if (settings.autoPlayAfterGenerate) {
-          void playMessageAudio(event.messageId)
+          void playAudioPath(event.messageId, event.audioPath)
         }
         break
       }
@@ -306,7 +314,7 @@ export function useTtsManager(): TtsManagerState & TtsManagerControls {
         break
       }
     }
-  }, [settings.autoPlayAfterGenerate, player, playMessageAudio])
+  }, [settings.autoPlayAfterGenerate, player, playAudioPath])
 
   /* Sync player state back into messageAudioStates */
   useEffect(() => {

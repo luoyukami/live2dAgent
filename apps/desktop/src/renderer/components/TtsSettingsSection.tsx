@@ -267,7 +267,13 @@ export function TtsSettingsSection({ form, setForm, settings }: TtsSettingsSecti
                         type="radio"
                         name="tts-voice"
                         checked={isSelected}
-                        onChange={() => setForm((f) => ({ ...f, tts: { ...f.tts, selectedVoiceId: v.voiceId } }))}
+                        onChange={() => {
+                          setForm((f) => ({ ...f, tts: { ...f.tts, selectedVoiceId: v.voiceId } }))
+                          // Immediately save so main process sees the new selectedVoiceId
+                          void window.petAgent.updatePublicSettings({
+                            tts: { selectedVoiceId: v.voiceId },
+                          })
+                        }}
                       />
                       <span>{displayName}{v.promptText ? ` (${v.promptText.slice(0, 20)}...)` : ""}</span>
                     </label>

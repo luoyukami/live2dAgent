@@ -139,6 +139,12 @@ export function App(): JSX.Element {
     })
   }, [])
 
+  /* ---- Agent event subscription ---- */
+  const ttsEventHandlerRef = useRef(ttsManager.handleAgentEvent)
+  useEffect(() => {
+    ttsEventHandlerRef.current = ttsManager.handleAgentEvent
+  }, [ttsManager.handleAgentEvent])
+
   useEffect(() => {
     return window.petAgent.onAgentEvent((event: AgentEvent) => {
       const nextState = mapEventToState(event)
@@ -171,7 +177,7 @@ export function App(): JSX.Element {
         setCurrentEmotion(event.emotion)
       }
       if (event.type === "tts.generating" || event.type === "tts.ready" || event.type === "tts.error" || event.type === "tts.playing" || event.type === "tts.stopped") {
-        ttsManager.handleAgentEvent(event)
+        ttsEventHandlerRef.current(event)
       }
     })
   }, [])
@@ -851,10 +857,10 @@ export function App(): JSX.Element {
                         key={message.id}
                         message={message}
                         messageAudioState={ttsManager.messageAudioStates.get(message.id)}
-                        onGenerateTts={(id, text) => void ttsManager.generateForMessage(id, text)}
+                        onGenerateTts={(id) => void ttsManager.generateForMessage(id)}
                         onPlayTts={(id) => ttsManager.playMessageAudio(id)}
                         onStopTts={() => ttsManager.stopPlayback()}
-                        onRetryTts={(id, text) => void ttsManager.retryMessage(id, text)}
+                        onRetryTts={(id) => void ttsManager.retryMessage(id)}
                       />
                     ))}
                 </div>
