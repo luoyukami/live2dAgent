@@ -195,6 +195,7 @@ export function registerIpcHandlers(services: IpcServices): void {
       promptError: services.prompts.getError(),
       emotion: debug.emotion,
       voice: debug.voice,
+      tts: debug.tts,
 
       model: settings.openaiModel,
       reasoningEffort: settings.reasoningEffort,

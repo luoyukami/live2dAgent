@@ -403,6 +403,36 @@ export interface DebugSnapshot {
     selectedVoiceId?: string
     ttsMode: string
     connectionStatus: string
+    instructionInjected: boolean
+    lastAutoGenerateAttempt: boolean
+    lastAutoGenerateSuccess: boolean
+    lastAutoGenerateError?: string
+    /** Details of the last TTS request sent to the service. */
+    lastRequestDetails?: {
+      messageId: string
+      endpoint: string
+      textPreview: string
+      voiceId: string
+      mode: string
+      instruction?: string
+      speed: number
+      seed: number
+    }
+    /** Details of the last TTS response (success or error). */
+    lastResponseDetails?: {
+      ok: boolean
+      audioPath?: string
+      error?: string
+      durationMs?: number
+    }
+    /** Result of the last message lookup in regenerateTts. */
+    lastRegenerateLookup?: {
+      messageId: string
+      found: boolean
+      conversationId?: string
+      totalMessages?: number
+      error?: string
+    }
   }
 }
 

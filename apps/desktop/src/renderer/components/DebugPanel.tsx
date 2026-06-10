@@ -139,6 +139,33 @@ export function DebugPanel({
             </section>
 
             <section className="debug-section">
+              <h4>TTS</h4>
+              <div className="debug-kv">
+                <div><span>Enabled</span><span>{snapshot?.tts?.enabled ? "true" : "false"}</span></div>
+                <div><span>API Base URL</span><span>{snapshot?.tts?.apiBaseUrl ?? "—"}</span></div>
+                <div><span>Selected Voice</span><span>{snapshot?.tts?.selectedVoiceId ?? "—"}</span></div>
+                <div><span>TTS Mode</span><span>{snapshot?.tts?.ttsMode ?? "—"}</span></div>
+                <div><span>Instruction injected</span><span>{snapshot?.tts?.instructionInjected ? "true" : "false"}</span></div>
+                <div><span>Last auto-generate</span><span>{snapshot?.tts?.lastAutoGenerateAttempt ? (snapshot?.tts?.lastAutoGenerateSuccess ? "success" : "failed") : "—"}</span></div>
+                <div><span>Last auto-generate error</span><span>{snapshot?.tts?.lastAutoGenerateError ?? "none"}</span></div>
+              </div>
+              <div className="debug-last-items">
+                <details>
+                  <summary>Last TTS Request Details</summary>
+                  <pre className="trace-json">{JSON.stringify(snapshot?.tts?.lastRequestDetails ?? null, null, 2)}</pre>
+                </details>
+                <details>
+                  <summary>Last TTS Response Details</summary>
+                  <pre className="trace-json">{JSON.stringify(snapshot?.tts?.lastResponseDetails ?? null, null, 2)}</pre>
+                </details>
+                <details>
+                  <summary>Last Regenerate Lookup</summary>
+                  <pre className="trace-json">{JSON.stringify(snapshot?.tts?.lastRegenerateLookup ?? null, null, 2)}</pre>
+                </details>
+              </div>
+            </section>
+
+            <section className="debug-section">
               <h4>语音输入</h4>
               <div className="debug-kv">
                 <div><span>Enabled</span><span>{snapshot?.voice?.enabled ? "true" : "false"}</span></div>

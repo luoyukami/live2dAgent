@@ -231,6 +231,8 @@ export function useTtsManager(): TtsManagerState & TtsManagerControls {
 
   const retryMessage = useCallback(async (messageId: string) => {
     player.stop()
+    // Cancel any in-flight generation on the main process side
+    await window.petAgent.ttsStopAudio().catch(() => { /* ignore */ })
     setMessageAudioStates((prev) => {
       const next = new Map(prev)
       next.set(messageId, { status: "none" })

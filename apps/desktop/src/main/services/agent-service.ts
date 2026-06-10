@@ -84,6 +84,32 @@ export class AgentService implements ToolRuntime {
     lastAutoGenerateError: undefined as string | undefined,
     lastGeneratedMessageId: undefined as string | undefined,
     lastInstructionInjected: false,
+    /** Details of the last TTS request sent to the service. */
+    lastRequestDetails: undefined as {
+      messageId: string
+      endpoint: string
+      textPreview: string
+      voiceId: string
+      mode: string
+      instruction?: string
+      speed: number
+      seed: number
+    } | undefined,
+    /** Details of the last TTS response (success or error). */
+    lastResponseDetails: undefined as {
+      ok: boolean
+      audioPath?: string
+      error?: string
+      durationMs?: number
+    } | undefined,
+    /** Result of the last message lookup in regenerateTts. */
+    lastRegenerateLookup: undefined as {
+      messageId: string
+      found: boolean
+      conversationId?: string
+      totalMessages?: number
+      error?: string
+    } | undefined,
   }
 
   private scheduledTtsMessageIds = new Set<string>()
@@ -121,8 +147,12 @@ export class AgentService implements ToolRuntime {
     this.deps.permissions.setToolDefinitions(definitions)
 
     this.executors = this.createExecutors()
-    this.conversationManager = new ConversationManager()
-    this.activeConversationId = this.conversationManager.createConversation("Default").id
+    // Preserve conversation history across reconfigures (e.g. settings changes).
+    // Only create a new conversation manager on first boot.
+    if (!this.conversationManager) {
+      this.conversationManager = new ConversationManager()
+      this.activeConversationId = this.conversationManager.createConversation("Default").id
+    }
 
     if (this.runtimeMode === "http-legacy") {
       this.setupHttpLegacy(settings, registry, definitions)
@@ -449,6 +479,29 @@ export class AgentService implements ToolRuntime {
       lastAutoGenerateAttempt: boolean
       lastAutoGenerateSuccess: boolean
       lastAutoGenerateError?: string
+      lastRequestDetails?: {
+        messageId: string
+        endpoint: string
+        textPreview: string
+        voiceId: string
+        mode: string
+        instruction?: string
+        speed: number
+        seed: number
+      }
+      lastResponseDetails?: {
+        ok: boolean
+        audioPath?: string
+        error?: string
+        durationMs?: number
+      }
+      lastRegenerateLookup?: {
+        messageId: string
+        found: boolean
+        conversationId?: string
+        totalMessages?: number
+        error?: string
+      }
     }
   } {
     const settings = this.deps.settings.get()
@@ -493,6 +546,9 @@ export class AgentService implements ToolRuntime {
         lastAutoGenerateAttempt: this.ttsDebug.lastAutoGenerateAttempt,
         lastAutoGenerateSuccess: this.ttsDebug.lastAutoGenerateSuccess,
         lastAutoGenerateError: this.ttsDebug.lastAutoGenerateError,
+        lastRequestDetails: this.ttsDebug.lastRequestDetails,
+        lastResponseDetails: this.ttsDebug.lastResponseDetails,
+        lastRegenerateLookup: this.ttsDebug.lastRegenerateLookup,
       },
     }
   }
@@ -618,10 +674,31 @@ export class AgentService implements ToolRuntime {
       return
     }
 
+    // Record request details for debugging
+    const endpoint = req.mode === "emotion_enhanced" && req.instruction ? "/v1/tts/instruct" : "/v1/tts/zero-shot"
+    this.ttsDebug.lastRequestDetails = {
+      messageId: req.messageId,
+      endpoint,
+      textPreview: req.text.slice(0, 120),
+      voiceId: req.voiceId,
+      mode: req.mode,
+      instruction: req.instruction,
+      speed: req.speed,
+      seed: req.seed,
+    }
+
+    const startedAt = Date.now()
     try {
       this.emit({ type: "tts.generating", messageId })
 
       const result = await this.deps.tts.generate(req)
+
+      this.ttsDebug.lastResponseDetails = {
+        ok: result.ok,
+        audioPath: result.audioPath,
+        error: result.error,
+        durationMs: Date.now() - startedAt,
+      }
 
       if (result.ok && result.audioPath) {
         this.ttsDebug.lastAutoGenerateSuccess = true
@@ -635,6 +712,11 @@ export class AgentService implements ToolRuntime {
       }
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err)
+      this.ttsDebug.lastResponseDetails = {
+        ok: false,
+        error: msg,
+        durationMs: Date.now() - startedAt,
+      }
       this.ttsDebug.lastAutoGenerateError = msg
       this.ttsDebug.lastAutoGenerateSuccess = false
       this.emit({ type: "tts.error", messageId, error: msg })
@@ -666,12 +748,27 @@ export class AgentService implements ToolRuntime {
   async regenerateTts(messageId: string): Promise<void> {
     const settings = this.deps.settings.get()
     if (!settings.tts.enabled) {
+      this.ttsDebug.lastRegenerateLookup = {
+        messageId,
+        found: false,
+        error: "TTS 未启用",
+      }
       this.emit({ type: "tts.error", messageId, error: "TTS 未启用" })
       return
     }
     // Look up the original message to get its content and metadata
-    const message = this.conversationManager?.getMessages(this.activeConversationId ?? "")
-      .find((m) => m.id === messageId)
+    const convId = this.activeConversationId ?? ""
+    const allMessages = this.conversationManager?.getMessages(convId) ?? []
+    const message = allMessages.find((m) => m.id === messageId)
+
+    this.ttsDebug.lastRegenerateLookup = {
+      messageId,
+      found: !!message,
+      conversationId: convId,
+      totalMessages: allMessages.length,
+      error: message ? undefined : `Message ${messageId} not found in conversation ${convId} (${allMessages.length} messages)`,
+    }
+
     if (!message) {
       this.emit({ type: "tts.error", messageId, error: "找不到原始消息" })
       return
