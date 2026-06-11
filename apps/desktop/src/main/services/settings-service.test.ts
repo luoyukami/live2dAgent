@@ -7,7 +7,7 @@
  */
 import { test } from "node:test"
 import assert from "node:assert/strict"
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs"
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { DEFAULT_PROMPT_PRESET_SETTINGS } from "@live2d-agent/shared"
@@ -401,6 +401,60 @@ test("updatePublicPatch: windowMode accepts dual and combined, rejects others", 
     assert.throws(
       () => service.updatePublicPatch({ ui: { windowMode: "triple" as never } }),
       /Invalid ui\.windowMode/,
+    )
+  } finally {
+    cleanup(dir)
+  }
+})
+
+test("companionWatch settings merge persisted values but disable proactive mode on startup", () => {
+  const { service, dir } = makeServiceWith({
+    companionWatch: {
+      attachScreenshotOnUserMessage: true,
+      proactiveEnabled: true,
+      proactiveInterval: "random",
+    },
+  })
+  try {
+    assert.deepEqual(service.getPublicSettings().companionWatch, {
+      attachScreenshotOnUserMessage: true,
+      proactiveEnabled: false,
+      proactiveInterval: "random",
+    })
+    const persisted = JSON.parse(readFileSync(join(dir, "settings.json"), "utf8")) as Record<string, any>
+    assert.equal(persisted.companionWatch.proactiveEnabled, false)
+  } finally {
+    cleanup(dir)
+  }
+})
+
+test("updatePublicPatch: companionWatch accepts valid values and rejects invalid interval", () => {
+  const dir = makeTempUserDataDir()
+  try {
+    const service = new SettingsService(dir)
+    assert.deepEqual(service.getPublicSettings().companionWatch, {
+      attachScreenshotOnUserMessage: false,
+      proactiveEnabled: false,
+      proactiveInterval: "30s",
+    })
+
+    service.updatePublicPatch({
+      companionWatch: {
+        attachScreenshotOnUserMessage: true,
+        proactiveEnabled: true,
+        proactiveInterval: "1m",
+      },
+    })
+
+    assert.deepEqual(service.getPublicSettings().companionWatch, {
+      attachScreenshotOnUserMessage: true,
+      proactiveEnabled: true,
+      proactiveInterval: "1m",
+    })
+
+    assert.throws(
+      () => service.updatePublicPatch({ companionWatch: { proactiveInterval: "5m" as never } }),
+      /Invalid companionWatch\.proactiveInterval/,
     )
   } finally {
     cleanup(dir)

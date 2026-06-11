@@ -207,6 +207,22 @@ export interface AgentSettings {
   runtimeMode: "ws" | "http-legacy"
 }
 
+/** Companion watch mode settings */
+export interface CompanionWatchSettings {
+  /** Attach one fresh screenshot to every user-sent message. */
+  attachScreenshotOnUserMessage: boolean
+  /** Let the assistant periodically look at the screen and proactively start conversation. */
+  proactiveEnabled: boolean
+  /** Proactive screenshot interval preset. */
+  proactiveInterval: "30s" | "1m" | "2m" | "random"
+}
+
+export const DEFAULT_COMPANION_WATCH_SETTINGS: CompanionWatchSettings = {
+  attachScreenshotOnUserMessage: false,
+  proactiveEnabled: false,
+  proactiveInterval: "30s",
+}
+
 /** Tool permission settings */
 export interface PermissionSettings {
   mode: ToolPermissionMode
@@ -247,6 +263,7 @@ export interface AppSettings {
   promptPresets: PromptPresetSettings
   emotion: EmotionSettings
   voice: VoiceInputSettings
+  companionWatch: CompanionWatchSettings
   tts: LocalTtsSettings
 }
 
@@ -276,6 +293,9 @@ export type PromptPresetSettingsPatch = Partial<PromptPresetSettings>
 
 /** Partial patch for voice input settings (allowed in public patch) */
 export type VoiceInputSettingsPatch = Partial<VoiceInputSettings>
+
+/** Partial patch for companion watch settings (allowed in public patch) */
+export type CompanionWatchSettingsPatch = Partial<CompanionWatchSettings>
 
 /* ------------------------------------------------------------------ */
 /*  TTS settings (Phase 1)                                             */
@@ -358,6 +378,7 @@ export interface AppSettingsPublicPatch {
   promptPresets?: PromptPresetSettingsPatch
   emotion?: EmotionSettingsPatch
   voice?: VoiceInputSettingsPatch
+  companionWatch?: CompanionWatchSettingsPatch
   tts?: TtsSettingsPatch
 }
 

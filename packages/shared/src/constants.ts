@@ -10,6 +10,8 @@ export const IPC_CHANNELS = {
   DENY_ACTION: "agent:deny-action",
   /** Clear visible messages and reset the active agent context */
   CLEAR_CONTEXT: "agent:clear-context",
+  /** Renderer reports user activity that should reset companion-watch idle timer */
+  COMPANION_ACTIVITY: "agent:companion-activity",
   /** Change agent mode (manual / confirm / auto) */
   SET_AGENT_MODE: "agent:set-mode",
   /** Subscribe to agent events from renderer */

@@ -239,6 +239,7 @@ export function AvatarApp(): JSX.Element {
       return
     }
     if (!state.cancelled) {
+      void window.petAgent.companionActivity?.({ source: "user" })
       void window.petAgent.showCompactInput?.({ screenX: event.screenX, screenY: event.screenY })
     }
   }

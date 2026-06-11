@@ -29,6 +29,8 @@ import {
   normalizeFormDimension,
   mergeAddedMessage,
   defaultForm,
+  buildCompanionWatchPatch,
+  CompanionWatchSettingsSection,
   formatAttachmentLabel,
   formatAttachmentSubLabel,
   messageContentToText,
@@ -110,7 +112,7 @@ export function App(): JSX.Element {
   const [showInput, setShowInput] = useState(false)
   const [showDetail, setShowDetail] = useState(false)
   const [detailTab, setDetailTab] = useState<"chat" | "settings" | "debug">("chat")
-  const [activeSettingsSection, setActiveSettingsSection] = useState<"general" | "presets" | "emotion" | "voice" | "tts">("general")
+  const [activeSettingsSection, setActiveSettingsSection] = useState<"general" | "presets" | "emotion" | "voice" | "tts" | "companion">("general")
   const [compactAssistantBubbleVisible, setCompactAssistantBubbleVisible] = useState(false)
   const [compactInputPosition, setCompactInputPosition] = useState<{ x: number; y: number } | null>(null)
 
@@ -227,6 +229,7 @@ export function App(): JSX.Element {
           stripTagWhenDisabled: settings.emotion?.stripTagWhenDisabled ?? prev.emotion.stripTagWhenDisabled,
         },
         voice: settings.voice ?? prev.voice,
+        companionWatch: settings.companionWatch ?? prev.companionWatch,
         tts: {
           enabled: settings.tts?.enabled ?? prev.tts.enabled,
           apiBaseUrl: settings.tts?.apiBaseUrl ?? prev.tts.apiBaseUrl,
@@ -595,6 +598,11 @@ export function App(): JSX.Element {
         publicPatch.tts = ttsPatch
       }
 
+      const companionWatchPatch = buildCompanionWatchPatch(form, settings)
+      if (companionWatchPatch) {
+        publicPatch.companionWatch = companionWatchPatch
+      }
+
       if (Object.keys(publicPatch).length > 0) {
         await window.petAgent.updatePublicSettings(publicPatch)
       }
@@ -723,6 +731,7 @@ export function App(): JSX.Element {
     if (!state || state.pointerId !== event.pointerId) return
     finishPointerInteraction()
     if (!state.dragging && !state.cancelled) {
+      void window.petAgent.companionActivity?.({ source: "user" })
       setCompactInputPosition(getCompactInputPosition(event.clientX, event.clientY))
       setShowInput(true)
     }
@@ -753,6 +762,7 @@ export function App(): JSX.Element {
     { key: "emotion" as const, label: "情绪" },
     { key: "voice" as const, label: "语音" },
     { key: "tts" as const, label: "TTS" },
+    { key: "companion" as const, label: "陪看" },
   ]
 
   const canSubmit = !isSending && (input.trim().length > 0 || attachments.length > 0 || imageAttachments.length > 0)
@@ -828,7 +838,10 @@ export function App(): JSX.Element {
             <textarea
               ref={textareaRef}
               value={input}
-              onChange={(event) => setInput(event.target.value)}
+              onChange={(event) => {
+                void window.petAgent.companionActivity?.({ source: "user" })
+                setInput(event.target.value)
+              }}
               onKeyDown={(event) => {
                 if (event.key === "Enter" && !event.shiftKey) {
                   event.preventDefault()
@@ -1001,7 +1014,10 @@ export function App(): JSX.Element {
                     <textarea
                       ref={textareaRef}
                       value={input}
-                      onChange={(event) => setInput(event.target.value)}
+                      onChange={(event) => {
+                        void window.petAgent.companionActivity?.({ source: "user" })
+                        setInput(event.target.value)
+                      }}
                       onKeyDown={(event) => {
                         if (event.key === "Enter" && !event.shiftKey) {
                           event.preventDefault()
@@ -1434,6 +1450,13 @@ export function App(): JSX.Element {
                       form={form}
                       setForm={setForm}
                       settings={settings}
+                    />
+                  )}
+
+                  {activeSettingsSection === "companion" && (
+                    <CompanionWatchSettingsSection
+                      form={form}
+                      setForm={setForm}
                     />
                   )}
 

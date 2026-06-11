@@ -27,6 +27,8 @@ import {
   normalizeFormDimension,
   mergeAddedMessage,
   defaultForm,
+  buildCompanionWatchPatch,
+  CompanionWatchSettingsSection,
   formatAttachmentLabel,
   formatAttachmentSubLabel,
   messageContentToText,
@@ -83,7 +85,7 @@ export function UiApp(): JSX.Element {
   const [showInput, setShowInput] = useState(false)
   const [showDetail, setShowDetail] = useState(false)
   const [detailTab, setDetailTab] = useState<"chat" | "settings" | "debug">("chat")
-  const [activeSettingsSection, setActiveSettingsSection] = useState<"general" | "presets" | "emotion" | "voice" | "tts">("general")
+  const [activeSettingsSection, setActiveSettingsSection] = useState<"general" | "presets" | "emotion" | "voice" | "tts" | "companion">("general")
 
   /* ---- TTS state ---- */
   const ttsManager = useTtsManager()
@@ -186,6 +188,7 @@ export function UiApp(): JSX.Element {
           stripTagWhenDisabled: settings.emotion?.stripTagWhenDisabled ?? prev.emotion.stripTagWhenDisabled,
         },
         voice: settings.voice ?? prev.voice,
+        companionWatch: settings.companionWatch ?? prev.companionWatch,
         tts: {
           enabled: settings.tts?.enabled ?? prev.tts.enabled,
           apiBaseUrl: settings.tts?.apiBaseUrl ?? prev.tts.apiBaseUrl,
@@ -575,6 +578,11 @@ export function UiApp(): JSX.Element {
         publicPatch.tts = ttsPatch
       }
 
+      const companionWatchPatch = buildCompanionWatchPatch(form, settings)
+      if (companionWatchPatch) {
+        publicPatch.companionWatch = companionWatchPatch
+      }
+
       if (Object.keys(publicPatch).length > 0) {
         await window.petAgent.updatePublicSettings(publicPatch)
       }
@@ -670,6 +678,7 @@ export function UiApp(): JSX.Element {
     { key: "emotion" as const, label: "情绪" },
     { key: "voice" as const, label: "语音" },
     { key: "tts" as const, label: "TTS" },
+    { key: "companion" as const, label: "陪看" },
   ]
 
   const canSubmit = !isSending && (input.trim().length > 0 || attachments.length > 0 || imageAttachments.length > 0)
@@ -696,7 +705,10 @@ export function UiApp(): JSX.Element {
             <textarea
               ref={textareaRef}
               value={input}
-              onChange={(event) => setInput(event.target.value)}
+              onChange={(event) => {
+                void window.petAgent.companionActivity?.({ source: "user" })
+                setInput(event.target.value)
+              }}
               onKeyDown={(event) => {
                 if (event.key === "Enter" && !event.shiftKey) {
                   event.preventDefault()
@@ -869,7 +881,10 @@ export function UiApp(): JSX.Element {
                     <textarea
                       ref={textareaRef}
                       value={input}
-                      onChange={(event) => setInput(event.target.value)}
+                      onChange={(event) => {
+                        void window.petAgent.companionActivity?.({ source: "user" })
+                        setInput(event.target.value)
+                      }}
                       onKeyDown={(event) => {
                         if (event.key === "Enter" && !event.shiftKey) {
                           event.preventDefault()
@@ -1302,6 +1317,13 @@ export function UiApp(): JSX.Element {
                       form={form}
                       setForm={setForm}
                       settings={settings}
+                    />
+                  )}
+
+                  {activeSettingsSection === "companion" && (
+                    <CompanionWatchSettingsSection
+                      form={form}
+                      setForm={setForm}
                     />
                   )}
 

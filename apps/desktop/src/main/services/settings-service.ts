@@ -6,6 +6,7 @@ import {
   DEFAULT_PROMPT_PRESET_SETTINGS,
   DEFAULT_VOICE_INPUT_SETTINGS,
   DEFAULT_LOCAL_TTS_SETTINGS,
+  DEFAULT_COMPANION_WATCH_SETTINGS,
   isEmotion,
   type AgentMode,
   type AppSettings,
@@ -26,6 +27,7 @@ import {
   type ReasoningEffort,
   type VoiceInputSettings,
   type VoiceInputSettingsPatch,
+  type CompanionWatchSettings,
   type TtsSettingsPatch,
   type LocalTtsSettings,
 } from "@live2d-agent/shared"
@@ -81,6 +83,7 @@ export function createDefaultSettings(userDataDir: string): AppSettings {
     promptPresets: { ...DEFAULT_PROMPT_PRESET_SETTINGS },
     emotion: { ...DEFAULT_EMOTION_SETTINGS },
     voice: { ...DEFAULT_VOICE_INPUT_SETTINGS },
+    companionWatch: { ...DEFAULT_COMPANION_WATCH_SETTINGS },
     tts: { ...DEFAULT_LOCAL_TTS_SETTINGS },
   }
 }
@@ -228,6 +231,10 @@ function deepMergeDefaults(parsed: Record<string, unknown>, defaults: AppSetting
       ...defaults.voice,
       ...((parsed.voice ?? {}) as Partial<VoiceInputSettings>),
     },
+    companionWatch: mergeCompanionWatchSettings(
+      (parsed.companionWatch ?? {}) as Partial<CompanionWatchSettings>,
+      defaults.companionWatch,
+    ),
     tts: {
       ...defaults.tts,
       ...((parsed.tts ?? {}) as Partial<LocalTtsSettings>),
@@ -236,6 +243,19 @@ function deepMergeDefaults(parsed: Record<string, unknown>, defaults: AppSetting
         ...(((parsed.tts ?? {}) as Partial<LocalTtsSettings>).voiceDisplayNames ?? {}),
       },
     },
+  }
+}
+
+function mergeCompanionWatchSettings(
+  parsed: Partial<CompanionWatchSettings>,
+  defaults: CompanionWatchSettings,
+): CompanionWatchSettings {
+  return {
+    attachScreenshotOnUserMessage: pickBoolean(parsed.attachScreenshotOnUserMessage, defaults.attachScreenshotOnUserMessage),
+    proactiveEnabled: pickBoolean(parsed.proactiveEnabled, defaults.proactiveEnabled),
+    proactiveInterval: isCompanionWatchInterval(parsed.proactiveInterval)
+      ? parsed.proactiveInterval
+      : defaults.proactiveInterval,
   }
 }
 
@@ -390,6 +410,10 @@ function isReasoningEffort(v: unknown): v is ReasoningEffort {
   return v === "none" || v === "low" || v === "medium" || v === "high"
 }
 
+function isCompanionWatchInterval(v: unknown): v is CompanionWatchSettings["proactiveInterval"] {
+  return v === "30s" || v === "1m" || v === "2m" || v === "random"
+}
+
 function numberInRange(value: unknown, field: string, min: number, max: number): number | undefined {
   if (value === undefined) return undefined
   if (!isNumber(value) || value < min || value > max) {
@@ -470,6 +494,7 @@ export class SettingsService {
       this.persist()
     }
 
+    this.disableProactiveCompanionWatchOnStartup()
     this.applyLocalDevModelFallback()
   }
 
@@ -533,6 +558,9 @@ export class SettingsService {
     }
     if (validated.voice !== undefined) {
       this._settings.voice = { ...this._settings.voice, ...validated.voice }
+    }
+    if (validated.companionWatch !== undefined) {
+      this._settings.companionWatch = { ...this._settings.companionWatch, ...validated.companionWatch }
     }
     if (validated.tts !== undefined) {
       this._settings.tts = { ...this._settings.tts, ...validated.tts }
@@ -610,6 +638,12 @@ export class SettingsService {
     const localModel = findLocalDevModelPath()
     if (!localModel) return
     this._settings.live2d.modelPath = localModel
+    this.persist()
+  }
+
+  private disableProactiveCompanionWatchOnStartup(): void {
+    if (!this._settings.companionWatch.proactiveEnabled) return
+    this._settings.companionWatch.proactiveEnabled = false
     this.persist()
   }
 }
@@ -778,6 +812,30 @@ function validatePublicSettingsPatch(patch: unknown): AppSettingsPublicPatch {
       patch.pushToTalkHotkey = voice.pushToTalkHotkey
     }
     if (Object.keys(patch).length > 0) output.voice = patch
+  }
+
+  if (input.companionWatch !== undefined && typeof input.companionWatch === "object") {
+    const companionWatch = input.companionWatch as Record<string, unknown>
+    const patch: Partial<CompanionWatchSettings> = {}
+    if (companionWatch.attachScreenshotOnUserMessage !== undefined) {
+      if (typeof companionWatch.attachScreenshotOnUserMessage !== "boolean") {
+        throw new Error("companionWatch.attachScreenshotOnUserMessage must be a boolean")
+      }
+      patch.attachScreenshotOnUserMessage = companionWatch.attachScreenshotOnUserMessage
+    }
+    if (companionWatch.proactiveEnabled !== undefined) {
+      if (typeof companionWatch.proactiveEnabled !== "boolean") {
+        throw new Error("companionWatch.proactiveEnabled must be a boolean")
+      }
+      patch.proactiveEnabled = companionWatch.proactiveEnabled
+    }
+    if (companionWatch.proactiveInterval !== undefined) {
+      if (!isCompanionWatchInterval(companionWatch.proactiveInterval)) {
+        throw new Error(`Invalid companionWatch.proactiveInterval: must be "30s", "1m", "2m", or "random"`)
+      }
+      patch.proactiveInterval = companionWatch.proactiveInterval
+    }
+    if (Object.keys(patch).length > 0) output.companionWatch = patch
   }
 
   if (input.tts !== undefined && typeof input.tts === "object") {

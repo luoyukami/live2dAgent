@@ -302,6 +302,32 @@ export class AssistantRuntime {
   }
 
   /**
+   * Send a one-off user-like model input without appending it to conversation
+   * history or updating the remote context pointer. The assistant response is
+   * still stored/displayed as a normal assistant message.
+   */
+  async sendTransientUserMessage(
+    conversationId: string,
+    textOrInput: string | {
+      text: string
+      attachments?: AudioContextAttachmentLike[]
+      artifactRefs?: ArtifactRefLike[]
+    },
+  ): Promise<string> {
+    if (!this.conversationStore.hasConversation(conversationId)) {
+      throw AssistantRuntimeErrors.conversationNotFound(conversationId)
+    }
+
+    const activeRun = this.getActiveRun(conversationId)
+    if (activeRun) throw AssistantRuntimeErrors.conversationQueueFull()
+
+    const text = typeof textOrInput === "string" ? textOrInput : textOrInput.text
+    const attachments = typeof textOrInput === "object" ? textOrInput.attachments : undefined
+    const artifactRefs = typeof textOrInput === "object" ? textOrInput.artifactRefs : undefined
+    return this.startTransientRun(conversationId, text, attachments, artifactRefs)
+  }
+
+  /**
    * Cancel the currently active run for a conversation.
    */
   async cancelCurrentRun(conversationId: string): Promise<void> {
@@ -487,6 +513,81 @@ export class AssistantRuntime {
     return runId
   }
 
+  private async startTransientRun(
+    conversationId: string,
+    text: string,
+    attachments?: AudioContextAttachmentLike[],
+    artifactRefs?: ArtifactRefLike[],
+  ): Promise<string> {
+    const state = this.provider.getState()
+    if (state.status === "closed" || state.status === "disconnected" || state.status === "error") {
+      try {
+        await this.provider.open(conversationId)
+        this.emit({ type: "ws.ready", conversationId })
+      } catch (err) {
+        const error = AssistantRuntimeErrors.providerError(
+          err instanceof Error ? err.message : "Failed to open provider connection",
+          true,
+        )
+        const runId = this.generateId("run_transient")
+        const run = new AssistantRun(runId, conversationId, "")
+        this.runs.set(runId, run)
+        this.emit({ type: "run.started", conversationId, runId })
+        this.failRun(run, error)
+        return runId
+      }
+    }
+
+    const runId = this.generateId("run_transient")
+    const transientUserMessageId = this.generateId("msg_transient_user")
+    const run = new AssistantRun(runId, conversationId, transientUserMessageId)
+    this.runs.set(runId, run)
+    this.emit({ type: "run.started", conversationId, runId })
+    const baseMessages = this.conversationStore.getConversationMessages(conversationId)
+
+    const assistantMessage = this.conversationStore.appendAssistantMessage(conversationId)
+    if (!assistantMessage) {
+      run.fail()
+      const error = AssistantRuntimeErrors.internalError("Failed to create assistant message")
+      this.emit({ type: "run.failed", conversationId, runId, error })
+      return runId
+    }
+
+    run.assistantMessageId = assistantMessage.id
+    this.emit({ type: "message.created", conversationId, runId, messageId: assistantMessage.id })
+
+    try {
+      const transientMessage: ConversationStoreMessage = {
+        id: transientUserMessageId,
+        role: "user",
+        content: text,
+        attachments,
+        extra: artifactRefs && artifactRefs.length > 0 ? { artifactRefs } : undefined,
+      }
+      const createInput = this.contextBuilder.buildCreateInput({
+        conversationId,
+        runId,
+        systemPrompt: this.systemPrompt,
+        userText: text,
+        messages: [...baseMessages, transientMessage],
+        tools: [],
+        remoteResponseId: null,
+        currentUserMessageId: transientUserMessageId,
+      })
+
+      await this.consumeResponseStream(run, createInput, false, { persistRemoteContext: false })
+    } catch (err) {
+      if (run.isTerminal) return runId
+      const error = AssistantRuntimeErrors.providerError(
+        err instanceof Error ? err.message : "Unknown error",
+        true,
+      )
+      this.failRun(run, error)
+    }
+
+    return runId
+  }
+
   /**
    * Consume a ModelEvent stream from either a create() or continueWithToolResult() call.
    *
@@ -508,7 +609,9 @@ export class AssistantRuntime {
     run: AssistantRun,
     input: CanonicalCreateInput | CanonicalToolContinuationInput,
     isContinuationStream: boolean = false,
+    options: { persistRemoteContext?: boolean } = {},
   ): Promise<void> {
+    const persistRemoteContext = options.persistRemoteContext !== false
     const isContinuation = "toolResult" in input
     const stream = isContinuation
       ? this.provider.continueWithToolResult(input as CanonicalToolContinuationInput)
@@ -575,7 +678,7 @@ export class AssistantRuntime {
 
         case "response.completed": {
           // Save remote response ID for future continuations
-          if (run.remoteResponseId) {
+          if (persistRemoteContext && run.remoteResponseId) {
             this.conversationStore.setRemoteResponseId(
               run.conversationId,
               run.remoteResponseId,
@@ -656,7 +759,7 @@ export class AssistantRuntime {
               currentUserMessageId: run.userMessageId,
             })
 
-            await this.consumeResponseStream(run, replayInput)
+            await this.consumeResponseStream(run, replayInput, false, options)
           } else {
             // Non-retryable error or replay budget exhausted
             const error = AssistantRuntimeErrors.providerError(

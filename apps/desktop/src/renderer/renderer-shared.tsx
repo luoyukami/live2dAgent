@@ -1,7 +1,9 @@
+import type { Dispatch, SetStateAction } from "react"
 import type { AgentMessage, AudioContextAttachment } from "@live2d-agent/agent-core"
 import {
   DEFAULT_PROMPT_PRESET_SETTINGS,
   DEFAULT_LOCAL_TTS_SETTINGS,
+  DEFAULT_COMPANION_WATCH_SETTINGS,
   type Emotion,
   type EmotionSettings,
   type PromptPresetSettings,
@@ -9,6 +11,7 @@ import {
   type ReasoningEffort,
   type VoiceInputSettings,
   type LocalTtsSettings,
+  type CompanionWatchSettings,
 } from "@live2d-agent/shared"
 
 /* ------------------------------------------------------------------ */
@@ -33,6 +36,7 @@ export interface SettingsForm {
   promptPresets: PromptPresetSettings
   emotion: EmotionSettings
   voice: VoiceInputSettings
+  companionWatch: CompanionWatchSettings
   tts: {
     enabled: boolean
     apiBaseUrl: string
@@ -139,6 +143,7 @@ export function defaultForm(): SettingsForm {
       maxDurationMs: 30_000,
       pushToTalkHotkey: "CommandOrControl+Alt+V",
     },
+    companionWatch: { ...DEFAULT_COMPANION_WATCH_SETTINGS },
     tts: {
       enabled: DEFAULT_LOCAL_TTS_SETTINGS.enabled,
       apiBaseUrl: DEFAULT_LOCAL_TTS_SETTINGS.apiBaseUrl,
@@ -154,6 +159,95 @@ export function defaultForm(): SettingsForm {
       requestTimeoutMs: DEFAULT_LOCAL_TTS_SETTINGS.requestTimeoutMs,
     },
   }
+}
+
+export function buildCompanionWatchPatch(
+  form: SettingsForm,
+  settings: PublicSettings | null,
+): Record<string, unknown> | undefined {
+  const current = settings?.companionWatch
+  const patch: Record<string, unknown> = {}
+  if (form.companionWatch.attachScreenshotOnUserMessage !== (current?.attachScreenshotOnUserMessage ?? DEFAULT_COMPANION_WATCH_SETTINGS.attachScreenshotOnUserMessage)) {
+    patch.attachScreenshotOnUserMessage = form.companionWatch.attachScreenshotOnUserMessage
+  }
+  if (form.companionWatch.proactiveEnabled !== (current?.proactiveEnabled ?? DEFAULT_COMPANION_WATCH_SETTINGS.proactiveEnabled)) {
+    patch.proactiveEnabled = form.companionWatch.proactiveEnabled
+  }
+  if (form.companionWatch.proactiveInterval !== (current?.proactiveInterval ?? DEFAULT_COMPANION_WATCH_SETTINGS.proactiveInterval)) {
+    patch.proactiveInterval = form.companionWatch.proactiveInterval
+  }
+  return Object.keys(patch).length > 0 ? patch : undefined
+}
+
+export function CompanionWatchSettingsSection({
+  form,
+  setForm,
+}: {
+  form: SettingsForm
+  setForm: Dispatch<SetStateAction<SettingsForm>>
+}): JSX.Element {
+  return (
+    <div className="settings-card">
+      <h3 className="settings-card-title">陪看模式</h3>
+
+      <div className="settings-group">
+        <label className="checkbox-label">
+          <input
+            type="checkbox"
+            checked={form.companionWatch.attachScreenshotOnUserMessage}
+            onChange={(e) => setForm((f) => ({
+              ...f,
+              companionWatch: { ...f.companionWatch, attachScreenshotOnUserMessage: e.target.checked },
+            }))}
+          />
+          <span>常驻发送截屏</span>
+        </label>
+        <small className="settings-hint">
+          开启后，用户发送的每条消息都会自动附带一张当前屏幕截图，让助手结合屏幕内容回答。
+        </small>
+      </div>
+
+      <div className="settings-group">
+        <label className="checkbox-label">
+          <input
+            type="checkbox"
+            checked={form.companionWatch.proactiveEnabled}
+            onChange={(e) => setForm((f) => ({
+              ...f,
+              companionWatch: { ...f.companionWatch, proactiveEnabled: e.target.checked },
+            }))}
+          />
+          <span>助手主动模式</span>
+        </label>
+        <small className="settings-hint">
+          开启后会定时截屏，并以系统指令形式让助手主动观察屏幕、找话题聊天。
+        </small>
+      </div>
+
+      <div className="settings-group">
+        <label>主动观察间隔</label>
+        <select
+          value={form.companionWatch.proactiveInterval}
+          disabled={!form.companionWatch.proactiveEnabled}
+          onChange={(e) => setForm((f) => ({
+            ...f,
+            companionWatch: {
+              ...f.companionWatch,
+              proactiveInterval: e.target.value as CompanionWatchSettings["proactiveInterval"],
+            },
+          }))}
+        >
+          <option value="30s">30 秒</option>
+          <option value="1m">1 分钟</option>
+          <option value="2m">2 分钟</option>
+          <option value="random">随机（30 秒–2 分钟）</option>
+        </select>
+        <small className="settings-hint">
+          主动模式会把截图作为当前屏幕上下文发送给助手；请避免在屏幕上显示敏感信息。
+        </small>
+      </div>
+    </div>
+  )
 }
 
 export function formatAttachmentLabel(att: AudioContextAttachment): string {

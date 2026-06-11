@@ -20,6 +20,8 @@ const api = {
   retryLastUserMessage: (): Promise<void> =>
     ipcRenderer.invoke(IPC_CHANNELS.RETRY_LAST_USER_MESSAGE),
   clearContext: (): Promise<void> => ipcRenderer.invoke(IPC_CHANNELS.CLEAR_CONTEXT),
+  companionActivity: (input?: { source?: "user" | "tts" | "voice"; active?: boolean }): Promise<void> =>
+    ipcRenderer.invoke(IPC_CHANNELS.COMPANION_ACTIVITY, input),
   approveAction: (actionId: string) => ipcRenderer.invoke(IPC_CHANNELS.APPROVE_ACTION, actionId),
   denyAction: (actionId: string, reason?: string) =>
     ipcRenderer.invoke(IPC_CHANNELS.DENY_ACTION, actionId, reason),

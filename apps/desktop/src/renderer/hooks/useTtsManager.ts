@@ -175,6 +175,7 @@ export function useTtsManager(): TtsManagerState & TtsManagerControls {
       const buffer = await window.petAgent.ttsReadAudio(audioPath)
       const blob = new Blob([buffer], { type: "audio/wav" })
       const url = URL.createObjectURL(blob)
+      void window.petAgent.companionActivity?.({ source: "tts", active: true })
 
       setMessageAudioStates((prev) => {
         const next = new Map(prev)
@@ -199,8 +200,10 @@ export function useTtsManager(): TtsManagerState & TtsManagerControls {
           return next
         })
       })
+      void window.petAgent.companionActivity?.({ source: "tts", active: false })
 
     } catch (err) {
+      void window.petAgent.companionActivity?.({ source: "tts", active: false })
       setMessageAudioStates((prev) => {
         const next = new Map(prev)
         next.set(messageId, {
@@ -245,6 +248,7 @@ export function useTtsManager(): TtsManagerState & TtsManagerControls {
     const generatedPaths = generatedAudioPathsRef.current.get(messageId)
     if (generatedPaths && generatedPaths.length > 0) {
       player.stop()
+      void window.petAgent.companionActivity?.({ source: "tts", active: false })
       playbackQueuesRef.current.set(messageId, [])
       activePlaybackQueuesRef.current.delete(messageId)
       for (const audioPath of generatedPaths) enqueueAudioPlayback(messageId, audioPath)
@@ -258,6 +262,7 @@ export function useTtsManager(): TtsManagerState & TtsManagerControls {
 
   const stopPlayback = useCallback(() => {
     player.stop()
+    void window.petAgent.companionActivity?.({ source: "tts", active: false })
     playbackQueuesRef.current.clear()
     activePlaybackQueuesRef.current.clear()
     setMessageAudioStates((prev) => {
@@ -273,6 +278,7 @@ export function useTtsManager(): TtsManagerState & TtsManagerControls {
 
   const retryMessage = useCallback(async (messageId: string) => {
     player.stop()
+    void window.petAgent.companionActivity?.({ source: "tts", active: false })
     generatedAudioPathsRef.current.delete(messageId)
     playbackQueuesRef.current.delete(messageId)
     activePlaybackQueuesRef.current.delete(messageId)

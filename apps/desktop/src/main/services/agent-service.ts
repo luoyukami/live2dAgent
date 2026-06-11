@@ -35,6 +35,15 @@ interface EmotionDebugState {
   lastParseWarning?: string
 }
 
+function buildCompanionWatchSystemInstruction(): string {
+  return [
+    "【系统指令｜陪看模式主动观察】",
+    "这条消息不是用户手动输入，而是桌面助手的陪看模式定时触发。随消息附带的是用户当前屏幕截图。",
+    "请结合当前对话上下文和这张屏幕内容，判断用户可能正在做什么；你可以自由发挥，主动找一个自然、轻松、不打扰的话题聊天，也可以给出简短提醒、吐槽、鼓励或观察。",
+    "不要声称看到了截图之外无法确认的内容；如果屏幕内容不清楚，就用轻量的陪伴式回应。",
+  ].join("\n")
+}
+
 export class AgentService implements ToolRuntime {
   private activeConversationId?: string
   private conversationManager?: ConversationManager
@@ -128,6 +137,11 @@ export class AgentService implements ToolRuntime {
    * to re-send this payload through the normal sendUserMessage path.
    */
   private lastUserMessage?: { text: string; attachments?: AudioContextAttachment[]; artifactRefs?: ArtifactRefType[]; conversationId?: string }
+  private companionWatchTimer?: ReturnType<typeof setTimeout>
+  private companionWatchRunning = false
+  private companionAgentBusy = false
+  private companionTtsBusy = false
+  private companionVoiceBusy = false
 
   constructor(private readonly deps: AgentServiceDeps) {
     this.events.subscribe((event) => this.captureEvent(event))
@@ -139,6 +153,7 @@ export class AgentService implements ToolRuntime {
   }
 
   reconfigure(): void {
+    this.stopCompanionWatchTimer()
     // Dispose old runtimes
     this.runController?.dispose()
     this.wsSessionManager?.dispose()
@@ -174,6 +189,7 @@ export class AgentService implements ToolRuntime {
     } else {
       this.setupWsRuntime(settings, registry)
     }
+    this.configureCompanionWatchTimer()
   }
 
   /**
@@ -366,13 +382,16 @@ export class AgentService implements ToolRuntime {
     return composeSystemPrompt(base, settings.emotion, settings.tts)
   }
 
-  async sendUserMessage(input: string | { text: string; attachments?: AudioContextAttachment[]; artifactRefs?: ArtifactRefType[]; conversationId?: string }): Promise<void> {
+  async sendUserMessage(input: string | { text: string; attachments?: AudioContextAttachment[]; artifactRefs?: ArtifactRefType[]; conversationId?: string; skipCompanionScreenshot?: boolean; rememberForRetry?: boolean }): Promise<void> {
+    this.noteCompanionActivity("user")
     const text = typeof input === "string" ? input : input.text
     const attachments = typeof input === "object" ? input.attachments : undefined
     const artifactRefs = typeof input === "object" ? input.artifactRefs : undefined
     const conversationId = (typeof input === "object" && input.conversationId) || this.activeConversationId!
+    const skipCompanionScreenshot = typeof input === "object" && input.skipCompanionScreenshot === true
+    const rememberForRetry = typeof input !== "object" || input.rememberForRetry !== false
 
-    this.lastUserMessage = { text, attachments, artifactRefs, conversationId }
+    if (rememberForRetry) this.lastUserMessage = { text, attachments, artifactRefs, conversationId }
 
     if (!this.deps.settings.get().openaiApiKey) {
       this.emit({
@@ -388,9 +407,15 @@ export class AgentService implements ToolRuntime {
       return
     }
 
+    const mergedArtifactRefs = skipCompanionScreenshot
+      ? artifactRefs
+      : await this.withCompanionUserScreenshot(artifactRefs)
+
+    if (rememberForRetry) this.lastUserMessage = { text, attachments, artifactRefs: mergedArtifactRefs, conversationId }
+
     if (this.runtimeMode === "http-legacy") {
       if (!this.session) this.reconfigure()
-      await this.session?.runUserMessage(input)
+      await this.session?.runUserMessage({ text, attachments, artifactRefs: mergedArtifactRefs })
       return
     }
 
@@ -398,8 +423,8 @@ export class AgentService implements ToolRuntime {
     // The legacy AgentSession path does, so keep this emit WS-only to avoid
     // rendering the same user input twice with different generated IDs.
     const userMessageExtra: Record<string, unknown> = {}
-    if (artifactRefs && artifactRefs.length > 0) {
-      userMessageExtra.artifactRefs = artifactRefs
+    if (mergedArtifactRefs && mergedArtifactRefs.length > 0) {
+      userMessageExtra.artifactRefs = mergedArtifactRefs
     }
     this.emit({
       type: "message.added",
@@ -420,8 +445,108 @@ export class AgentService implements ToolRuntime {
     await this.assistantRuntime?.sendUserMessage(conversationId, {
       text,
       attachments: attachments as any,
-      artifactRefs: artifactRefs as any,
+      artifactRefs: mergedArtifactRefs as any,
     })
+  }
+
+  private async withCompanionUserScreenshot(artifactRefs: ArtifactRefType[] | undefined): Promise<ArtifactRefType[] | undefined> {
+    if (!this.deps.settings.get().companionWatch.attachScreenshotOnUserMessage) return artifactRefs
+    try {
+      const ref = await this.captureScreenshotArtifact()
+      return [...(artifactRefs ?? []), ref]
+    } catch (error) {
+      this.emit({
+        type: "message.added",
+        message: {
+          id: `msg_sys_${Date.now()}`,
+          role: "assistant",
+          content: `陪看模式截屏失败：${error instanceof Error ? error.message : String(error)}`,
+          createdAt: Date.now(),
+          extra: { error: { code: "COMPANION_SCREENSHOT_FAILED", message: String(error), recoverable: true } },
+        },
+      })
+      return artifactRefs
+    }
+  }
+
+  private async captureScreenshotArtifact(): Promise<ArtifactRefType> {
+    const shot = await this.createRuntimeContext().captureScreenshot()
+    return this.deps.artifacts.saveArtifact({
+      kind: "screenshot",
+      mimeType: shot.mimeType,
+      data: shot.data,
+      ext: ".png",
+    }) as ArtifactRefType
+  }
+
+  private configureCompanionWatchTimer(): void {
+    this.scheduleNextCompanionWatchTick()
+  }
+
+  private stopCompanionWatchTimer(): void {
+    if (this.companionWatchTimer) clearTimeout(this.companionWatchTimer)
+    this.companionWatchTimer = undefined
+  }
+
+  private scheduleNextCompanionWatchTick(): void {
+    this.stopCompanionWatchTimer()
+    const watch = this.deps.settings.get().companionWatch
+    if (!watch.proactiveEnabled) return
+    if (!this.isCompanionIdle()) return
+    const delayMs = this.companionWatchIntervalMs(watch.proactiveInterval)
+    this.companionWatchTimer = setTimeout(() => {
+      void this.runCompanionWatchTick()
+    }, delayMs)
+  }
+
+  private isCompanionIdle(): boolean {
+    return !this.companionAgentBusy && !this.companionTtsBusy && !this.companionVoiceBusy
+  }
+
+  noteCompanionActivity(source: "user" | "tts" | "voice" = "user", active?: boolean): void {
+    this.stopCompanionWatchTimer()
+    if (source === "tts" && active !== undefined) this.companionTtsBusy = active
+    if (source === "voice" && active !== undefined) this.companionVoiceBusy = active
+    this.scheduleNextCompanionWatchTick()
+  }
+
+  private companionWatchIntervalMs(interval: import("@live2d-agent/shared").CompanionWatchSettings["proactiveInterval"]): number {
+    if (interval === "1m") return 60_000
+    if (interval === "2m") return 120_000
+    if (interval === "random") return 30_000 + Math.floor(Math.random() * 90_001)
+    return 30_000
+  }
+
+  private async runCompanionWatchTick(): Promise<void> {
+    if (this.companionWatchRunning) return
+    if (!this.isCompanionIdle()) return
+    this.companionWatchRunning = true
+    try {
+      if (!this.deps.settings.get().companionWatch.proactiveEnabled) return
+      const ref = await this.captureScreenshotArtifact()
+      const input = { text: buildCompanionWatchSystemInstruction(), artifactRefs: [ref] }
+      if (this.runtimeMode === "http-legacy") {
+        if (!this.session) this.reconfigure()
+        await this.session?.runTransientUserMessage(input)
+      } else {
+        if (!this.assistantRuntime) this.reconfigure()
+        await this.assistantRuntime?.sendTransientUserMessage(this.activeConversationId!, input)
+      }
+    } catch (error) {
+      this.emit({
+        type: "message.added",
+        message: {
+          id: `msg_sys_${Date.now()}`,
+          role: "assistant",
+          content: `陪看主动观察失败：${error instanceof Error ? error.message : String(error)}`,
+          createdAt: Date.now(),
+          extra: { error: { code: "COMPANION_PROACTIVE_FAILED", message: String(error), recoverable: true } },
+        },
+      })
+    } finally {
+      this.companionWatchRunning = false
+      this.scheduleNextCompanionWatchTick()
+    }
   }
 
   /**
@@ -1095,6 +1220,7 @@ export class AgentService implements ToolRuntime {
   }
 
   private captureEvent(event: AgentEvent): void {
+    this.updateCompanionIdleStateFromEvent(event)
     if (event.type === "agent.thinking") this.stepCount += 1
     this.avatarState = event.type === "agent.thinking"
       ? "thinking"
@@ -1136,6 +1262,29 @@ export class AgentService implements ToolRuntime {
         metadata: event.message.metadata,
       })
       this.scheduleTtsAutoGenerationForMessage(event.message)
+    }
+  }
+
+  private updateCompanionIdleStateFromEvent(event: AgentEvent): void {
+    const wasIdle = this.isCompanionIdle()
+    if (event.type === "agent.thinking" || event.type === "tool.started" || event.type === "approval.pending") {
+      this.companionAgentBusy = true
+    }
+    if (event.type === "agent.idle" || event.type === "agent.error") {
+      this.companionAgentBusy = false
+    }
+    if (event.type === "tts.generating" || event.type === "tts.playing") {
+      this.companionTtsBusy = true
+    }
+    if (event.type === "tts.ready" || event.type === "tts.error" || event.type === "tts.stopped") {
+      this.companionTtsBusy = false
+    }
+
+    const isIdle = this.isCompanionIdle()
+    if (!isIdle) {
+      this.stopCompanionWatchTimer()
+    } else if (!wasIdle || !this.companionWatchTimer) {
+      this.scheduleNextCompanionWatchTick()
     }
   }
 }

@@ -305,6 +305,41 @@ test("off → on: settingsService.applyEmotionPatch must restore injectPrompt to
   assert.deepEqual(merged, expected)
 })
 
+test("runTransientUserMessage sends one-off input without storing it", async () => {
+  const events = new EventBus()
+  const captured: AgentEvent[] = []
+  events.subscribe((event) => captured.push(event))
+  const trace: TraceStore = { append: (event) => captured.push(event) }
+  let queriedMessages: AgentMessage[] = []
+  let queriedTools: ToolDefinition[] = []
+  const model: ModelAdapter = {
+    async query(input) {
+      queriedMessages = input.messages
+      queriedTools = input.tools
+      return { id: "assistant_transient", role: "assistant", content: "主动问候", createdAt: 0 }
+    },
+    formatObservations() { return [] },
+  }
+  const session = new AgentSession(
+    model,
+    new ToolRegistry(),
+    { async executeMany(): Promise<ToolResult[]> { return [] } },
+    { async check() { return { status: "approved" as const, actions: [] } } },
+    trace,
+    events,
+    { maxSteps: 5, emotion: { ...DEFAULT_EMOTION_SETTINGS, enabled: false, injectPrompt: false } },
+  )
+  session.messages.push({ id: "existing", role: "user", content: "已有上下文", createdAt: 0 })
+
+  await session.runTransientUserMessage("一次性系统指令")
+
+  assert.deepEqual(session.messages.map((m) => m.content), ["已有上下文", "主动问候"])
+  assert.deepEqual(queriedMessages.map((m) => m.content), ["已有上下文", "一次性系统指令"])
+  assert.equal(queriedTools.length, 0)
+  assert.ok(captured.some((event) => event.type === "agent.thinking"))
+  assert.ok(captured.some((event) => event.type === "agent.idle"))
+})
+
 /* ------------------------------------------------------------------ */
 /*  6. Existing assistant message metadata is preserved                */
 /* ------------------------------------------------------------------ */

@@ -198,6 +198,40 @@ export class AgentSession {
     }
   }
 
+  /**
+   * Process a one-off user-like input without appending that input to session
+   * history. The assistant's reply is appended/emitted normally.
+   */
+  async runTransientUserMessage(
+    textOrInput: string | { text: string; attachments?: AudioContextAttachment[]; artifactRefs?: ArtifactRef[] },
+  ): Promise<void> {
+    const text = typeof textOrInput === "string" ? textOrInput : textOrInput.text
+    const attachments = typeof textOrInput === "string" ? undefined : textOrInput.attachments
+    const artifactRefs = typeof textOrInput === "string" ? undefined : textOrInput.artifactRefs
+
+    const extra: Record<string, unknown> = {}
+    if (artifactRefs && artifactRefs.length > 0) extra.artifactRefs = artifactRefs
+
+    const transientUserMessage: AgentMessage = {
+      id: this.generateId("msg_transient"),
+      role: "user",
+      content: text,
+      createdAt: Date.now(),
+      ...(attachments && attachments.length > 0 ? { attachments } : {}),
+      ...(Object.keys(extra).length > 0 ? { extra } : {}),
+    }
+
+    this.emit({ type: "agent.thinking" })
+    const assistantMessage = await this.model.query({
+      messages: [...this.messages, transientUserMessage],
+      tools: [],
+    })
+    const processed = this.applyEmotionToAssistantMessage(assistantMessage)
+    this.addMessage(processed)
+    this.maybeEmitEmotion(processed)
+    this.emit({ type: "agent.idle" })
+  }
+
   /* ---- internal helpers ---- */
 
   private addMessage(message: AgentMessage): void {

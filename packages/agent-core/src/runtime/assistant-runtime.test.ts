@@ -54,6 +54,7 @@ class FakeProviderRuntime implements ProviderRuntime {
   public createCallCount = 0
   public continuationCallCount = 0
   public cancelCalls: Array<{ responseId?: string; runId: string }> = []
+  public lastCreateInput?: CanonicalCreateInput
   public closed = false
 
   /** How many times open() was called. */
@@ -118,7 +119,8 @@ class FakeProviderRuntime implements ProviderRuntime {
     this._status = "connected"
   }
 
-  async *create(_input: CanonicalCreateInput): AsyncIterable<ModelEvent> {
+  async *create(input: CanonicalCreateInput): AsyncIterable<ModelEvent> {
+    this.lastCreateInput = input
     this.createCallCount++
     const seq = this.createSequences.shift()
     if (!seq) return
@@ -190,6 +192,7 @@ class FakeProviderRuntime implements ProviderRuntime {
     this.createCallCount = 0
     this.continuationCallCount = 0
     this.cancelCalls = []
+    this.lastCreateInput = undefined
     this.closed = false
     this.hangAfterYield = false
     this.hangResolve = null
@@ -526,6 +529,29 @@ describe("AssistantRuntime — text streaming", () => {
     await runtime.sendUserMessage(conversationId, "Hello")
 
     assert.equal(store.getRemoteResponseId(conversationId), "resp_1")
+  })
+})
+
+describe("AssistantRuntime — transient user messages", () => {
+  test("sendTransientUserMessage does not append user input or persist remote context", async () => {
+    const { runtime, provider, store, conversationId } = createHarness()
+
+    store.appendUserMessage(conversationId, "existing context")
+    provider.setSingleCreateSequence([
+      { type: "response.created", responseId: "resp_transient" },
+      { type: "text.delta", responseId: "resp_transient", delta: "主动搭话" },
+      { type: "response.completed", responseId: "resp_transient" },
+    ])
+
+    await runtime.sendTransientUserMessage(conversationId, "one-off system instruction")
+
+    const stored = store.getConversationMessages(conversationId)
+    assert.deepEqual(stored.map((m) => m.content), ["existing context", "主动搭话"])
+    assert.equal(store.getRemoteResponseId(conversationId), null)
+    assert.ok(provider.lastCreateInput)
+    assert.equal(provider.lastCreateInput.remoteResponseId, null)
+    assert.equal(provider.lastCreateInput.tools.length, 0)
+    assert.ok(JSON.stringify(provider.lastCreateInput.messages).includes("one-off system instruction"))
   })
 })
 

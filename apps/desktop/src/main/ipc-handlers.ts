@@ -102,6 +102,11 @@ export function registerIpcHandlers(services: IpcServices): void {
     services.agent.clearActiveContext()
   })
 
+  ipcMain.handle(IPC_CHANNELS.COMPANION_ACTIVITY, async (_event, input?: { source?: "user" | "tts" | "voice"; active?: boolean }) => {
+    const source = input?.source === "tts" || input?.source === "voice" ? input.source : "user"
+    services.agent.noteCompanionActivity(source, typeof input?.active === "boolean" ? input.active : undefined)
+  })
+
   /* ---- Permission actions ---- */
   ipcMain.handle(IPC_CHANNELS.APPROVE_ACTION, async (_event, actionId: string) => {
     services.permissions.approve(actionId)
@@ -471,6 +476,11 @@ export function registerIpcHandlers(services: IpcServices): void {
     lastError: string
   }>) => {
     services.agent.setVoiceDebug(input)
+    if (input.lastRecordingState === "recording") {
+      services.agent.noteCompanionActivity("voice", true)
+    } else if (input.lastRecordingState === "idle" || input.lastRecordingState === "finished" || input.lastRecordingState === "cancelled" || input.lastRecordingState === "error") {
+      services.agent.noteCompanionActivity("voice", false)
+    }
   })
 
   /* ---- TTS (Phase 1) ---- */
