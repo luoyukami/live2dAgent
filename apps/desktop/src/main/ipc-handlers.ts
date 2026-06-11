@@ -1,5 +1,5 @@
 import { ipcMain, shell, dialog } from "electron"
-import { IPC_CHANNELS, type AudioContextAttachment, type AudioMimeType, type AudioArtifactRef, type CompactInputAnchor, type DebugSnapshot, type AvatarHitRegionRect, type IpcTtsGenerateRequest, type IpcTtsRegisterVoiceRequest, type LocalTtsSettings } from "@live2d-agent/shared"
+import { IPC_CHANNELS, type AudioContextAttachment, type AudioMimeType, type AudioArtifactRef, type ImageContextAttachment, type CompactInputAnchor, type DebugSnapshot, type AvatarHitRegionRect, type IpcTtsGenerateRequest, type IpcTtsRegisterVoiceRequest, type LocalTtsSettings } from "@live2d-agent/shared"
 import type { AgentEvent } from "@live2d-agent/agent-core"
 import type { AgentService } from "./services/agent-service.js"
 import type { ArtifactStore } from "./services/artifact-store.js"
@@ -335,6 +335,86 @@ export function registerIpcHandlers(services: IpcServices): void {
   ipcMain.handle(IPC_CHANNELS.AUDIO_OPEN_FOLDER, async () => {
     const audioDir = services.artifacts.getBaseDir() + "/audio"
     await shell.openPath(audioDir)
+  })
+
+  /* ---- Image (user upload) ---- */
+
+  const KNOWN_IMAGE_MIME_TYPES = new Set<string>(["image/png", "image/jpeg", "image/jpg", "image/webp", "image/gif"])
+
+  function imageMimeToExt(mimeType: string): string {
+    switch (mimeType) {
+      case "image/png": return ".png"
+      case "image/jpeg":
+      case "image/jpg": return ".jpg"
+      case "image/webp": return ".webp"
+      case "image/gif": return ".gif"
+      default: return ".bin"
+    }
+  }
+
+  ipcMain.handle(IPC_CHANNELS.IMAGE_SAVE, async (_event, request: { data: ArrayBuffer; mimeType: string; fileName?: string }) => {
+    try {
+      const { data, mimeType, fileName } = request
+      if (!data || !(data instanceof ArrayBuffer) || data.byteLength === 0) {
+        const error = { code: "IMAGE_EMPTY_DATA", message: "Image data is empty" }
+        services.trace.append({ type: "image.error", code: error.code, message: error.message })
+        return { ok: false, error }
+      }
+      if (!mimeType || typeof mimeType !== "string" || !KNOWN_IMAGE_MIME_TYPES.has(mimeType)) {
+        const error = { code: "IMAGE_UNSUPPORTED_MIME", message: `Unsupported MIME type: ${String(mimeType)}` }
+        services.trace.append({ type: "image.error", code: error.code, message: error.message })
+        return { ok: false, error }
+      }
+
+      const ref = services.artifacts.saveArtifact({
+        kind: "image",
+        mimeType,
+        data: Buffer.from(data),
+        ext: imageMimeToExt(mimeType),
+      })
+
+      const imageRef: import("@live2d-agent/shared").ImageArtifactRef = {
+        id: ref.id,
+        kind: "image",
+        path: ref.path,
+        mimeType,
+        size: ref.size,
+        createdAt: ref.createdAt,
+      }
+
+      const attachment: ImageContextAttachment = {
+        id: `img_${Date.now()}_${Math.random().toString(36).slice(2, 9)}`,
+        type: "image",
+        label: fileName || `image${imageMimeToExt(mimeType)}`,
+        artifact: imageRef,
+        mimeType,
+        createdAt: Date.now(),
+      }
+
+      services.trace.append({ type: "image.artifact.created", artifact: imageRef })
+
+      return { ok: true, attachment }
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err)
+      const error = { code: "IMAGE_SAVE_FAILED", message }
+      services.trace.append({ type: "image.error", code: error.code, message: error.message })
+      return { ok: false, error }
+    }
+  })
+
+  ipcMain.handle(IPC_CHANNELS.ARTIFACT_READ, async (_event, request: { id: string; path: string }) => {
+    try {
+      const { path: artifactPath } = request
+      if (!artifactPath || typeof artifactPath !== "string") {
+        return { ok: false, error: { code: "ARTIFACT_INVALID_PATH", message: "Invalid artifact path" } }
+      }
+      const ref = { id: request.id, kind: "image" as const, path: artifactPath, mimeType: "application/octet-stream", size: 0, createdAt: 0 }
+      const buffer = services.artifacts.readArtifact(ref)
+      return { ok: true, data: buffer.buffer.slice(buffer.byteOffset, buffer.byteOffset + buffer.byteLength) }
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err)
+      return { ok: false, error: { code: "ARTIFACT_READ_FAILED", message } }
+    }
   })
 
   /**

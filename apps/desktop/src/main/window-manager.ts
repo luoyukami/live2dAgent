@@ -774,12 +774,23 @@ export class WindowManager {
       if (!role || role === "combined") {
         win.webContents.openDevTools({ mode: "detach" })
       }
-      return
+    } else {
+      // Packaged / production — pass query via Electron's loadFile API
+      const query = role ? { window: role } : undefined
+      await win.loadFile(join(__dirname, "../renderer/index.html"), { query })
     }
 
-    // Packaged / production — pass query via Electron's loadFile API
-    const query = role ? { window: role } : undefined
-    await win.loadFile(join(__dirname, "../renderer/index.html"), { query })
+    // Prevent drag-and-drop files from opening new windows / navigating
+    win.webContents.setWindowOpenHandler(() => ({ action: "deny" }))
+    win.webContents.on("will-navigate", (event, url) => {
+      // Allow only app-internal URLs (dev server or file:// index.html)
+      const isAppUrl =
+        url.startsWith("file://") ||
+        (isDev && process.env.ELECTRON_RENDERER_URL && url.startsWith(process.env.ELECTRON_RENDERER_URL))
+      if (!isAppUrl) {
+        event.preventDefault()
+      }
+    })
   }
 
   private lockCurrentWindowSize(win: BrowserWindow): void {

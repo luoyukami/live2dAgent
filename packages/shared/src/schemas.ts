@@ -42,7 +42,7 @@ export type PermissionLevel =
 export type ToolName = string
 
 /** Kinds of artifacts stored by ArtifactStore */
-export type ArtifactKind = "screenshot" | "tool-output" | "file-content" | "audio"
+export type ArtifactKind = "screenshot" | "tool-output" | "file-content" | "audio" | "image"
 
 /** Audio MIME types the v0 voice input pipeline can produce or consume. */
 export type AudioMimeType = "audio/wav" | "audio/mpeg" | "audio/webm"
@@ -52,6 +52,12 @@ export interface AudioArtifactRef extends ArtifactRef {
   kind: "audio"
   mimeType: AudioMimeType
   durationMs: number
+}
+
+/** Reference to a stored image artifact on disk. */
+export interface ImageArtifactRef extends ArtifactRef {
+  kind: "image"
+  mimeType: string
 }
 
 /** Reference to a stored artifact on disk */
@@ -109,6 +115,21 @@ export interface AudioContextAttachment {
   artifact: AudioArtifactRef
   mimeType: AudioMimeType
   durationMs: number
+  createdAt: number
+}
+
+/**
+ * Image context attachment — created when the user drops/pastes an image.
+ * Lives on the user message; the ModelAdapter reads the referenced
+ * artifact at request time and converts it to a multimodal `image_url`
+ * content part. The attachment object itself carries NO base64 data.
+ */
+export interface ImageContextAttachment {
+  id: string
+  type: "image"
+  label: string
+  artifact: ImageArtifactRef
+  mimeType: string
   createdAt: number
 }
 

@@ -8,6 +8,8 @@ export interface AudioAttachmentCardProps {
   /** Show a remove button. */
   onRemove?: () => void
   disabled?: boolean
+  /** Icon emoji or string to display instead of the default microphone. */
+  icon?: string
 }
 
 /**
@@ -16,7 +18,7 @@ export interface AudioAttachmentCardProps {
  * can be refactored into styles.css later.
  */
 export function AudioAttachmentCard(props: AudioAttachmentCardProps): JSX.Element {
-  const { label, subLabel, onPlay, onRemove, disabled } = props
+  const { label, subLabel, onPlay, onRemove, disabled, icon } = props
 
   return (
     <div
@@ -40,9 +42,9 @@ export function AudioAttachmentCard(props: AudioAttachmentCardProps): JSX.Elemen
           lineHeight: 1,
         }}
         role="img"
-        aria-label="audio"
+        aria-label="attachment"
       >
-        🎙
+        {icon ?? "🎙"}
       </span>
 
       <span style={{ flex: 1, minWidth: 0 }}>

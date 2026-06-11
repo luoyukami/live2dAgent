@@ -7,6 +7,7 @@ import type {
   Emotion,
   MultimodalContent,
   AudioContextAttachment,
+  ArtifactRef,
 } from "./types.js"
 import type { EmotionSettings } from "@live2d-agent/shared"
 import type { ModelAdapter } from "./model-adapter.js"
@@ -98,10 +99,16 @@ export class AgentSession {
    * ModelAdapter can resolve them into multimodal content parts.
    */
   async runUserMessage(
-    textOrInput: string | { text: string; attachments?: AudioContextAttachment[] },
+    textOrInput: string | { text: string; attachments?: AudioContextAttachment[]; artifactRefs?: ArtifactRef[] },
   ): Promise<void> {
     const text = typeof textOrInput === "string" ? textOrInput : textOrInput.text
     const attachments = typeof textOrInput === "string" ? undefined : textOrInput.attachments
+    const artifactRefs = typeof textOrInput === "string" ? undefined : textOrInput.artifactRefs
+
+    const extra: Record<string, unknown> = {}
+    if (artifactRefs && artifactRefs.length > 0) {
+      extra.artifactRefs = artifactRefs
+    }
 
     this.addMessage({
       id: this.generateId("msg"),
@@ -109,6 +116,7 @@ export class AgentSession {
       content: text,
       createdAt: Date.now(),
       ...(attachments && attachments.length > 0 ? { attachments } : {}),
+      ...(Object.keys(extra).length > 0 ? { extra } : {}),
     })
 
     for (let step = 1; step <= this.maxSteps; step += 1) {

@@ -16,7 +16,7 @@ export interface IpcSendUserMessageRequest {
    */
   attachments?: AudioContextAttachment[]
   /** References to stored artifacts to include in the request. */
-  artifactRefs?: Array<{ id: string; kind: string; mimeType: string }>
+  artifactRefs?: Array<{ id: string; kind: string; path: string; mimeType: string; size: number; createdAt: number }>
   /** Target conversation ID; defaults to activeConversationId when omitted. */
   conversationId?: string
 }
@@ -46,6 +46,39 @@ export interface IpcSaveAudioRecordingRequest {
 export interface IpcSaveAudioRecordingResponse {
   ok: boolean
   attachment?: import("./schemas.js").AudioContextAttachment
+  error?: {
+    code: string
+    message: string
+  }
+}
+
+export interface IpcSaveImageRequest {
+  /** The image bytes. */
+  data: ArrayBuffer
+  /** MIME type of the image, e.g. "image/png" or "image/jpeg". */
+  mimeType: string
+  /** Optional file name for display. */
+  fileName?: string
+}
+
+export interface IpcSaveImageResponse {
+  ok: boolean
+  attachment?: import("./schemas.js").ImageContextAttachment
+  error?: {
+    code: string
+    message: string
+  }
+}
+
+export interface IpcReadArtifactRequest {
+  id: string
+  path: string
+}
+
+export interface IpcReadArtifactResponse {
+  ok: boolean
+  /** Artifact bytes as an ArrayBuffer. */
+  data?: ArrayBuffer
   error?: {
     code: string
     message: string

@@ -1,4 +1,4 @@
-import { useState } from "react"
+import { useEffect, useState } from "react"
 import type { AgentMessage } from "@live2d-agent/agent-core"
 import type { MessageAudioState } from "@live2d-agent/shared"
 import { AudioAttachmentCard } from "./AudioAttachmentCard"
@@ -23,6 +23,44 @@ function sanitizeDisplayText(raw: string): string {
   return cleaned.trim()
 }
 
+function useImageDataUrls(artifactRefs: Array<{ id: string; kind: string; path: string; mimeType: string }> | undefined): Record<string, string> {
+  const [dataUrls, setDataUrls] = useState<Record<string, string>>({})
+
+  useEffect(() => {
+    if (!artifactRefs || artifactRefs.length === 0) return
+    const imageRefs = artifactRefs.filter((ref) => ref.mimeType.startsWith("image/"))
+    if (imageRefs.length === 0) return
+
+    let cancelled = false
+    const results: Record<string, string> = {}
+
+    async function load(): Promise<void> {
+      for (const ref of imageRefs) {
+        if (cancelled) return
+        try {
+          const res = await window.petAgent.readArtifact({ id: ref.id, path: ref.path })
+          if (res.ok && res.data) {
+            const blob = new Blob([res.data], { type: ref.mimeType })
+            const url = URL.createObjectURL(blob)
+            results[ref.id] = url
+          }
+        } catch {
+          // ignore
+        }
+      }
+      if (!cancelled) setDataUrls(results)
+    }
+
+    void load()
+    return () => {
+      cancelled = true
+      Object.values(results).forEach((url) => URL.revokeObjectURL(url))
+    }
+  }, [artifactRefs])
+
+  return dataUrls
+}
+
 export function MessageBubble({
   message,
   messageAudioState,
@@ -36,6 +74,8 @@ export function MessageBubble({
   const displayText = sanitizeDisplayText(text)
   const isError = Boolean(message.extra?.error) || /^(API error|Network error|Invalid JSON|Model returned|Error executing)/i.test(text)
   const audioAttachments = (message.attachments ?? []).filter((a) => a.type === "audio")
+  const artifactRefs = (message.extra?.artifactRefs ?? []) as Array<{ id: string; kind: string; path: string; mimeType: string }>
+  const imageDataUrls = useImageDataUrls(artifactRefs)
 
   async function copy(): Promise<void> {
     await navigator.clipboard.writeText(displayText)
@@ -65,6 +105,20 @@ export function MessageBubble({
               subLabel={`${att.mimeType} · ${(att.artifact.size / 1024).toFixed(1)} KB`}
             />
           ))}
+        </div>
+      )}
+      {Object.keys(imageDataUrls).length > 0 && (
+        <div className="message-images">
+          {artifactRefs
+            .filter((ref) => imageDataUrls[ref.id])
+            .map((ref) => (
+              <img
+                key={ref.id}
+                src={imageDataUrls[ref.id]}
+                alt="用户上传图片"
+                style={{ maxWidth: "100%", maxHeight: 200, borderRadius: 8, display: "block" }}
+              />
+            ))}
         </div>
       )}
       {expanded ? <p>{displayText}</p> : <p className="tool-summary">{summarize(displayText, 160)}</p>}

@@ -26,6 +26,10 @@ export const IPC_CHANNELS = {
   AUDIO_OPEN_FOLDER: "audio:open-folder",
   VOICE_DEBUG_UPDATE: "audio:voice-debug-update",
 
+  /* ---- Image (user upload) ---- */
+  IMAGE_SAVE: "image:save",
+  ARTIFACT_READ: "artifact:read",
+
   /* ---- Settings channels (Phase 1) ---- */
   SETTINGS_GET: "settings:get",
   SETTINGS_UPDATE_PUBLIC: "settings:update-public",

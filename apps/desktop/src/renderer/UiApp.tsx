@@ -7,6 +7,7 @@ import {
   type PublicSettings,
   type ReasoningEffort,
   type DebugSnapshot,
+  type ImageContextAttachment,
   DEFAULT_LOCAL_TTS_SETTINGS,
 } from "@live2d-agent/shared"
 import { DebugPanel } from "./components/DebugPanel"
@@ -66,6 +67,7 @@ export function UiApp(): JSX.Element {
 
   /* ---- Voice input state ---- */
   const [attachments, setAttachments] = useState<AudioContextAttachment[]>([])
+  const [imageAttachments, setImageAttachments] = useState<ImageContextAttachment[]>([])
   const [recordingError, setRecordingError] = useState<string | null>(null)
   const recorder = useAudioRecorder({
     maxDurationMs: settings?.voice?.maxDurationMs,
@@ -90,6 +92,21 @@ export function UiApp(): JSX.Element {
       setTimeout(() => textareaRef.current?.focus(), 0)
     }
   }, [showInput, showDetail, detailTab])
+
+  useEffect(() => {
+    // Prevent Electron from opening dragged files in a new window.
+    // We handle drops ourselves in the input bar / footer.
+    const preventDefault = (e: DragEvent) => {
+      e.preventDefault()
+      e.stopPropagation()
+    }
+    document.addEventListener("dragover", preventDefault)
+    document.addEventListener("drop", preventDefault)
+    return () => {
+      document.removeEventListener("dragover", preventDefault)
+      document.removeEventListener("drop", preventDefault)
+    }
+  }, [])
 
   useEffect(() => {
     window.petAgent.getSettings().then(setSettings)
@@ -383,20 +400,56 @@ export function UiApp(): JSX.Element {
     void window.petAgent.appendTraceEvent?.({ type: "audio.attachment.removed", attachmentId: id })
   }
 
+  function handleRemoveImageAttachment(id: string): void {
+    setImageAttachments((prev) => prev.filter((a) => a.id !== id))
+    void window.petAgent.appendTraceEvent?.({ type: "image.attachment.removed", attachmentId: id })
+  }
+
+  async function handleDropFiles(files: FileList | null): Promise<void> {
+    if (!files || files.length === 0) return
+    const imageFiles = Array.from(files).filter((f) => f.type.startsWith("image/"))
+    if (imageFiles.length === 0) return
+
+    for (const file of imageFiles) {
+      try {
+        const arrayBuffer = await file.arrayBuffer()
+        const result = await window.petAgent.saveImage({
+          data: arrayBuffer,
+          mimeType: file.type,
+          fileName: file.name,
+        })
+        if (result.ok && result.attachment) {
+          setImageAttachments((prev) => [...prev, result.attachment!])
+          void window.petAgent.appendTraceEvent?.({ type: "image.attachment.added", attachment: result.attachment })
+        } else if (result.error) {
+          setRecordingError(`图片保存失败: ${result.error.message}`)
+        }
+      } catch (err) {
+        const message = err instanceof Error ? err.message : String(err)
+        setRecordingError(`图片处理失败: ${message}`)
+      }
+    }
+  }
+
   /* ---- Send flow ---- */
 
   async function submit(): Promise<void> {
     const text = input.trim()
-    if ((!text && attachments.length === 0) || isSending) return
+    if ((!text && attachments.length === 0 && imageAttachments.length === 0) || isSending) return
     setInput("")
     const outgoingAttachments = attachments
+    const outgoingImageAttachments = imageAttachments
     setAttachments([])
+    setImageAttachments([])
     setIsSending(true)
     try {
-      const payload: { text: string; attachments?: AudioContextAttachment[] } = { text }
+      const payload: { text: string; attachments?: AudioContextAttachment[]; artifactRefs?: Array<{ id: string; kind: string; path: string; mimeType: string; size: number; createdAt: number }> } = { text }
       if (outgoingAttachments.length > 0) {
         payload.attachments = outgoingAttachments
         void window.petAgent.updateVoiceDebug?.({ lastSentFormat: outgoingAttachments[0]?.mimeType === "audio/mpeg" ? "mp3" : "wav" })
+      }
+      if (outgoingImageAttachments.length > 0) {
+        payload.artifactRefs = outgoingImageAttachments.map((att) => att.artifact)
       }
       await window.petAgent.sendUserMessage(payload)
     } finally {
@@ -582,7 +635,7 @@ export function UiApp(): JSX.Element {
     { key: "tts" as const, label: "TTS" },
   ]
 
-  const canSubmit = !isSending && (input.trim().length > 0 || attachments.length > 0)
+  const canSubmit = !isSending && (input.trim().length > 0 || attachments.length > 0 || imageAttachments.length > 0)
 
   return (
     <main className="shell ui-shell">
@@ -597,7 +650,11 @@ export function UiApp(): JSX.Element {
 
       {/* Compact input bar */}
       {showInput && (
-        <div className="compact-bar">
+        <div
+          className="compact-bar"
+          onDragOver={(e) => { e.preventDefault(); e.dataTransfer.dropEffect = "copy" }}
+          onDrop={(e) => { e.preventDefault(); void handleDropFiles(e.dataTransfer.files) }}
+        >
           <div className="compact-bar-inner">
             <textarea
               ref={textareaRef}
@@ -610,9 +667,9 @@ export function UiApp(): JSX.Element {
                 }
               }}
               placeholder={
-                attachments.length > 0
-                  ? "可补充文字，或直接发送录音…"
-                  : "点击助手后输入消息..."
+                attachments.length > 0 || imageAttachments.length > 0
+                  ? "可补充文字，或直接发送…"
+                  : "点击助手后输入消息，或拖入图片..."
               }
               rows={1}
             />
@@ -650,7 +707,7 @@ export function UiApp(): JSX.Element {
               ⬇
             </button>
           </div>
-          {(attachments.length > 0 || recordingError) && (
+          {(attachments.length > 0 || imageAttachments.length > 0 || recordingError) && (
             <div className="compact-attachments">
               {attachments.map((att) => (
                 <AudioAttachmentCard
@@ -658,6 +715,15 @@ export function UiApp(): JSX.Element {
                   label={formatAttachmentLabel(att)}
                   subLabel={formatAttachmentSubLabel(att)}
                   onRemove={() => handleRemoveAttachment(att.id)}
+                />
+              ))}
+              {imageAttachments.map((att) => (
+                <AudioAttachmentCard
+                  key={att.id}
+                  icon="🖼"
+                  label={att.label}
+                  subLabel={`${(att.artifact.size / 1024).toFixed(1)} KB`}
+                  onRemove={() => handleRemoveImageAttachment(att.id)}
                 />
               ))}
               {recordingError && (
@@ -733,8 +799,11 @@ export function UiApp(): JSX.Element {
                       />
                     ))}
                 </div>
-                <footer>
-                  {(attachments.length > 0 || recordingError) && (
+                <footer
+                  onDragOver={(e) => { e.preventDefault(); e.dataTransfer.dropEffect = "copy" }}
+                  onDrop={(e) => { e.preventDefault(); void handleDropFiles(e.dataTransfer.files) }}
+                >
+                  {(attachments.length > 0 || imageAttachments.length > 0 || recordingError) && (
                     <div className="attachments-row">
                       {attachments.map((att) => (
                         <AudioAttachmentCard
@@ -742,6 +811,15 @@ export function UiApp(): JSX.Element {
                           label={formatAttachmentLabel(att)}
                           subLabel={formatAttachmentSubLabel(att)}
                           onRemove={() => handleRemoveAttachment(att.id)}
+                        />
+                      ))}
+                      {imageAttachments.map((att) => (
+                        <AudioAttachmentCard
+                          key={att.id}
+                          icon="🖼"
+                          label={att.label}
+                          subLabel={`${(att.artifact.size / 1024).toFixed(1)} KB`}
+                          onRemove={() => handleRemoveImageAttachment(att.id)}
                         />
                       ))}
                       {recordingError && (
@@ -761,9 +839,9 @@ export function UiApp(): JSX.Element {
                         }
                       }}
                       placeholder={
-                        attachments.length > 0
-                          ? "可补充文字，或直接发送录音…"
-                          : "输入消息..."
+                        attachments.length > 0 || imageAttachments.length > 0
+                          ? "可补充文字，或直接发送…"
+                          : "输入消息，或拖入图片..."
                       }
                     />
                     {voiceEnabled && (

@@ -435,11 +435,16 @@ export class OpenAiCompatibleAdapter implements ModelAdapter {
    * @internal `buildRequestBodyForTest` exposes this path for unit testing.
    */
   private expandUserMessage(message: AgentMessage): string | MultimodalContent[] {
+    const hasAudioAttachments = message.attachments && message.attachments.length > 0
+    const hasImageArtifactRefs = message.extra?.artifactRefs && Array.isArray(message.extra.artifactRefs) && message.extra.artifactRefs.length > 0
+
+    // Only expand when there is actual multimodal content to include
+    const shouldExpandAudio = hasAudioAttachments && this.config.audioInputEnabled
+    const shouldExpandImages = hasImageArtifactRefs && this.config.artifactReader
+
     if (
       message.role !== "user" ||
-      !message.attachments ||
-      message.attachments.length === 0 ||
-      !this.config.audioInputEnabled
+      (!shouldExpandAudio && !shouldExpandImages)
     ) {
       return message.content
     }
@@ -452,35 +457,54 @@ export class OpenAiCompatibleAdapter implements ModelAdapter {
       parts.push({ type: "text", text })
     }
 
-    for (const attachment of message.attachments) {
-      if (attachment.type !== "audio") continue
-      if (!this.config.audioReader) continue
-
-      // Strictly forbid webm — it cannot be sent as wav/mp3 input_audio.
-      if (attachment.mimeType === "audio/webm") {
-        throw new Error(
-          `当前模型发送仅支持 wav/mp3，audio/webm 暂不支持（附件已保存到 artifacts/audio/）。`,
-        )
+    // Handle image artifactRefs from extra (user-uploaded images, screenshots, etc.)
+    if (shouldExpandImages) {
+      const artifactRefs = message.extra!.artifactRefs as ArtifactRef[]
+      for (const ref of artifactRefs) {
+        if (ref.mimeType.startsWith("image/")) {
+          const dataUrl = this.readArtifactAsDataUrl(ref)
+          if (dataUrl) {
+            parts.push({
+              type: "image_url",
+              image_url: { url: dataUrl, detail: "auto" },
+            })
+          }
+        }
       }
+    }
 
-      const bytes = this.config.audioReader.readAudio(attachment.artifact)
-      const base64 = Buffer.from(bytes).toString("base64")
+    // Handle audio attachments
+    if (shouldExpandAudio) {
+      for (const attachment of message.attachments!) {
+        if (attachment.type !== "audio") continue
+        if (!this.config.audioReader) continue
 
-      // Prefer "wav"; only use "mp3" when mime is audio/mpeg.
-      const format: "wav" | "mp3" =
-        attachment.mimeType === "audio/mpeg" ? "mp3" : "wav"
+        // Strictly forbid webm — it cannot be sent as wav/mp3 input_audio.
+        if (attachment.mimeType === "audio/webm") {
+          throw new Error(
+            `当前模型发送仅支持 wav/mp3，audio/webm 暂不支持（附件已保存到 artifacts/audio/）。`,
+          )
+        }
 
-      parts.push({
-        type: "input_audio",
-        input_audio: { data: base64, format },
-      })
+        const bytes = this.config.audioReader.readAudio(attachment.artifact)
+        const base64 = Buffer.from(bytes).toString("base64")
 
-      this.config.onAudioSent?.({
-        attachmentId: attachment.id,
-        format,
-        durationMs: attachment.durationMs,
-        bytes: bytes.byteLength,
-      })
+        // Prefer "wav"; only use "mp3" when mime is audio/mpeg.
+        const format: "wav" | "mp3" =
+          attachment.mimeType === "audio/mpeg" ? "mp3" : "wav"
+
+        parts.push({
+          type: "input_audio",
+          input_audio: { data: base64, format },
+        })
+
+        this.config.onAudioSent?.({
+          attachmentId: attachment.id,
+          format,
+          durationMs: attachment.durationMs,
+          bytes: bytes.byteLength,
+        })
+      }
     }
 
     return parts.length > 0 ? parts : message.content

@@ -4,6 +4,8 @@ import type { AgentEvent } from "@live2d-agent/agent-core"
 import type {
   PublicSettings, AppSettingsPublicPatch, DebugSnapshot,
   IpcSaveAudioRecordingRequest, IpcSaveAudioRecordingResponse,
+  IpcSaveImageRequest, IpcSaveImageResponse,
+  IpcReadArtifactRequest, IpcReadArtifactResponse,
   IpcSendUserMessageRequest, CompactInputAnchor, AvatarHitRegionRect,
   IpcTtsHealthCheckResponse, IpcTtsListVoicesResponse,
   IpcTtsRegisterVoiceRequest, IpcTtsGenerateRequest, IpcTtsGenerateResponse,
@@ -110,6 +112,12 @@ const api = {
     ipcRenderer.invoke(IPC_CHANNELS.AUDIO_SAVE_RECORDING, request),
   openAudioFolder: (): Promise<void> =>
     ipcRenderer.invoke(IPC_CHANNELS.AUDIO_OPEN_FOLDER),
+
+  /* ---- Image (user upload) ---- */
+  saveImage: (request: IpcSaveImageRequest): Promise<IpcSaveImageResponse> =>
+    ipcRenderer.invoke(IPC_CHANNELS.IMAGE_SAVE, request),
+  readArtifact: (request: IpcReadArtifactRequest): Promise<IpcReadArtifactResponse> =>
+    ipcRenderer.invoke(IPC_CHANNELS.ARTIFACT_READ, request),
   updateVoiceDebug: (input: Partial<{
     lastRecordingState: "idle" | "recording" | "finished" | "cancelled" | "error"
     lastAudioArtifact: { id: string; path: string; mimeType: string; size: number; durationMs: number; createdAt: number }

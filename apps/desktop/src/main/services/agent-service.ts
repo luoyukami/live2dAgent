@@ -363,6 +363,7 @@ export class AgentService implements ToolRuntime {
 
     const text = typeof input === "string" ? input : input.text
     const attachments = typeof input === "object" ? input.attachments : undefined
+    const artifactRefs = typeof input === "object" ? input.artifactRefs : undefined
     const conversationId = (typeof input === "object" && input.conversationId) || this.activeConversationId!
 
     if (this.runtimeMode === "http-legacy") {
@@ -374,6 +375,10 @@ export class AgentService implements ToolRuntime {
     // The WS runtime does not emit renderer-facing user messages itself.
     // The legacy AgentSession path does, so keep this emit WS-only to avoid
     // rendering the same user input twice with different generated IDs.
+    const userMessageExtra: Record<string, unknown> = {}
+    if (artifactRefs && artifactRefs.length > 0) {
+      userMessageExtra.artifactRefs = artifactRefs
+    }
     this.emit({
       type: "message.added",
       message: {
@@ -382,13 +387,12 @@ export class AgentService implements ToolRuntime {
         content: text,
         createdAt: Date.now(),
         attachments,
+        ...(Object.keys(userMessageExtra).length > 0 ? { extra: userMessageExtra } : {}),
       },
     })
 
     // Default WS runtime path
     if (!this.assistantRuntime) this.reconfigure()
-
-    const artifactRefs = typeof input === "object" ? input.artifactRefs : undefined
 
     // Pass full text, attachments, and artifactRefs to AssistantRuntime
     await this.assistantRuntime?.sendUserMessage(conversationId, {

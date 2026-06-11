@@ -144,6 +144,11 @@ export type AgentEvent =
   | { type: "recording.started"; maxDurationMs: number; preferredFormat: "wav" | "mp3" }
   | { type: "recording.cancelled"; reason?: string }
   | { type: "recording.finished"; durationMs: number; mimeType: string; size: number }
+  /* ---- Image lifecycle events ---- */
+  | { type: "image.artifact.created"; artifact: import("@live2d-agent/shared").ImageArtifactRef }
+  | { type: "image.attachment.added"; attachment: import("@live2d-agent/shared").ImageContextAttachment }
+  | { type: "image.attachment.removed"; attachmentId: string }
+  | { type: "image.error"; code: string; message: string }
   /* ---- TTS lifecycle events ---- */
   | { type: "tts.generating"; messageId: string }
   | { type: "tts.ready"; messageId: string; audioPath: string; audioUrl?: string }

@@ -78,6 +78,10 @@ export function mapEventToState(event: AgentEvent): AvatarState | null {
     case "audio.attachment.removed":
     case "audio.sent_to_model":
     case "audio.error":
+    case "image.artifact.created":
+    case "image.attachment.added":
+    case "image.attachment.removed":
+    case "image.error":
     case "recording.started":
     case "recording.cancelled":
     case "recording.finished":

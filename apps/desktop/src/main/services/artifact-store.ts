@@ -16,7 +16,7 @@ export class ArtifactStore {
 
   constructor(userDataDir: string) {
     this.baseDir = join(userDataDir, "artifacts")
-    for (const dir of ["screenshots", "tool-output", "file-content", "audio"]) {
+    for (const dir of ["screenshots", "tool-output", "file-content", "audio", "images"]) {
       mkdirSync(join(this.baseDir, dir), { recursive: true })
     }
   }
@@ -73,6 +73,10 @@ export class ArtifactStore {
         return "file-content"
       case "audio":
         return "audio"
+      case "image":
+        return "images"
+      default:
+        return "file-content"
     }
   }
 }
