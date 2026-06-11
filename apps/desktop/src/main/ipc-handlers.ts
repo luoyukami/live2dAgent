@@ -63,6 +63,10 @@ export function registerIpcHandlers(services: IpcServices): void {
     await services.agent.sendUserMessage(textOrInput)
   })
 
+  ipcMain.handle(IPC_CHANNELS.RETRY_LAST_USER_MESSAGE, async () => {
+    await services.agent.retryLastUserMessage()
+  })
+
   ipcMain.handle(IPC_CHANNELS.CLEAR_CONTEXT, async () => {
     services.agent.clearActiveContext()
   })

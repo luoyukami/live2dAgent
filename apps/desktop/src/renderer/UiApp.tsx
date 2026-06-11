@@ -465,6 +465,16 @@ export function UiApp(): JSX.Element {
     await window.petAgent.clearContext()
   }
 
+  async function handleRetryLastUserMessage(): Promise<void> {
+    if (isSending) return
+    setIsSending(true)
+    try {
+      await window.petAgent.retryLastUserMessage()
+    } finally {
+      setIsSending(false)
+    }
+  }
+
   async function saveSettings(): Promise<void> {
     try {
       setSettingsError(null)
@@ -796,6 +806,7 @@ export function UiApp(): JSX.Element {
                         onPlayTts={(id) => ttsManager.playMessageAudio(id)}
                         onStopTts={() => ttsManager.stopPlayback()}
                         onRetryTts={(id) => void ttsManager.retryMessage(id)}
+                        onRetryMessage={() => void handleRetryLastUserMessage()}
                       />
                     ))}
                 </div>

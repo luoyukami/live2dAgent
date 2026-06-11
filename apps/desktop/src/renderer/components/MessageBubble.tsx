@@ -11,6 +11,7 @@ interface MessageBubbleProps {
   onPlayTts?: (messageId: string) => void
   onStopTts?: () => void
   onRetryTts?: (messageId: string) => void
+  onRetryMessage?: () => void
 }
 
 function sanitizeDisplayText(raw: string): string {
@@ -68,11 +69,14 @@ export function MessageBubble({
   onPlayTts,
   onStopTts,
   onRetryTts,
+  onRetryMessage,
 }: MessageBubbleProps): JSX.Element {
   const [expanded, setExpanded] = useState(message.role !== "tool")
   const text = messageContentToText(message)
   const displayText = sanitizeDisplayText(text)
   const isError = Boolean(message.extra?.error) || /^(API error|Network error|Invalid JSON|Model returned|Error executing)/i.test(text)
+  const errorInfo = message.extra?.error as { recoverable?: boolean } | undefined
+  const canRetryMessage = isError && message.role === "assistant" && errorInfo?.recoverable !== false
   const audioAttachments = (message.attachments ?? []).filter((a) => a.type === "audio")
   const artifactRefs = (message.extra?.artifactRefs ?? []) as Array<{ id: string; kind: string; path: string; mimeType: string }>
   const imageDataUrls = useImageDataUrls(artifactRefs)
@@ -94,6 +98,9 @@ export function MessageBubble({
             </button>
           )}
           <button className="ghost-btn" onClick={() => void copy()}>复制</button>
+          {canRetryMessage && onRetryMessage && (
+            <button className="ghost-btn retry-btn" onClick={onRetryMessage}>重发</button>
+          )}
         </div>
       </div>
       {audioAttachments.length > 0 && (

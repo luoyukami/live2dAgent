@@ -114,6 +114,13 @@ export class AgentService implements ToolRuntime {
 
   private scheduledTtsMessageIds = new Set<string>()
 
+  /**
+   * Stores the most recent user message payload for retry support.
+   * When an LLM error occurs, the renderer can call retryLastUserMessage()
+   * to re-send this payload through the normal sendUserMessage path.
+   */
+  private lastUserMessage?: { text: string; attachments?: AudioContextAttachment[]; artifactRefs?: ArtifactRefType[]; conversationId?: string }
+
   constructor(private readonly deps: AgentServiceDeps) {
     this.events.subscribe((event) => this.captureEvent(event))
     this.reconfigure()
@@ -347,6 +354,13 @@ export class AgentService implements ToolRuntime {
   }
 
   async sendUserMessage(input: string | { text: string; attachments?: AudioContextAttachment[]; artifactRefs?: ArtifactRefType[]; conversationId?: string }): Promise<void> {
+    const text = typeof input === "string" ? input : input.text
+    const attachments = typeof input === "object" ? input.attachments : undefined
+    const artifactRefs = typeof input === "object" ? input.artifactRefs : undefined
+    const conversationId = (typeof input === "object" && input.conversationId) || this.activeConversationId!
+
+    this.lastUserMessage = { text, attachments, artifactRefs, conversationId }
+
     if (!this.deps.settings.get().openaiApiKey) {
       this.emit({
         type: "message.added",
@@ -360,11 +374,6 @@ export class AgentService implements ToolRuntime {
       })
       return
     }
-
-    const text = typeof input === "string" ? input : input.text
-    const attachments = typeof input === "object" ? input.attachments : undefined
-    const artifactRefs = typeof input === "object" ? input.artifactRefs : undefined
-    const conversationId = (typeof input === "object" && input.conversationId) || this.activeConversationId!
 
     if (this.runtimeMode === "http-legacy") {
       if (!this.session) this.reconfigure()
@@ -400,6 +409,29 @@ export class AgentService implements ToolRuntime {
       attachments: attachments as any,
       artifactRefs: artifactRefs as any,
     })
+  }
+
+  /**
+   * Retry the most recent user message. Replays the stored payload
+   * (text, attachments, artifactRefs) through the normal sendUserMessage
+   * path. If no previous message exists, emits a visible error.
+   */
+  async retryLastUserMessage(): Promise<void> {
+    if (!this.lastUserMessage) {
+      this.emit({
+        type: "message.added",
+        message: {
+          id: `msg_sys_${Date.now()}`,
+          role: "assistant",
+          content: "没有可重发的消息。",
+          createdAt: Date.now(),
+          extra: { error: { code: "NO_MESSAGE_TO_RETRY", message: "No previous user message to retry", recoverable: false } },
+        },
+      })
+      return
+    }
+    const { text, attachments, artifactRefs, conversationId } = this.lastUserMessage
+    await this.sendUserMessage({ text, attachments, artifactRefs, conversationId })
   }
 
   clearActiveContext(): void {

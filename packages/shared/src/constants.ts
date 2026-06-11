@@ -2,6 +2,8 @@
 export const IPC_CHANNELS = {
   /** User sends a message to the agent */
   SEND_USER_MESSAGE: "agent:send-user-message",
+  /** User retries the last user message after an LLM error */
+  RETRY_LAST_USER_MESSAGE: "agent:retry-last-user-message",
   /** User approves a pending tool action */
   APPROVE_ACTION: "agent:approve-action",
   /** User denies a pending tool action */
