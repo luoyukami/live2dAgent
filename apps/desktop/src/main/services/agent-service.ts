@@ -113,6 +113,14 @@ export class AgentService implements ToolRuntime {
   }
 
   private scheduledTtsMessageIds = new Set<string>()
+  /**
+   * Assistant messages observed on the renderer-facing event bus, keyed by
+   * message id. The legacy HTTP AgentSession keeps its own in-memory history,
+   * while the WS path stores messages in ConversationManager. Manual TTS
+   * regeneration must work for both paths, so keep a small canonical lookup
+   * cache from the same message.added events that render the chat bubbles.
+   */
+  private ttsMessageCache = new Map<string, { rawContent: string; metadata?: AgentMessageMetadata }>()
 
   /**
    * Stores the most recent user message payload for retry support.
@@ -796,28 +804,33 @@ export class AgentService implements ToolRuntime {
       this.emit({ type: "tts.error", messageId, error: "TTS 未启用" })
       return
     }
-    // Look up the original message to get its content and metadata
+    // Look up the original assistant message to get its content and metadata.
+    // Prefer the event-bus cache because legacy HTTP AgentSession messages are
+    // not stored in ConversationManager, but they are the messages whose ids the
+    // renderer passes back when the user clicks “重新生成”.
+    const cached = this.ttsMessageCache.get(messageId)
     const convId = this.activeConversationId ?? ""
     const allMessages = this.conversationManager?.getMessages(convId) ?? []
     const message = allMessages.find((m) => m.id === messageId)
+    const rawContent = cached?.rawContent ?? (message ? normalizeMessageContentToText(message.content) : undefined)
+    const metadata = cached?.metadata ?? (message as any)?.metadata
 
     this.ttsDebug.lastRegenerateLookup = {
       messageId,
-      found: !!message,
+      found: Boolean(rawContent),
       conversationId: convId,
       totalMessages: allMessages.length,
-      error: message ? undefined : `Message ${messageId} not found in conversation ${convId} (${allMessages.length} messages)`,
+      error: rawContent ? undefined : `Message ${messageId} not found in TTS cache or conversation ${convId} (${allMessages.length} messages)`,
     }
 
-    if (!message) {
+    if (!rawContent) {
       this.emit({ type: "tts.error", messageId, error: "找不到原始消息" })
       return
     }
-    const rawContent = normalizeMessageContentToText(message.content)
     await this.generateTtsForMessage({
       messageId,
       rawContent,
-      metadata: (message as any).metadata,
+      metadata,
     })
   }
 
@@ -1098,6 +1111,10 @@ export class AgentService implements ToolRuntime {
       }
     }
     if (event.type === "message.added" && event.message.role === "assistant" && !event.message.extra?.error) {
+      this.ttsMessageCache.set(event.message.id, {
+        rawContent: normalizeMessageContentToText(event.message.content),
+        metadata: event.message.metadata,
+      })
       this.scheduleTtsAutoGenerationForMessage(event.message)
     }
   }
