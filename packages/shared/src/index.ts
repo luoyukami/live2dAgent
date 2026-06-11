@@ -65,6 +65,8 @@ export type {
   IpcApproveActionRequest,
   IpcDenyActionRequest,
   IpcSetAgentModeRequest,
+  IpcTestModelConnectionRequest,
+  IpcTestModelConnectionResponse,
   CompactInputAnchor,
   IpcToolRequest,
   IpcToolResponse,

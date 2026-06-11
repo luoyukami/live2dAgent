@@ -71,6 +71,7 @@ export function createDefaultSettings(userDataDir: string): AppSettings {
     workspaceDir,
     openaiBaseUrl: process.env.OPENAI_BASE_URL ?? localDevSettings.openaiBaseUrl ?? "https://api.openai.com/v1",
     openaiModel: process.env.OPENAI_MODEL ?? localDevSettings.openaiModel ?? "gpt-4o-mini",
+    openaiMultimodalModel: process.env.OPENAI_MULTIMODAL_MODEL ?? localDevSettings.openaiMultimodalModel,
     reasoningEffort: readEnvReasoningEffort() ?? localDevSettings.reasoningEffort ?? "low",
     openaiApiKey: process.env.OPENAI_API_KEY ?? localDevSettings.openaiApiKey,
     live2d: { ...DEFAULT_LIVE2D_SETTINGS },
@@ -88,7 +89,7 @@ export function createDefaultSettings(userDataDir: string): AppSettings {
 /*  Local development config                                           */
 /* ------------------------------------------------------------------ */
 
-type LocalDevSettings = Partial<Pick<AppSettings, "mode" | "openaiBaseUrl" | "openaiModel" | "openaiApiKey" | "reasoningEffort">> & {
+type LocalDevSettings = Partial<Pick<AppSettings, "mode" | "openaiBaseUrl" | "openaiModel" | "openaiMultimodalModel" | "openaiApiKey" | "reasoningEffort">> & {
   permissions?: Partial<PermissionSettings>
 }
 
@@ -168,6 +169,7 @@ function parseLocalDevSettings(yaml: string): LocalDevSettings {
   if (isAgentMode(parsed.mode)) settings.mode = parsed.mode
   if (parsed.openaiBaseUrl) settings.openaiBaseUrl = parsed.openaiBaseUrl
   if (parsed.openaiModel) settings.openaiModel = parsed.openaiModel
+  if (parsed.openaiMultimodalModel) settings.openaiMultimodalModel = parsed.openaiMultimodalModel
   if (isReasoningEffort(parsed.reasoningEffort)) settings.reasoningEffort = parsed.reasoningEffort
   if (parsed.openaiApiKey) settings.openaiApiKey = parsed.openaiApiKey
   if (isPermissionMode(parsed.permissionMode)) settings.permissions = { mode: parsed.permissionMode }
@@ -504,6 +506,7 @@ export class SettingsService {
     if (validated.mode !== undefined) this._settings.mode = validated.mode
     if (validated.openaiBaseUrl !== undefined) this._settings.openaiBaseUrl = validated.openaiBaseUrl
     if (validated.openaiModel !== undefined) this._settings.openaiModel = validated.openaiModel
+    if (validated.openaiMultimodalModel !== undefined) this._settings.openaiMultimodalModel = validated.openaiMultimodalModel || undefined
     if (validated.reasoningEffort !== undefined) this._settings.reasoningEffort = validated.reasoningEffort
     if (validated.live2d !== undefined) {
       // emotionProfile is a full replacement when present in the patch.
@@ -639,6 +642,13 @@ function validatePublicSettingsPatch(patch: unknown): AppSettingsPublicPatch {
       throw new Error("openaiModel must be a non-empty string")
     }
     output.openaiModel = input.openaiModel
+  }
+
+  if (input.openaiMultimodalModel !== undefined) {
+    if (typeof input.openaiMultimodalModel !== "string") {
+      throw new Error("openaiMultimodalModel must be a string")
+    }
+    output.openaiMultimodalModel = input.openaiMultimodalModel.trim()
   }
 
   if (input.reasoningEffort !== undefined) {

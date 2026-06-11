@@ -36,6 +36,7 @@ export const IPC_CHANNELS = {
   SETTINGS_GET: "settings:get",
   SETTINGS_UPDATE_PUBLIC: "settings:update-public",
   SETTINGS_UPDATE_API_KEY: "settings:update-api-key",
+  SETTINGS_TEST_MODEL_CONNECTION: "settings:test-model-connection",
   SETTINGS_UPDATE_WORKSPACE: "settings:update-workspace",
   SETTINGS_UPDATE_LIVE2D_MODEL_PATH: "settings:update-live2d-path",
 

@@ -635,6 +635,9 @@ button:disabled {
 .checkbox-label input[type="checkbox"] { width: auto !important; }
 .checkbox-label input[type="checkbox"]:disabled { opacity: .5; cursor: not-allowed; }
 .settings-hint { font-size: 11px; color: var(--text-muted); line-height: 1.4; }
+.settings-hint.danger { color: var(--danger); }
+.inline-input-row { display: flex; gap: 8px; align-items: center; }
+.inline-input-row input { flex: 1; }
 .settings-static-value { padding: 9px 10px; border: 1px solid var(--border-subtle); border-radius: var(--radius-md); color: var(--text-muted); background: rgba(15, 23, 42, .5); font-size: 13px; }
 
 /* ---- Debug panel ---- */

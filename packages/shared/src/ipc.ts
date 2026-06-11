@@ -98,6 +98,17 @@ export interface IpcSetAgentModeRequest {
   mode: AgentMode
 }
 
+export interface IpcTestModelConnectionRequest {
+  baseUrl: string
+  apiKey?: string
+}
+
+export interface IpcTestModelConnectionResponse {
+  ok: boolean
+  models: string[]
+  error?: string
+}
+
 export interface CompactInputAnchor {
   /** Screen-space X coordinate where the user clicked the avatar. */
   screenX: number

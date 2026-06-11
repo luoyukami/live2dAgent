@@ -70,6 +70,9 @@ export function App(): JSX.Element {
   const [settings, setSettings] = useState<PublicSettings | null>(null)
   const [form, setForm] = useState<SettingsForm>(defaultForm)
   const [settingsError, setSettingsError] = useState<string | null>(null)
+  const [modelOptions, setModelOptions] = useState<string[]>([])
+  const [modelConnectionStatus, setModelConnectionStatus] = useState<"idle" | "checking" | "success" | "error">("idle")
+  const [modelConnectionMessage, setModelConnectionMessage] = useState<string | null>(null)
   const [currentEmotion, setCurrentEmotion] = useState<Emotion | null>(null)
 
   /* ---- v0.2 Debug states ---- */
@@ -206,6 +209,7 @@ export function App(): JSX.Element {
         mode: settings.mode,
         openaiBaseUrl: settings.openaiBaseUrl,
         openaiModel: settings.openaiModel,
+        openaiMultimodalModel: settings.openaiMultimodalModel ?? "",
         reasoningEffort: settings.reasoningEffort ?? "low",
         workspaceDir: settings.workspaceDir,
         live2dModelPath: settings.live2d?.modelPath ?? "",
@@ -512,6 +516,7 @@ export function App(): JSX.Element {
       if (form.mode !== settings?.mode) publicPatch.mode = form.mode
       if (form.openaiBaseUrl !== settings?.openaiBaseUrl) publicPatch.openaiBaseUrl = form.openaiBaseUrl
       if (form.openaiModel !== settings?.openaiModel) publicPatch.openaiModel = form.openaiModel
+      if (form.openaiMultimodalModel !== (settings?.openaiMultimodalModel ?? "")) publicPatch.openaiMultimodalModel = form.openaiMultimodalModel
       if (form.reasoningEffort !== (settings?.reasoningEffort ?? "low")) publicPatch.reasoningEffort = form.reasoningEffort
       if (form.permissionMode !== settings?.permissions?.mode) publicPatch.permissions = { mode: form.permissionMode }
 
@@ -600,6 +605,28 @@ export function App(): JSX.Element {
       setShowDetail(false)
     } catch (err) {
       setSettingsError("保存设置失败：" + (err as Error).message)
+    }
+  }
+
+  async function testModelConnection(): Promise<void> {
+    setModelConnectionStatus("checking")
+    setModelConnectionMessage(null)
+    try {
+      const result = await window.petAgent.testModelConnection({
+        baseUrl: form.openaiBaseUrl,
+        apiKey: form.apiKey.trim() || undefined,
+      })
+      if (!result.ok) {
+        setModelConnectionStatus("error")
+        setModelConnectionMessage(result.error ?? "连接失败")
+        return
+      }
+      setModelOptions(result.models)
+      setModelConnectionStatus("success")
+      setModelConnectionMessage(`已获取 ${result.models.length} 个模型`)
+    } catch (error) {
+      setModelConnectionStatus("error")
+      setModelConnectionMessage(error instanceof Error ? error.message : String(error))
     }
   }
 
@@ -1056,20 +1083,45 @@ export function App(): JSX.Element {
 
                         <div className="settings-group">
                           <label>Base URL</label>
-                          <input
-                            value={form.openaiBaseUrl}
-                            onChange={(e) => setForm((f) => ({ ...f, openaiBaseUrl: e.target.value }))}
-                            placeholder="https://api.openai.com/v1"
-                          />
+                          <div className="inline-input-row">
+                            <input
+                              value={form.openaiBaseUrl}
+                              onChange={(e) => setForm((f) => ({ ...f, openaiBaseUrl: e.target.value }))}
+                              placeholder="https://api.openai.com/v1"
+                            />
+                            <button className="ghost-btn" onClick={() => void testModelConnection()} disabled={modelConnectionStatus === "checking" || !form.openaiBaseUrl.trim()}>
+                              {modelConnectionStatus === "checking" ? "连接中…" : "连接"}
+                            </button>
+                          </div>
+                          {modelConnectionMessage ? <small className={`settings-hint ${modelConnectionStatus === "error" ? "danger" : ""}`}>{modelConnectionMessage}</small> : null}
                         </div>
 
                         <div className="settings-group">
-                          <label>模型</label>
+                          <label>主要模型</label>
                           <input
+                            list="combined-main-model-options"
                             value={form.openaiModel}
                             onChange={(e) => setForm((f) => ({ ...f, openaiModel: e.target.value }))}
-                            placeholder="gpt-4o-mini"
+                            placeholder="推荐选择速度快的模型"
                           />
+                          <datalist id="combined-main-model-options">
+                            {modelOptions.map((model) => <option key={model} value={model} />)}
+                          </datalist>
+                          <small className="settings-hint">普通文字消息会使用主要模型。</small>
+                        </div>
+
+                        <div className="settings-group">
+                          <label>多模态专用模型（可选）</label>
+                          <input
+                            list="combined-multimodal-model-options"
+                            value={form.openaiMultimodalModel}
+                            onChange={(e) => setForm((f) => ({ ...f, openaiMultimodalModel: e.target.value }))}
+                            placeholder="留空则所有消息使用主要模型"
+                          />
+                          <datalist id="combined-multimodal-model-options">
+                            {modelOptions.map((model) => <option key={model} value={model} />)}
+                          </datalist>
+                          <small className="settings-hint">含语音或图片的消息会优先路由到该模型。</small>
                         </div>
 
                         <div className="settings-group">

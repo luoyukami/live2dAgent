@@ -3,7 +3,7 @@ import { spawn } from "node:child_process"
 import { existsSync, mkdirSync, readFileSync, realpathSync, writeFileSync } from "node:fs"
 import { dirname, isAbsolute, resolve, relative } from "node:path"
 import { pathToFileURL } from "node:url"
-import { AgentSession, AssistantRuntime, ContextManager, ConversationManager, DefaultProviderRuntimeRegistry, EventBus, RunController, ToolRegistry, WsSessionManager, composePromptPresetInstructions, composeSystemPrompt, isEmotionPromptInjected, ToolResultLimiter, WS_RUNTIME_CONSTANTS, estimateTokens, sanitizeTextForTts, segmentLongText, extractTtsInstruction, isTtsInstructionInjected, type AgentEvent, type AgentAction, type AgentRuntimeEvent, type ArtifactWriter, type ToolResult, type ToolRuntime, type ToolArtifact, type ConversationStore, type ConversationStoreMessage, type ContextBuilder, type ToolManager, type ToolValidationResult, type CanonicalToolDefinition, type ModelToolCall, type ValidatedToolCall, type CanonicalToolResult, type CanonicalCreateInput, type CanonicalToolContinuationInput, type AssistantRuntimeEvent, type ProviderRuntime, type ModelMessage, type ModelContentPart, type AgentMessageMetadata, type AgentMessage } from "@live2d-agent/agent-core"
+import { AgentSession, AssistantRuntime, ContextManager, ConversationManager, DefaultProviderRuntimeRegistry, EventBus, RunController, ToolRegistry, WsSessionManager, composePromptPresetInstructions, composeSystemPrompt, isEmotionPromptInjected, ToolResultLimiter, WS_RUNTIME_CONSTANTS, estimateTokens, sanitizeTextForTts, segmentLongText, extractTtsInstruction, isTtsInstructionInjected, type AgentEvent, type AgentAction, type AgentRuntimeEvent, type ArtifactWriter, type ToolResult, type ToolRuntime, type ToolArtifact, type ConversationStore, type ConversationStoreMessage, type ContextBuilder, type ToolManager, type ToolValidationResult, type CanonicalToolDefinition, type ModelToolCall, type ValidatedToolCall, type CanonicalToolResult, type CanonicalCreateInput, type CanonicalToolContinuationInput, type AssistantRuntimeEvent, type ProviderRuntime, type ModelMessage, type ModelContentPart, type AgentMessageMetadata, type AgentMessage, type ModelAdapter } from "@live2d-agent/agent-core"
 import { OpenAiCompatibleAdapter, OpenAiCompatibleWsClient, MimoWsRuntime } from "@live2d-agent/model-openai-compatible"
 import { createDefaultTools, type RuntimeToolContext } from "@live2d-agent/tools"
 import type { ArtifactRef, AudioArtifactRef, AudioContextAttachment, DebugEmotionInfo, Emotion, MessageAudioState } from "@live2d-agent/shared"
@@ -184,10 +184,10 @@ export class AgentService implements ToolRuntime {
     registry: ToolRegistry,
     definitions: import("@live2d-agent/agent-core").ToolDefinition[],
   ): void {
-    const model = new OpenAiCompatibleAdapter({
+    const createAdapter = (modelName: string) => new OpenAiCompatibleAdapter({
       baseUrl: settings.openaiBaseUrl.replace(/\/$/, ""),
       apiKey: settings.openaiApiKey ?? "",
-      model: settings.openaiModel,
+      model: modelName,
       reasoningEffort: settings.reasoningEffort,
       systemPromptProvider: () => this.composeActiveSystemPrompt(),
       onModelRequest: (request) => { this.lastModelRequest = request },
@@ -210,6 +210,11 @@ export class AgentService implements ToolRuntime {
         this.voiceDebug.lastSentFormat = info.format
       },
     })
+    const primaryModel = createAdapter(settings.openaiModel)
+    const multimodalModelName = settings.openaiMultimodalModel?.trim()
+    const model = multimodalModelName
+      ? new RoutingModelAdapter(primaryModel, createAdapter(multimodalModelName))
+      : primaryModel
 
     this.wsSessionManager = new WsSessionManager(() => new OpenAiCompatibleWsClient({
       baseUrl: settings.openaiBaseUrl.replace(/\/$/, ""),
@@ -323,7 +328,7 @@ export class AgentService implements ToolRuntime {
 
     // Create adapters
     const store = new ConversationStoreAdapter(this.conversationManager!)
-    const contextBuilder = new ContextBuilderAdapter(systemPrompt, settings.openaiModel, this.deps.artifacts)
+    const contextBuilder = new ContextBuilderAdapter(systemPrompt, settings.openaiModel, this.deps.artifacts, settings.openaiMultimodalModel)
     const toolManager = new ToolManagerAdapter(registry, this, this.deps.permissions)
 
     // Create AssistantRuntime
@@ -1325,6 +1330,34 @@ class ConversationStoreAdapter implements ConversationStore {
   }
 }
 
+function hasImageOrAudioInput(message: Pick<AgentMessage, "attachments" | "extra"> | Pick<ConversationStoreMessage, "attachments" | "extra">): boolean {
+  const attachments = message.attachments
+  if (attachments?.some((attachment) => attachment.type === "audio" || attachment.type === "image")) return true
+
+  const artifactRefs = message.extra?.artifactRefs
+  return Array.isArray(artifactRefs) && artifactRefs.some((ref) => {
+    const mimeType = typeof ref?.mimeType === "string" ? ref.mimeType : ""
+    return mimeType.startsWith("image/") || mimeType.startsWith("audio/")
+  })
+}
+
+class RoutingModelAdapter implements ModelAdapter {
+  constructor(
+    private readonly primary: ModelAdapter,
+    private readonly multimodal: ModelAdapter,
+  ) {}
+
+  query(input: { messages: AgentMessage[]; tools: import("@live2d-agent/agent-core").ToolDefinition[] }): Promise<AgentMessage> {
+    const latestUserMessage = [...input.messages].reverse().find((message) => message.role === "user")
+    const adapter = latestUserMessage && hasImageOrAudioInput(latestUserMessage) ? this.multimodal : this.primary
+    return adapter.query(input)
+  }
+
+  formatObservations(results: ToolResult[]): AgentMessage[] {
+    return this.primary.formatObservations(results)
+  }
+}
+
 /**
  * ContextBuilder that wraps system prompt + messages into canonical model input
  * with budget enforcement, message limiting, and artifact size tracking.
@@ -1368,11 +1401,13 @@ class ContextBuilderAdapter implements ContextBuilder {
    */
   private static readonly MAX_ARTIFACT_RAW_BYTES =
     WS_RUNTIME_CONSTANTS.MAX_RAW_ARTIFACT_BYTES_PER_REQUEST
+  private readonly runModels = new Map<string, string>()
 
   constructor(
     private readonly systemPrompt: string,
     private readonly model: string,
     private readonly artifactStore: ArtifactStore,
+    private readonly multimodalModel?: string,
   ) {}
 
   buildCreateInput(params: {
@@ -1387,10 +1422,13 @@ class ContextBuilderAdapter implements ContextBuilder {
   }): CanonicalCreateInput {
     const modelMessages = this._buildModelMessages(params)
 
+    const selectedModel = this.selectModelForCreate(params.messages, params.currentUserMessageId)
+    this.runModels.set(params.runId, selectedModel)
+
     return {
       conversationId: params.conversationId,
       runId: params.runId,
-      model: this.model,
+      model: selectedModel,
       remoteResponseId: params.remoteResponseId ?? null,
       messages: modelMessages,
       tools: params.tools,
@@ -1398,6 +1436,15 @@ class ContextBuilderAdapter implements ContextBuilder {
       parallelToolCalls: false,
       maxOutputTokens: 8000,
     }
+  }
+
+  private selectModelForCreate(messages: ConversationStoreMessage[], currentUserMessageId?: string): string {
+    const multimodalModel = this.multimodalModel?.trim()
+    if (!multimodalModel) return this.model
+    const current = currentUserMessageId
+      ? messages.find((message) => message.id === currentUserMessageId)
+      : messages[messages.length - 1]
+    return current && hasImageOrAudioInput(current) ? multimodalModel : this.model
   }
 
   /**
@@ -1729,7 +1776,7 @@ class ContextBuilderAdapter implements ContextBuilder {
     return {
       conversationId: params.conversationId,
       runId: params.runId,
-      model: this.model,
+      model: this.runModels.get(params.runId) ?? this.model,
       previousResponseId: params.previousResponseId,
       toolResult: params.toolResult,
       tools: params.tools,

@@ -19,6 +19,7 @@ export interface SettingsForm {
   mode: PublicSettings["mode"]
   openaiBaseUrl: string
   openaiModel: string
+  openaiMultimodalModel: string
   reasoningEffort: ReasoningEffort
   apiKey: string
   workspaceDir: string
@@ -113,6 +114,7 @@ export function defaultForm(): SettingsForm {
     mode: "confirm",
     openaiBaseUrl: "",
     openaiModel: "",
+    openaiMultimodalModel: "",
     reasoningEffort: "low",
     apiKey: "",
     workspaceDir: "",

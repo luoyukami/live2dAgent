@@ -3,6 +3,7 @@ import { IPC_CHANNELS } from "@live2d-agent/shared"
 import type { AgentEvent } from "@live2d-agent/agent-core"
 import type {
   PublicSettings, AppSettingsPublicPatch, DebugSnapshot,
+  IpcTestModelConnectionRequest, IpcTestModelConnectionResponse,
   IpcSaveAudioRecordingRequest, IpcSaveAudioRecordingResponse,
   IpcSaveImageRequest, IpcSaveImageResponse,
   IpcReadArtifactRequest, IpcReadArtifactResponse,
@@ -30,6 +31,8 @@ const api = {
     ipcRenderer.invoke(IPC_CHANNELS.SETTINGS_UPDATE_PUBLIC, patch),
   updateApiKey: (apiKey: string): Promise<void> =>
     ipcRenderer.invoke(IPC_CHANNELS.SETTINGS_UPDATE_API_KEY, apiKey),
+  testModelConnection: (input: IpcTestModelConnectionRequest): Promise<IpcTestModelConnectionResponse> =>
+    ipcRenderer.invoke(IPC_CHANNELS.SETTINGS_TEST_MODEL_CONNECTION, input),
   updateWorkspaceDir: (path: string): Promise<void> =>
     ipcRenderer.invoke(IPC_CHANNELS.SETTINGS_UPDATE_WORKSPACE, path),
   updateLive2DModelPath: (modelPath: string): Promise<void> =>

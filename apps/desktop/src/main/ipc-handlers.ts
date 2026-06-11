@@ -1,5 +1,5 @@
 import { ipcMain, shell, dialog } from "electron"
-import { IPC_CHANNELS, type AudioContextAttachment, type AudioMimeType, type AudioArtifactRef, type ImageContextAttachment, type CompactInputAnchor, type DebugSnapshot, type AvatarHitRegionRect, type IpcTtsGenerateRequest, type IpcTtsRegisterVoiceRequest, type LocalTtsSettings } from "@live2d-agent/shared"
+import { IPC_CHANNELS, type AudioContextAttachment, type AudioMimeType, type AudioArtifactRef, type ImageContextAttachment, type CompactInputAnchor, type DebugSnapshot, type AvatarHitRegionRect, type IpcTestModelConnectionRequest, type IpcTestModelConnectionResponse, type IpcTtsGenerateRequest, type IpcTtsRegisterVoiceRequest, type LocalTtsSettings } from "@live2d-agent/shared"
 import type { AgentEvent } from "@live2d-agent/agent-core"
 import type { AgentService } from "./services/agent-service.js"
 import type { ArtifactStore } from "./services/artifact-store.js"
@@ -19,6 +19,37 @@ export interface IpcServices {
   prompts: PromptService
   window: WindowManager
   tts: TtsService
+}
+
+function buildModelsUrl(baseUrl: string): string {
+  const trimmed = baseUrl.trim().replace(/\/+$/, "")
+  if (!trimmed) throw new Error("Base URL 不能为空")
+  return `${trimmed}/models`
+}
+
+async function testModelConnection(input: IpcTestModelConnectionRequest): Promise<IpcTestModelConnectionResponse> {
+  try {
+    const url = buildModelsUrl(input.baseUrl)
+    const headers: Record<string, string> = { Accept: "application/json" }
+    if (input.apiKey?.trim()) headers.Authorization = `Bearer ${input.apiKey.trim()}`
+
+    const response = await fetch(url, { method: "GET", headers })
+    if (!response.ok) {
+      return { ok: false, models: [], error: `连接失败：HTTP ${response.status}` }
+    }
+    const body = await response.json() as unknown
+    const data = body && typeof body === "object" ? (body as Record<string, unknown>).data : undefined
+    if (!Array.isArray(data)) {
+      return { ok: false, models: [], error: "响应中没有模型列表 data[]" }
+    }
+    const models = Array.from(new Set(data
+      .map((item) => item && typeof item === "object" ? (item as Record<string, unknown>).id : undefined)
+      .filter((id): id is string => typeof id === "string" && id.trim().length > 0)
+      .map((id) => id.trim())))
+    return { ok: models.length > 0, models, error: models.length > 0 ? undefined : "模型列表为空" }
+  } catch (error) {
+    return { ok: false, models: [], error: error instanceof Error ? error.message : String(error) }
+  }
 }
 
 /**
@@ -155,6 +186,13 @@ export function registerIpcHandlers(services: IpcServices): void {
     const publicSettings = services.settings.getPublicSettings()
     services.trace.append({ type: "settings.updated", settings: publicSettings })
     services.window.broadcastSettings(publicSettings)
+  })
+
+  ipcMain.handle(IPC_CHANNELS.SETTINGS_TEST_MODEL_CONNECTION, async (_event, input: IpcTestModelConnectionRequest): Promise<IpcTestModelConnectionResponse> => {
+    return testModelConnection({
+      ...input,
+      apiKey: input.apiKey?.trim() || services.settings.get().openaiApiKey,
+    })
   })
 
   /** Update workspace directory (creates if missing) */

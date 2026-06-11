@@ -234,7 +234,10 @@ export interface AppSettings {
   mode: AgentMode
   workspaceDir: string
   openaiBaseUrl: string
+  /** Primary text/chat model. Prefer a fast, low-latency model. */
   openaiModel: string
+  /** Optional dedicated multimodal model for messages containing image/audio input. */
+  openaiMultimodalModel?: string
   reasoningEffort: ReasoningEffort
   openaiApiKey?: string
   live2d: Live2DSettings
@@ -346,6 +349,7 @@ export interface AppSettingsPublicPatch {
   mode?: AgentMode
   openaiBaseUrl?: string
   openaiModel?: string
+  openaiMultimodalModel?: string
   reasoningEffort?: ReasoningEffort
   live2d?: Live2DSettingsPatch
   ui?: UiSettingsPatch
