@@ -3,7 +3,7 @@ import { spawn } from "node:child_process"
 import { existsSync, mkdirSync, readFileSync, realpathSync, writeFileSync } from "node:fs"
 import { dirname, isAbsolute, resolve, relative } from "node:path"
 import { pathToFileURL } from "node:url"
-import { AgentSession, AssistantRuntime, ContextManager, ConversationManager, DefaultProviderRuntimeRegistry, EventBus, RunController, ToolRegistry, WsSessionManager, composePromptPresetInstructions, composeSystemPrompt, isEmotionPromptInjected, ToolResultLimiter, WS_RUNTIME_CONSTANTS, estimateTokens, sanitizeTextForTts, extractTtsInstruction, isTtsInstructionInjected, type AgentEvent, type AgentAction, type AgentRuntimeEvent, type ArtifactWriter, type ToolResult, type ToolRuntime, type ToolArtifact, type ConversationStore, type ConversationStoreMessage, type ContextBuilder, type ToolManager, type ToolValidationResult, type CanonicalToolDefinition, type ModelToolCall, type ValidatedToolCall, type CanonicalToolResult, type CanonicalCreateInput, type CanonicalToolContinuationInput, type AssistantRuntimeEvent, type ProviderRuntime, type ModelMessage, type ModelContentPart, type AgentMessageMetadata, type AgentMessage } from "@live2d-agent/agent-core"
+import { AgentSession, AssistantRuntime, ContextManager, ConversationManager, DefaultProviderRuntimeRegistry, EventBus, RunController, ToolRegistry, WsSessionManager, composePromptPresetInstructions, composeSystemPrompt, isEmotionPromptInjected, ToolResultLimiter, WS_RUNTIME_CONSTANTS, estimateTokens, sanitizeTextForTts, segmentLongText, extractTtsInstruction, isTtsInstructionInjected, type AgentEvent, type AgentAction, type AgentRuntimeEvent, type ArtifactWriter, type ToolResult, type ToolRuntime, type ToolArtifact, type ConversationStore, type ConversationStoreMessage, type ContextBuilder, type ToolManager, type ToolValidationResult, type CanonicalToolDefinition, type ModelToolCall, type ValidatedToolCall, type CanonicalToolResult, type CanonicalCreateInput, type CanonicalToolContinuationInput, type AssistantRuntimeEvent, type ProviderRuntime, type ModelMessage, type ModelContentPart, type AgentMessageMetadata, type AgentMessage } from "@live2d-agent/agent-core"
 import { OpenAiCompatibleAdapter, OpenAiCompatibleWsClient, MimoWsRuntime } from "@live2d-agent/model-openai-compatible"
 import { createDefaultTools, type RuntimeToolContext } from "@live2d-agent/tools"
 import type { ArtifactRef, AudioArtifactRef, AudioContextAttachment, DebugEmotionInfo, Emotion, MessageAudioState } from "@live2d-agent/shared"
@@ -631,9 +631,9 @@ export class AgentService implements ToolRuntime {
     const rawContent = normalizeMessageContentToText(message.content)
     if (!rawContent.trim()) return
 
-    // 自动TTS字数限制：清理后的纯文本超过100字时不自动生成，保留手动生成能力
+    // 清理后的文本会在生成请求中按 20-40 字智能分段，不再因长文本跳过自动生成。
     const cleanedText = sanitizeTextForTts(rawContent)
-    if (cleanedText.length > 100) return
+    if (!cleanedText) return
 
     this.scheduledTtsMessageIds.add(message.id)
 
@@ -655,7 +655,7 @@ export class AgentService implements ToolRuntime {
     messageId: string,
     rawContent: string,
     metadata?: AgentMessageMetadata,
-  ): { messageId: string; text: string; voiceId: string; mode: "standard" | "emotion_enhanced"; emotionControlMode: "default_mapping" | "llm_controlled"; instruction?: string; speed: number; seed: number } | null {
+  ): { messageId: string; text: string; textSegments?: string[]; voiceId: string; mode: "standard" | "emotion_enhanced"; emotionControlMode: "default_mapping" | "llm_controlled"; instruction?: string; speed: number; seed: number } | null {
     const settings = this.deps.settings.get()
 
     if (!settings.tts.enabled) {
@@ -694,9 +694,12 @@ export class AgentService implements ToolRuntime {
       }
     }
 
+    const textSegments = segmentLongText(cleanedText, 40, 30)
+
     return {
       messageId,
       text: cleanedText,
+      textSegments: textSegments.length > 1 ? textSegments : undefined,
       voiceId: settings.tts.selectedVoiceId,
       mode: settings.tts.ttsMode,
       emotionControlMode: settings.tts.emotionControlMode,
@@ -739,7 +742,13 @@ export class AgentService implements ToolRuntime {
     try {
       this.emit({ type: "tts.generating", messageId })
 
-      const result = await this.deps.tts.generate(req)
+      const isSegmented = (req.textSegments?.length ?? 0) > 1
+      const result = await this.deps.tts.generate(req, isSegmented ? {
+        onSegmentReady: ({ audioPath }) => {
+          const audioUrl = pathToFileURL(audioPath).href
+          this.emit({ type: "tts.ready", messageId, audioPath, audioUrl })
+        },
+      } : undefined)
 
       this.ttsDebug.lastResponseDetails = {
         ok: result.ok,
@@ -751,8 +760,10 @@ export class AgentService implements ToolRuntime {
       if (result.ok && result.audioPath) {
         this.ttsDebug.lastAutoGenerateSuccess = true
         this.ttsDebug.lastAutoGenerateError = undefined
-        const audioUrl = pathToFileURL(result.audioPath).href
-        this.emit({ type: "tts.ready", messageId, audioPath: result.audioPath, audioUrl })
+        if (!isSegmented) {
+          const audioUrl = pathToFileURL(result.audioPath).href
+          this.emit({ type: "tts.ready", messageId, audioPath: result.audioPath, audioUrl })
+        }
       } else {
         this.ttsDebug.lastAutoGenerateSuccess = false
         this.ttsDebug.lastAutoGenerateError = result.error ?? "TTS generation failed"

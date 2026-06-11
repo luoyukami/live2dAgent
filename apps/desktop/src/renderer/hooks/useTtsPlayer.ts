@@ -14,12 +14,17 @@ export interface TtsPlayerControls {
 export function useTtsPlayer(): TtsPlayerState & TtsPlayerControls {
   const audioRef = useRef<HTMLAudioElement | null>(null)
   const blobUrlRef = useRef<string | null>(null)
+  const pendingPlaybackEndRef = useRef<(() => void) | null>(null)
   const [state, setState] = useState<TtsPlayerState>({
     playingMessageId: null,
     isPlaying: false,
   })
 
   const cleanup = useCallback(() => {
+    if (pendingPlaybackEndRef.current) {
+      pendingPlaybackEndRef.current()
+      pendingPlaybackEndRef.current = null
+    }
     const audio = audioRef.current
     if (audio) {
       audio.pause()
@@ -44,28 +49,34 @@ export function useTtsPlayer(): TtsPlayerState & TtsPlayerControls {
     }
 
     audio.src = audioUrl
-    audio.onended = () => {
-      setState({ playingMessageId: null, isPlaying: false })
-      audioRef.current = null
-      if (blobUrlRef.current) {
-        URL.revokeObjectURL(blobUrlRef.current)
-        blobUrlRef.current = null
-      }
-    }
-    audio.onerror = (e) => {
-      const err = new Error(`Audio playback failed: ${audio.error?.message || "unknown error"}`)
-      setState({ playingMessageId: null, isPlaying: false })
-      audioRef.current = null
-      if (blobUrlRef.current) {
-        URL.revokeObjectURL(blobUrlRef.current)
-        blobUrlRef.current = null
-      }
-      onError?.(messageId, err)
-    }
-
     setState({ playingMessageId: messageId, isPlaying: true })
     try {
       await audio.play()
+      await new Promise<void>((resolve, reject) => {
+        pendingPlaybackEndRef.current = resolve
+        audio.onended = () => {
+          setState({ playingMessageId: null, isPlaying: false })
+          audioRef.current = null
+          pendingPlaybackEndRef.current = null
+          if (blobUrlRef.current) {
+            URL.revokeObjectURL(blobUrlRef.current)
+            blobUrlRef.current = null
+          }
+          resolve()
+        }
+        audio.onerror = () => {
+          const err = new Error(`Audio playback failed: ${audio.error?.message || "unknown error"}`)
+          setState({ playingMessageId: null, isPlaying: false })
+          audioRef.current = null
+          pendingPlaybackEndRef.current = null
+          if (blobUrlRef.current) {
+            URL.revokeObjectURL(blobUrlRef.current)
+            blobUrlRef.current = null
+          }
+          onError?.(messageId, err)
+          reject(err)
+        }
+      })
     } catch (err) {
       const error = err instanceof Error ? err : new Error(String(err))
       setState({ playingMessageId: null, isPlaying: false })

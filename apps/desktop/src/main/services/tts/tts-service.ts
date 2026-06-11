@@ -18,6 +18,10 @@ import type { SettingsService } from "../settings-service.js"
 /*  TtsService                                                         */
 /* ------------------------------------------------------------------ */
 
+export interface TtsGenerateOptions {
+  onSegmentReady?: (segment: { audioPath: string; index: number; total: number }) => void
+}
+
 export class TtsService {
   private client: LocalTtsClient
   private currentApiBaseUrl: string
@@ -26,6 +30,7 @@ export class TtsService {
   /** Queue to ensure only 1 TTS generation runs at a time. */
   private generateQueue: Array<{
     req: IpcTtsGenerateRequest
+    options?: TtsGenerateOptions
     resolve: (value: IpcTtsGenerateResponse) => void
     reject: (reason: unknown) => void
   }> = []
@@ -130,9 +135,9 @@ export class TtsService {
 
   /* ---- TTS generation ---- */
 
-  async generate(req: IpcTtsGenerateRequest): Promise<IpcTtsGenerateResponse> {
+  async generate(req: IpcTtsGenerateRequest, options?: TtsGenerateOptions): Promise<IpcTtsGenerateResponse> {
     return new Promise((resolve, reject) => {
-      this.generateQueue.push({ req, resolve, reject })
+      this.generateQueue.push({ req, options, resolve, reject })
       this.processGenerateQueue()
     })
   }
@@ -141,11 +146,11 @@ export class TtsService {
     if (this.isGenerating || this.generateQueue.length === 0) return
     this.isGenerating = true
 
-    const { req, resolve, reject } = this.generateQueue.shift()!
+    const { req, options, resolve, reject } = this.generateQueue.shift()!
 
     try {
       this.activeController = new AbortController()
-      const result = await this.doGenerate(req)
+      const result = await this.doGenerate(req, options)
       resolve(result)
     } catch (err) {
       reject(err)
@@ -157,7 +162,7 @@ export class TtsService {
     }
   }
 
-  private async doGenerate(req: IpcTtsGenerateRequest): Promise<IpcTtsGenerateResponse> {
+  private async doGenerate(req: IpcTtsGenerateRequest, options?: TtsGenerateOptions): Promise<IpcTtsGenerateResponse> {
     try {
       this.reconcileClient()
       const ttsSettings = this.settings.get().tts
@@ -167,36 +172,62 @@ export class TtsService {
 
       const signal = this.activeController?.signal
 
-      let audioBuffer: ArrayBuffer
-      if (useInstruct) {
-        audioBuffer = await this.client.generateInstruct(
-          {
-            text: req.text,
-            voiceId: req.voiceId,
-            instruction: req.instruction!,
-            speed: req.speed ?? ttsSettings.speed,
-            seed: req.seed ?? ttsSettings.seed,
-          },
-          signal,
-        )
-      } else {
-        audioBuffer = await this.client.generateZeroShot(
-          {
-            text: req.text,
-            voiceId: req.voiceId,
-            speed: req.speed ?? ttsSettings.speed,
-            seed: req.seed ?? ttsSettings.seed,
-          },
-          signal,
-        )
+      const textSegments = req.textSegments?.map((text) => text.trim()).filter(Boolean)
+      const texts = textSegments && textSegments.length > 0 ? textSegments : [req.text]
+      const audioBuffers: ArrayBuffer[] = []
+      const audioPaths: string[] = []
+
+      for (let index = 0; index < texts.length; index += 1) {
+        const text = texts[index]!
+        const segmentModeSuffix = texts.length > 1 ? `-segment-${index + 1}-of-${texts.length}` : ""
+        if (useInstruct) {
+          audioBuffers.push(await this.client.generateInstruct(
+            {
+              text,
+              voiceId: req.voiceId,
+              instruction: req.instruction!,
+              speed: req.speed ?? ttsSettings.speed,
+              seed: req.seed ?? ttsSettings.seed,
+            },
+            signal,
+          ))
+        } else {
+          audioBuffers.push(await this.client.generateZeroShot(
+            {
+              text,
+              voiceId: req.voiceId,
+              speed: req.speed ?? ttsSettings.speed,
+              seed: req.seed ?? ttsSettings.seed,
+            },
+            signal,
+          ))
+        }
+
+        if (options?.onSegmentReady) {
+          const latestBuffer = audioBuffers[audioBuffers.length - 1]!
+          const audioPath = this.saveAudioFile(
+            latestBuffer,
+            req.messageId,
+            req.voiceId,
+            `${useInstruct ? "instruct" : "zero-shot"}${segmentModeSuffix}`,
+          )
+          audioPaths.push(audioPath)
+          options.onSegmentReady({ audioPath, index, total: texts.length })
+        }
       }
+
+      if (options?.onSegmentReady && audioPaths.length > 0) {
+        return { ok: true, audioPath: audioPaths[audioPaths.length - 1] }
+      }
+
+      const audioBuffer = audioBuffers.length === 1 ? audioBuffers[0]! : mergeWavBuffers(audioBuffers)
 
       // Save the audio buffer to disk
       const audioPath = this.saveAudioFile(
         audioBuffer,
         req.messageId,
         req.voiceId,
-        useInstruct ? "instruct" : "zero-shot",
+        `${useInstruct ? "instruct" : "zero-shot"}${audioBuffers.length > 1 ? "-segmented" : ""}`,
       )
 
       return { ok: true, audioPath }
@@ -328,4 +359,68 @@ function friendlyError(err: unknown): string {
     return err.message
   }
   return String(err)
+}
+
+interface WavDataChunk {
+  dataStart: number
+  dataSize: number
+  dataSizeOffset: number
+  formatKey: string
+}
+
+/**
+ * Concatenate same-format WAV files by joining their PCM data chunks.
+ * The local TTS API returns WAV audio, so this lets segmented requests play as
+ * one compact continuous audio file in the renderer.
+ */
+function mergeWavBuffers(buffers: ArrayBuffer[]): ArrayBuffer {
+  if (buffers.length === 0) return new ArrayBuffer(0)
+
+  const wavBuffers = buffers.map((buffer) => Buffer.from(buffer))
+  const parsed = wavBuffers.map(parseWavDataChunk)
+  const firstFormat = parsed[0]!.formatKey
+  if (!parsed.every((chunk) => chunk.formatKey === firstFormat)) {
+    throw new Error("TTS segmented audio formats do not match")
+  }
+
+  const first = wavBuffers[0]!
+  const firstChunk = parsed[0]!
+  const header = Buffer.from(first.subarray(0, firstChunk.dataStart))
+  const dataParts = wavBuffers.map((buffer, index) => {
+    const chunk = parsed[index]!
+    return buffer.subarray(chunk.dataStart, chunk.dataStart + chunk.dataSize)
+  })
+  const dataSize = dataParts.reduce((sum, part) => sum + part.length, 0)
+  const merged = Buffer.concat([header, ...dataParts], header.length + dataSize)
+
+  merged.writeUInt32LE(merged.length - 8, 4)
+  merged.writeUInt32LE(dataSize, firstChunk.dataSizeOffset)
+
+  return merged.buffer.slice(merged.byteOffset, merged.byteOffset + merged.byteLength)
+}
+
+function parseWavDataChunk(buffer: Buffer): WavDataChunk {
+  if (buffer.length < 44 || buffer.toString("ascii", 0, 4) !== "RIFF" || buffer.toString("ascii", 8, 12) !== "WAVE") {
+    throw new Error("TTS segmented audio is not a WAV file")
+  }
+
+  let offset = 12
+  let fmtKey: string | undefined
+  while (offset + 8 <= buffer.length) {
+    const id = buffer.toString("ascii", offset, offset + 4)
+    const size = buffer.readUInt32LE(offset + 4)
+    const dataStart = offset + 8
+    if (dataStart + size > buffer.length) break
+
+    if (id === "fmt ") {
+      fmtKey = buffer.subarray(dataStart, dataStart + size).toString("hex")
+    } else if (id === "data") {
+      if (!fmtKey) throw new Error("TTS segmented WAV has no fmt chunk")
+      return { dataStart, dataSize: size, dataSizeOffset: offset + 4, formatKey: fmtKey }
+    }
+
+    offset = dataStart + size + (size % 2)
+  }
+
+  throw new Error("TTS segmented WAV has no data chunk")
 }

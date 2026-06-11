@@ -171,5 +171,5 @@ export { DoomLoopDetector, buildDoomLoopErrorOutput } from "./tools/doom-loop-de
 export type { DoomLoopResult } from "./tools/doom-loop-detector.js"
 
 /* ---- TTS Integration (Phase 3) ---- */
-export { sanitizeTextForTts, extractTtsInstruction } from "./tts-text-sanitizer.js"
+export { sanitizeTextForTts, extractTtsInstruction, removeEmojiAndKaomoji, segmentLongText } from "./tts-text-sanitizer.js"
 export { getTtsInstructionPrompt, isTtsInstructionInjected, TTS_INSTRUCTION_MARKER } from "./tts-instruction-prompt.js"

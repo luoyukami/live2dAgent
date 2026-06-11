@@ -167,6 +167,8 @@ export interface IpcTtsRegisterVoiceRequest {
 export interface IpcTtsGenerateRequest {
   messageId: string
   text: string
+  /** Optional pre-segmented text chunks. When present, the TTS service generates them in order and merges the audio. */
+  textSegments?: string[]
   voiceId: string
   mode: "standard" | "emotion_enhanced"
   emotionControlMode?: "default_mapping" | "llm_controlled"

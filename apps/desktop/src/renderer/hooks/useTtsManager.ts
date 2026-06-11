@@ -33,6 +33,10 @@ export function useTtsManager(): TtsManagerState & TtsManagerControls {
   const [messageAudioStates, setMessageAudioStates] = useState<Map<string, MessageAudioState>>(new Map())
   const player = useTtsPlayer()
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null)
+  const generatedAudioPathsRef = useRef<Map<string, string[]>>(new Map())
+  const playbackQueuesRef = useRef<Map<string, string[]>>(new Map())
+  const activePlaybackQueuesRef = useRef<Map<string, number>>(new Map())
+  const playbackRunSeqRef = useRef(0)
 
   /* ---- Load settings on mount ---- */
   useEffect(() => {
@@ -172,6 +176,17 @@ export function useTtsManager(): TtsManagerState & TtsManagerControls {
       const blob = new Blob([buffer], { type: "audio/wav" })
       const url = URL.createObjectURL(blob)
 
+      setMessageAudioStates((prev) => {
+        const next = new Map(prev)
+        next.set(messageId, {
+          ...prev.get(messageId),
+          currentAudioPath: audioPath,
+          status: "playing",
+          updatedAt: Date.now(),
+        })
+        return next
+      })
+
       await player.play(url, messageId, (mid, err) => {
         setMessageAudioStates((prev) => {
           const next = new Map(prev)
@@ -185,16 +200,6 @@ export function useTtsManager(): TtsManagerState & TtsManagerControls {
         })
       })
 
-      setMessageAudioStates((prev) => {
-        const next = new Map(prev)
-        next.set(messageId, {
-          ...prev.get(messageId),
-          currentAudioPath: audioPath,
-          status: "playing",
-          updatedAt: Date.now(),
-        })
-        return next
-      })
     } catch (err) {
       setMessageAudioStates((prev) => {
         const next = new Map(prev)
@@ -209,15 +214,52 @@ export function useTtsManager(): TtsManagerState & TtsManagerControls {
     }
   }, [player])
 
+  const enqueueAudioPlayback = useCallback((messageId: string, audioPath: string) => {
+    const queue = playbackQueuesRef.current.get(messageId) ?? []
+    queue.push(audioPath)
+    playbackQueuesRef.current.set(messageId, queue)
+
+    if (activePlaybackQueuesRef.current.has(messageId)) return
+
+    const runId = playbackRunSeqRef.current + 1
+    playbackRunSeqRef.current = runId
+    activePlaybackQueuesRef.current.set(messageId, runId)
+    void (async () => {
+      try {
+        while (true) {
+          const currentQueue = playbackQueuesRef.current.get(messageId)
+          const nextAudioPath = currentQueue?.shift()
+          if (!nextAudioPath) break
+          await playAudioPath(messageId, nextAudioPath)
+        }
+      } finally {
+        if (activePlaybackQueuesRef.current.get(messageId) === runId) {
+          activePlaybackQueuesRef.current.delete(messageId)
+          playbackQueuesRef.current.delete(messageId)
+        }
+      }
+    })()
+  }, [playAudioPath])
+
   const playMessageAudio = useCallback(async (messageId: string) => {
+    const generatedPaths = generatedAudioPathsRef.current.get(messageId)
+    if (generatedPaths && generatedPaths.length > 0) {
+      player.stop()
+      playbackQueuesRef.current.set(messageId, [])
+      activePlaybackQueuesRef.current.delete(messageId)
+      for (const audioPath of generatedPaths) enqueueAudioPlayback(messageId, audioPath)
+      return
+    }
     const audioState = messageAudioStates.get(messageId)
     const audioPath = audioState?.currentAudioPath
     if (!audioPath) return
     await playAudioPath(messageId, audioPath)
-  }, [messageAudioStates, playAudioPath])
+  }, [messageAudioStates, playAudioPath, enqueueAudioPlayback, player])
 
   const stopPlayback = useCallback(() => {
     player.stop()
+    playbackQueuesRef.current.clear()
+    activePlaybackQueuesRef.current.clear()
     setMessageAudioStates((prev) => {
       const next = new Map(prev)
       for (const [id, state] of prev) {
@@ -231,6 +273,9 @@ export function useTtsManager(): TtsManagerState & TtsManagerControls {
 
   const retryMessage = useCallback(async (messageId: string) => {
     player.stop()
+    generatedAudioPathsRef.current.delete(messageId)
+    playbackQueuesRef.current.delete(messageId)
+    activePlaybackQueuesRef.current.delete(messageId)
     // Cancel any in-flight generation on the main process side
     await window.petAgent.ttsStopAudio().catch(() => { /* ignore */ })
     setMessageAudioStates((prev) => {
@@ -257,6 +302,9 @@ export function useTtsManager(): TtsManagerState & TtsManagerControls {
   const handleAgentEvent = useCallback((event: AgentEvent) => {
     switch (event.type) {
       case "tts.generating": {
+        generatedAudioPathsRef.current.delete(event.messageId)
+        playbackQueuesRef.current.delete(event.messageId)
+        activePlaybackQueuesRef.current.delete(event.messageId)
         setMessageAudioStates((prev) => {
           const next = new Map(prev)
           next.set(event.messageId, { status: "generating", updatedAt: Date.now() })
@@ -265,6 +313,12 @@ export function useTtsManager(): TtsManagerState & TtsManagerControls {
         break
       }
       case "tts.ready": {
+        const generatedPaths = generatedAudioPathsRef.current.get(event.messageId) ?? []
+        if (!generatedPaths.includes(event.audioPath)) {
+          generatedPaths.push(event.audioPath)
+          generatedAudioPathsRef.current.set(event.messageId, generatedPaths)
+        }
+
         setMessageAudioStates((prev) => {
           const next = new Map(prev)
           next.set(event.messageId, {
@@ -277,7 +331,7 @@ export function useTtsManager(): TtsManagerState & TtsManagerControls {
         })
         // Auto-play if enabled — use event.audioPath directly, not state lookup
         if (settings.autoPlayAfterGenerate) {
-          void playAudioPath(event.messageId, event.audioPath)
+          enqueueAudioPlayback(event.messageId, event.audioPath)
         }
         break
       }
@@ -316,7 +370,7 @@ export function useTtsManager(): TtsManagerState & TtsManagerControls {
         break
       }
     }
-  }, [settings.autoPlayAfterGenerate, player, playAudioPath])
+  }, [settings.autoPlayAfterGenerate, player, playAudioPath, enqueueAudioPlayback])
 
   /* Sync player state back into messageAudioStates */
   useEffect(() => {
