@@ -7,7 +7,7 @@ import { AgentSession, AssistantRuntime, ContextManager, ConversationManager, De
 import { OpenAiCompatibleAdapter, OpenAiCompatibleWsClient, MimoWsRuntime } from "@live2d-agent/model-openai-compatible"
 import { createDefaultTools, type RuntimeToolContext } from "@live2d-agent/tools"
 import type { ArtifactRef, AudioArtifactRef, AudioContextAttachment, DebugEmotionInfo, Emotion, MessageAudioState } from "@live2d-agent/shared"
-import { DEFAULT_TTS_EMOTION_INSTRUCTIONS } from "@live2d-agent/shared"
+import { DEFAULT_TTS_EMOTION_INSTRUCTIONS, composeTtsNaturalEmotionInstruction } from "@live2d-agent/shared"
 import type { EmotionSource } from "@live2d-agent/agent-core"
 import type { ArtifactRef as ArtifactRefType } from "@live2d-agent/shared"
 import type { ArtifactStore } from "./artifact-store.js"
@@ -679,17 +679,21 @@ export class AgentService implements ToolRuntime {
     if (settings.tts.ttsMode === "emotion_enhanced") {
       if (settings.tts.emotionControlMode === "default_mapping") {
         const emotionResult = this.parseEmotionFromMessage(rawContent, metadata)
-        instruction = DEFAULT_TTS_EMOTION_INSTRUCTIONS[emotionResult.emotion] ?? DEFAULT_TTS_EMOTION_INSTRUCTIONS.neutral
+        instruction = composeTtsNaturalEmotionInstruction(
+          DEFAULT_TTS_EMOTION_INSTRUCTIONS[emotionResult.emotion] ?? DEFAULT_TTS_EMOTION_INSTRUCTIONS.neutral,
+        )
       } else {
         // llm_controlled mode — extract instruction from the message
         const ttsResult = extractTtsInstruction(rawContent)
         if (ttsResult) {
-          instruction = ttsResult.instruction
+          instruction = composeTtsNaturalEmotionInstruction(ttsResult.instruction)
           this.ttsDebug.lastInstructionInjected = true
         } else {
           // Fallback to default mapping if no instruction found
           const emotionResult = this.parseEmotionFromMessage(rawContent, metadata)
-          instruction = DEFAULT_TTS_EMOTION_INSTRUCTIONS[emotionResult.emotion] ?? DEFAULT_TTS_EMOTION_INSTRUCTIONS.neutral
+          instruction = composeTtsNaturalEmotionInstruction(
+            DEFAULT_TTS_EMOTION_INSTRUCTIONS[emotionResult.emotion] ?? DEFAULT_TTS_EMOTION_INSTRUCTIONS.neutral,
+          )
         }
       }
     }

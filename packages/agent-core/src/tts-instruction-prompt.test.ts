@@ -36,5 +36,9 @@ test("isTtsInstructionInjected returns false for empty string", () => {
 test("prompt contains the required format instructions", () => {
   const prompt = getTtsInstructionPrompt()
   assert.ok(prompt.includes("[[TTS_INSTRUCTION:这里填写一句中文自然语言朗读指令]]"))
-  assert.ok(prompt.includes("10~50 个中文字符"))
+  assert.ok(prompt.includes("6~18 个中文字符"))
+  assert.ok(prompt.includes("越短越好"))
+  assert.ok(prompt.includes("不要写完整长句"))
+  assert.ok(prompt.includes("强度 + 情感/状态 + 语速"))
+  assert.ok(prompt.includes("不要加入“请”“这句话”“保持音色”"))
 })

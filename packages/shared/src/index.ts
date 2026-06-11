@@ -78,4 +78,7 @@ export type {
   IpcTtsPlayAudioRequest,
   IpcTtsUpdateSettingsRequest,
 } from "./ipc.js"
-export { DEFAULT_TTS_EMOTION_INSTRUCTIONS } from "./emotion.js"
+export {
+  DEFAULT_TTS_EMOTION_INSTRUCTIONS,
+  composeTtsNaturalEmotionInstruction,
+} from "./emotion.js"
