@@ -418,7 +418,7 @@ export class AgentService implements ToolRuntime {
     ].join("\n")
   }
 
-  async sendUserMessage(input: string | { text: string; attachments?: AudioContextAttachment[]; artifactRefs?: ArtifactRefType[]; conversationId?: string; skipCompanionScreenshot?: boolean; rememberForRetry?: boolean }): Promise<void> {
+  async sendUserMessage(input: string | { text: string; attachments?: AudioContextAttachment[]; artifactRefs?: ArtifactRefType[]; conversationId?: string; skipCompanionScreenshot?: boolean; rememberForRetry?: boolean; suppressUserMessageEvent?: boolean }): Promise<void> {
     this.noteCompanionActivity("user")
     const text = typeof input === "string" ? input : input.text
     const attachments = typeof input === "object" ? input.attachments : undefined
@@ -426,6 +426,7 @@ export class AgentService implements ToolRuntime {
     const conversationId = (typeof input === "object" && input.conversationId) || this.activeConversationId!
     const skipCompanionScreenshot = typeof input === "object" && input.skipCompanionScreenshot === true
     const rememberForRetry = typeof input !== "object" || input.rememberForRetry !== false
+    const suppressUserMessageEvent = typeof input === "object" && input.suppressUserMessageEvent === true
 
     if (rememberForRetry) this.lastUserMessage = { text, attachments, artifactRefs, conversationId }
 
@@ -462,17 +463,19 @@ export class AgentService implements ToolRuntime {
     if (mergedArtifactRefs && mergedArtifactRefs.length > 0) {
       userMessageExtra.artifactRefs = mergedArtifactRefs
     }
-    this.emit({
-      type: "message.added",
-      message: {
-        id: `msg_user_${Date.now()}`,
-        role: "user",
-        content: text,
-        createdAt: Date.now(),
-        attachments,
-        ...(Object.keys(userMessageExtra).length > 0 ? { extra: userMessageExtra } : {}),
-      },
-    })
+    if (!suppressUserMessageEvent) {
+      this.emit({
+        type: "message.added",
+        message: {
+          id: `msg_user_${Date.now()}`,
+          role: "user",
+          content: text,
+          createdAt: Date.now(),
+          attachments,
+          ...(Object.keys(userMessageExtra).length > 0 ? { extra: userMessageExtra } : {}),
+        },
+      })
+    }
 
     // Default WS runtime path
     if (!this.assistantRuntime) this.reconfigure()
@@ -605,7 +608,37 @@ export class AgentService implements ToolRuntime {
       return
     }
     const { text, attachments, artifactRefs, conversationId } = this.lastUserMessage
-    await this.sendUserMessage({ text, attachments, artifactRefs, conversationId })
+    const removedPreviousTurn = this.pruneLastFailedRetryTurn(text, conversationId)
+    await this.sendUserMessage({
+      text,
+      attachments,
+      artifactRefs,
+      conversationId,
+      rememberForRetry: false,
+      skipCompanionScreenshot: true,
+      suppressUserMessageEvent: removedPreviousTurn,
+    })
+  }
+
+  private pruneLastFailedRetryTurn(text: string, conversationId: string | undefined): boolean {
+    if (this.runtimeMode === "http-legacy") {
+      const messages = this.session?.messages
+      if (!messages) return false
+      let startIndex = -1
+      for (let index = messages.length - 1; index >= 0; index -= 1) {
+        const message = messages[index]
+        if (message?.role === "user" && message.content === text) {
+          startIndex = index
+          break
+        }
+      }
+      if (startIndex < 0) return false
+      messages.splice(startIndex)
+      return true
+    }
+
+    if (!conversationId) return false
+    return this.conversationManager?.removeLastTurnByUserContent(conversationId, text) ?? false
   }
 
   clearActiveContext(): void {

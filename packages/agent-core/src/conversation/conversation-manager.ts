@@ -155,6 +155,28 @@ export class ConversationManager {
     return true
   }
 
+  /**
+   * Remove the latest turn that starts with a matching user message.
+   *
+   * Retry needs to re-run the same user input without leaving the failed turn
+   * in local history. We delete the matching user message and everything after
+   * it (assistant placeholder/partial reply/tool observations), then clear the
+   * remote context pointer because it may refer to the removed tail.
+   */
+  removeLastTurnByUserContent(conversationId: string, content: string): boolean {
+    const conv = this.conversations.get(conversationId)
+    if (!conv) return false
+
+    const startIndex = findLastIndex(conv.messages, (msg) => msg.role === "user" && msg.content === content)
+    if (startIndex < 0) return false
+
+    conv.messages.splice(startIndex)
+    conv.lastRemoteContextId = null
+    conv.updatedAt = Date.now()
+    conv.lastActiveAt = Date.now()
+    return true
+  }
+
   /* ---- Remote context ---- */
 
   /** Persist the last remote context ID for WS continuation. */
@@ -185,4 +207,11 @@ export class ConversationManager {
   private generateId(prefix: string): string {
     return `${prefix}_${Date.now()}_${Math.random().toString(36).slice(2, 9)}`
   }
+}
+
+function findLastIndex<T>(items: T[], predicate: (item: T) => boolean): number {
+  for (let index = items.length - 1; index >= 0; index -= 1) {
+    if (predicate(items[index]!)) return index
+  }
+  return -1
 }

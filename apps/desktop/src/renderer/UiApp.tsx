@@ -36,6 +36,17 @@ import {
   summarize,
 } from "./renderer-shared"
 
+function trimMessagesForRetry(items: AgentMessage[], errorMessageId: string): AgentMessage[] {
+  const errorIndex = items.findIndex((message) => message.id === errorMessageId)
+  if (errorIndex < 0) return items
+
+  for (let index = errorIndex - 1; index >= 0; index -= 1) {
+    if (items[index]?.role === "user") return items.slice(0, index + 1)
+  }
+
+  return items.filter((message) => message.id !== errorMessageId)
+}
+
 /**
  * UiApp — Chat + settings + debug window (Phase 4 interactive UI root).
  *
@@ -470,10 +481,11 @@ export function UiApp(): JSX.Element {
     await window.petAgent.clearContext()
   }
 
-  async function handleRetryLastUserMessage(): Promise<void> {
+  async function handleRetryLastUserMessage(errorMessageId: string): Promise<void> {
     if (isSending) return
     setIsSending(true)
     try {
+      setMessages((items) => trimMessagesForRetry(items, errorMessageId))
       await window.petAgent.retryLastUserMessage()
     } finally {
       setIsSending(false)
@@ -864,7 +876,7 @@ export function UiApp(): JSX.Element {
                         onPlayTts={(id) => ttsManager.playMessageAudio(id)}
                         onStopTts={() => ttsManager.stopPlayback()}
                         onRetryTts={(id) => void ttsManager.retryMessage(id)}
-                        onRetryMessage={() => void handleRetryLastUserMessage()}
+                        onRetryMessage={(id) => void handleRetryLastUserMessage(id)}
                       />
                     ))}
                 </div>

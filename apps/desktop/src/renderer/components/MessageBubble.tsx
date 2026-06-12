@@ -11,7 +11,7 @@ interface MessageBubbleProps {
   onPlayTts?: (messageId: string) => void
   onStopTts?: () => void
   onRetryTts?: (messageId: string) => void
-  onRetryMessage?: () => void
+  onRetryMessage?: (messageId: string) => void
 }
 
 function sanitizeDisplayText(raw: string): string {
@@ -99,7 +99,7 @@ export function MessageBubble({
           )}
           <button className="ghost-btn" onClick={() => void copy()}>复制</button>
           {canRetryMessage && onRetryMessage && (
-            <button className="ghost-btn retry-btn" onClick={onRetryMessage}>重发</button>
+            <button className="ghost-btn retry-btn" onClick={() => onRetryMessage(message.id)}>重发</button>
           )}
         </div>
       </div>
