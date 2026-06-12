@@ -113,11 +113,7 @@ async function bootstrap(): Promise<void> {
 
   registerIpcHandlers({ agent: agentService, permissions, settings, trace, artifacts, prompts, window: windowManager, tts, mcp: mcpService })
   const ui = settings.get().ui
-  if (ui.windowMode === "combined") {
-    await windowManager.create(ui)
-  } else {
-    await windowManager.createDual(ui)
-  }
+  await windowManager.createDual(ui)
 }
 
 app.whenReady().then(bootstrap)
@@ -126,11 +122,7 @@ app.on("activate", async () => {
   if (windowManager && !windowManager.hasAnyWindow()) {
     const settings = new SettingsService(app.getPath("userData"))
     const ui = settings.get().ui
-    if (ui.windowMode === "combined") {
-      await windowManager.create(ui)
-    } else {
-      await windowManager.createDual(ui)
-    }
+    await windowManager.createDual(ui)
   }
 })
 

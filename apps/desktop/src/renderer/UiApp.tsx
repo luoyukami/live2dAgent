@@ -43,12 +43,9 @@ import {
  * (chat / settings / debug), approval bubbles, and attachment management.
  * The Live2D stage is displayed in the separate avatar window (AvatarApp).
  *
- * This component is derived from App.tsx with all Live2D‑specific code removed:
- * - No Live2DView
- * - No stage pointer handlers / window drag handle
- * - No mouse passthrough logic
- * - No speech bubble over stage
- * - No live2dReloadKey / onReloadLive2D tied to re‑mounting Live2D
+ * This component handles only the interactive UI portions: compact input bar, detail overlay
+ * (chat / settings / debug), approval bubbles, and attachment management.
+ * The Live2D stage is displayed in the separate avatar window (AvatarApp).
  */
 
 export function UiApp(): JSX.Element {
@@ -180,7 +177,6 @@ export function UiApp(): JSX.Element {
         windowHeight: String(settings.ui?.height ?? prev.windowHeight),
         panelWidth: String(settings.ui?.panelWidth ?? prev.panelWidth),
         panelHeight: String(settings.ui?.panelHeight ?? prev.panelHeight),
-        windowMode: settings.ui?.windowMode ?? "dual",
         promptPresets: settings.promptPresets ?? prev.promptPresets,
         emotion: {
           enabled: settings.emotion?.enabled ?? prev.emotion.enabled,
@@ -514,7 +510,6 @@ export function UiApp(): JSX.Element {
       if (nextWindowHeight !== (settings?.ui?.height ?? 720)) uiPatch.height = nextWindowHeight
       if (nextPanelWidth !== (settings?.ui?.panelWidth ?? 460)) uiPatch.panelWidth = nextPanelWidth
       if (nextPanelHeight !== (settings?.ui?.panelHeight ?? 760)) uiPatch.panelHeight = nextPanelHeight
-      if (form.windowMode !== (settings?.ui?.windowMode ?? "dual")) uiPatch.windowMode = form.windowMode
       if (Object.keys(uiPatch).length > 0) publicPatch.ui = uiPatch
 
       const settingsPromptPresets = settings?.promptPresets
@@ -1138,21 +1133,7 @@ export function UiApp(): JSX.Element {
                             />
                           </div>
                         </div>
-                        <small className="settings-hint">UI窗口尺寸在双窗口模式下使用，修改后需重启应用才能生效。</small>
-                      </div>
-
-                      <div className="settings-card">
-                        <h3 className="settings-card-title">窗口模式</h3>
-                        <div className="settings-group">
-                          <select
-                            value={form.windowMode}
-                            onChange={(e) => setForm((f) => ({ ...f, windowMode: e.target.value as "dual" | "combined" }))}
-                          >
-                            <option value="dual">双窗口（Live2D 和 UI 分开）</option>
-                            <option value="combined">单窗口兼容模式</option>
-                          </select>
-                          <small className="settings-hint">修改后需重启应用才能生效。</small>
-                        </div>
+                        <small className="settings-hint">UI 窗口尺寸修改后需重启应用才能生效。</small>
                       </div>
                     </>
                   )}

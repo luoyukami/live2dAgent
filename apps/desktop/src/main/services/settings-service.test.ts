@@ -359,7 +359,7 @@ test("deepMergeDefaults: persisted panel dimensions override defaults", () => {
 test("deepMergeDefaults: missing panel dimensions fall back to defaults", () => {
   // Simulate a settings.json saved by an older version without panel fields.
   const { service, dir } = makeServiceWith({
-    ui: { width: 360, height: 720, windowMode: "dual" },
+    ui: { width: 360, height: 720 },
   })
   try {
     assert.equal(service.getPublicSettings().ui.panelWidth, 460)
@@ -403,53 +403,6 @@ test("updatePublicPatch: panel dimensions reject out-of-range values", () => {
 /* ------------------------------------------------------------------ */
 /*  4. Round-trip persistence: bad data on disk does not survive reload */
 /* ------------------------------------------------------------------ */
-
-/* ------------------------------------------------------------------ */
-/*  5. Window mode setting (ui.windowMode)                             */
-/* ------------------------------------------------------------------ */
-
-test("default windowMode is dual", () => {
-  const { service, dir } = makeServiceWith({})
-  try {
-    assert.equal(service.getPublicSettings().ui.windowMode, "dual")
-  } finally {
-    cleanup(dir)
-  }
-})
-
-test("deepMergeDefaults: invalid persisted windowMode falls back to dual", () => {
-  const { service, dir } = makeServiceWith({ ui: { windowMode: "triple" } })
-  try {
-    assert.equal(service.getPublicSettings().ui.windowMode, "dual")
-    assert.equal(service.get().ui.windowMode, "dual")
-  } finally {
-    cleanup(dir)
-  }
-})
-
-test("updatePublicPatch: windowMode accepts dual and combined, rejects others", () => {
-  const { service, dir } = makeServiceWith({})
-  try {
-    // Default is dual
-    assert.equal(service.getPublicSettings().ui.windowMode, "dual")
-
-    // Accept combined
-    service.updatePublicPatch({ ui: { windowMode: "combined" } })
-    assert.equal(service.getPublicSettings().ui.windowMode, "combined")
-
-    // Revert to dual
-    service.updatePublicPatch({ ui: { windowMode: "dual" } })
-    assert.equal(service.getPublicSettings().ui.windowMode, "dual")
-
-    // Reject invalid value
-    assert.throws(
-      () => service.updatePublicPatch({ ui: { windowMode: "triple" as never } }),
-      /Invalid ui\.windowMode/,
-    )
-  } finally {
-    cleanup(dir)
-  }
-})
 
 test("companionWatch settings merge persisted values but disable proactive mode on startup", () => {
   const { service, dir } = makeServiceWith({

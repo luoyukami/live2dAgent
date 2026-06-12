@@ -186,18 +186,18 @@ export interface Live2DSettings {
   emotionProfile?: Live2DEmotionProfile
 }
 
-/** Window UI settings */
+/** Window UI settings (dual-window mode only: avatar + UI) */
 export interface UiSettings {
   alwaysOnTop: boolean
   opacity: number
+  /** Width of the Live2D avatar window (default 360) */
   width: number
+  /** Height of the Live2D avatar window (default 720) */
   height: number
-  /** Width of the interactive UI window in dual mode (default 460) */
+  /** Width of the interactive UI window (default 460) */
   panelWidth: number
-  /** Height of the interactive UI window in dual mode (default 760) */
+  /** Height of the interactive UI window (default 760) */
   panelHeight: number
-  /** Startup window mode: dual-window (avatar + UI) or combined single window */
-  windowMode: "dual" | "combined"
 }
 
 /** Agent runtime settings */

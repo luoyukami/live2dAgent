@@ -56,7 +56,6 @@ export const DEFAULT_UI_SETTINGS: UiSettings = {
   height: 720,
   panelWidth: 460,
   panelHeight: 760,
-  windowMode: "dual",
 }
 
 export const DEFAULT_AGENT_SETTINGS: AgentSettings = {
@@ -213,7 +212,7 @@ function unquoteYamlScalar(value: string): string {
 
 function deepMergeDefaults(parsed: Record<string, unknown>, defaults: AppSettings): AppSettings {
   const parsedLive2d = (parsed.live2d ?? {}) as Partial<Live2DSettings>
-  const parsedUi = (parsed.ui ?? {}) as Partial<UiSettings>
+  const parsedUi = pickKnownUiSettings((parsed.ui ?? {}) as Record<string, unknown>)
   // Strip `emotionProfile` from the raw parsed payload BEFORE spreading it
   // into the live2d object. The sanitizer below decides whether a cleaned
   // version of the profile should be added back. Spreading the raw value
@@ -233,9 +232,6 @@ function deepMergeDefaults(parsed: Record<string, unknown>, defaults: AppSetting
     ui: {
       ...defaults.ui,
       ...parsedUi,
-      windowMode: parsedUi.windowMode === "dual" || parsedUi.windowMode === "combined"
-        ? parsedUi.windowMode
-        : defaults.ui.windowMode,
     },
     agent: { ...defaults.agent, ...((parsed.agent ?? {}) as Partial<AgentSettings>) },
     permissions: { ...defaults.permissions, ...((parsed.permissions ?? {}) as Partial<PermissionSettings>) },
@@ -328,6 +324,17 @@ function mergeCompanionWatchSettings(
       ? parsed.proactiveInterval
       : defaults.proactiveInterval,
   }
+}
+
+function pickKnownUiSettings(raw: Record<string, unknown>): Partial<UiSettings> {
+  const picked: Partial<UiSettings> = {}
+  if (typeof raw.alwaysOnTop === "boolean") picked.alwaysOnTop = raw.alwaysOnTop
+  if (typeof raw.opacity === "number") picked.opacity = raw.opacity
+  if (typeof raw.width === "number") picked.width = raw.width
+  if (typeof raw.height === "number") picked.height = raw.height
+  if (typeof raw.panelWidth === "number") picked.panelWidth = raw.panelWidth
+  if (typeof raw.panelHeight === "number") picked.panelHeight = raw.panelHeight
+  return picked
 }
 
 function mergePromptPresetSettings(
@@ -861,12 +868,6 @@ function validatePublicSettingsPatch(patch: unknown): AppSettingsPublicPatch {
     if (height !== undefined) patch.height = height
     if (panelWidth !== undefined) patch.panelWidth = panelWidth
     if (panelHeight !== undefined) patch.panelHeight = panelHeight
-    if (ui.windowMode !== undefined) {
-      if (ui.windowMode !== "dual" && ui.windowMode !== "combined") {
-        throw new Error(`Invalid ui.windowMode: must be "dual" or "combined"`)
-      }
-      patch.windowMode = ui.windowMode as "dual" | "combined"
-    }
     if (Object.keys(patch).length > 0) output.ui = patch
   }
 

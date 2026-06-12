@@ -159,20 +159,16 @@ export function registerIpcHandlers(services: IpcServices): void {
     services.window.broadcastSettings(publicSettings)
   })
 
-  ipcMain.handle(IPC_CHANNELS.WINDOW_MOVE_BY, async (_event, dx: number, dy: number) => {
-    services.window.moveBy(dx, dy)
+  ipcMain.handle(IPC_CHANNELS.WINDOW_DRAG_START, async (_event, windowType?: "avatar") => {
+    services.window.startDrag(windowType)
   })
 
-  ipcMain.handle(IPC_CHANNELS.WINDOW_DRAG_START, async (_event, windowType?: "combined" | "avatar") => {
-    services.window.startDrag(windowType ?? "combined")
+  ipcMain.handle(IPC_CHANNELS.WINDOW_DRAG_END, async (_event, _windowType?: "avatar") => {
+    services.window.endDrag()
   })
 
-  ipcMain.handle(IPC_CHANNELS.WINDOW_DRAG_END, async (_event, windowType?: "combined" | "avatar") => {
-    services.window.endDrag(windowType ?? "combined")
-  })
-
-  ipcMain.handle(IPC_CHANNELS.WINDOW_SET_MOUSE_PASSTHROUGH, async (_event, enabled: boolean, windowType?: "combined" | "avatar") => {
-    services.window.setMousePassthrough(Boolean(enabled), windowType ?? "combined")
+  ipcMain.handle(IPC_CHANNELS.WINDOW_SET_MOUSE_PASSTHROUGH, async (_event, enabled: boolean, windowType?: "avatar") => {
+    services.window.setMousePassthrough(Boolean(enabled), windowType)
   })
 
   ipcMain.handle(IPC_CHANNELS.WINDOW_SET_AVATAR_HIT_REGION, async (_event, rects: AvatarHitRegionRect[]) => {

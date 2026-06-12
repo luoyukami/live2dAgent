@@ -29,7 +29,7 @@ corepack pnpm build        # tsc -b 后 electron-vite build
 apps/desktop/                               Electron 桌面应用
   src/main/                                  Main Process，高权限 Node/Electron API
     main.ts                                  启动入口、服务组装、live2d-local:// 协议、窗口创建
-    window-manager.ts                        combined/dual 窗口管理、事件广播、鼠标穿透/hit-region
+    window-manager.ts                        双窗口管理、事件广播、鼠标穿透/hit-region
     ipc-handlers.ts                          ipcMain.handle 注册集中处
     runtime-mode.ts                          ws / http-legacy 运行时解析与降级
     agent-runtime-event-bridge.ts            AssistantRuntimeEvent → AgentEvent 桥接
@@ -46,11 +46,10 @@ apps/desktop/                               Electron 桌面应用
         local-tts-client.ts                  本地 TTS HTTP API 客户端
   src/preload/index.ts                       contextBridge 暴露 window.petAgent API
   src/renderer/                              React UI，无 Node/Electron 直接权限
-    main.tsx                                 按 window-role 选择 AvatarApp/UiApp/App
-    window-role.ts                           ?window=avatar|ui|combined 角色识别
-    AvatarApp.tsx                            dual 模式 Live2D 专用窗口
-    UiApp.tsx                                dual 模式聊天/设置/调试 UI 窗口
-    App.tsx                                  combined 单窗口根组件
+    main.tsx                                 按 window-role 选择 AvatarApp/UiApp
+    window-role.ts                           ?window=avatar|ui 角色识别
+    AvatarApp.tsx                            双窗口 Live2D 专用窗口
+    UiApp.tsx                                双窗口聊天/设置/调试 UI 窗口
     renderer-shared.tsx                      共享设置表单、消息/附件辅助逻辑
     components/                              MessageBubble、ApprovalBubble、DebugPanel、TraceViewer、TtsSettingsSection 等
     hooks/                                   useTtsManager、useTtsPlayer
@@ -136,10 +135,7 @@ LLM tool call
 
 ## 窗口与 UI 架构
 
-- `settings.ui.windowMode` 支持：
-  - `dual`（默认）：Avatar 窗口 + UI 窗口。
-  - `combined`：旧单窗口模式，由 `App.tsx` 承载聊天、设置、Live2D 和调试面板。
-- dual 模式：
+- 应用使用双窗口模式（avatar + UI）：
   - Avatar 窗口加载 `?window=avatar` → `AvatarApp.tsx`，透明置顶，主要展示 Live2D；支持长按拖拽、鼠标穿透与 avatar hit-region。
   - UI 窗口加载 `?window=ui` → `UiApp.tsx`，承载聊天、设置、调试、TTS 面板；支持 hidden/compact/detail 等显示状态。
   - 窗口控制 IPC 包括 `WINDOW_SHOW_COMPACT_INPUT`、`WINDOW_SHOW_DETAIL_PANEL`、`WINDOW_HIDE_UI`、`WINDOW_UI_COMMAND`、`WINDOW_SET_AVATAR_HIT_REGION`。
@@ -251,7 +247,7 @@ settings:
 1. `packages/shared/src/schemas.ts`：更新 `AppSettings` / `PublicSettings` / patch 类型与默认值相关类型。
 2. `apps/desktop/src/main/services/settings-service.ts`：补默认值、deep merge、sanitize、public patch 白名单、持久化合并逻辑。
 3. `apps/desktop/src/main/services/agent-service.ts`：如设置影响运行时，确保 reconfigure 后生效。
-4. Renderer：`UiApp.tsx`、`App.tsx` 或 `renderer-shared.tsx` 中补设置面板和表单同步。
+4. Renderer：`UiApp.tsx` 或 `renderer-shared.tsx` 中补设置面板和表单同步。
 5. 添加或更新 `settings-service` 测试。
 
 ### 修改 Agent Runtime / 模型适配器
@@ -273,10 +269,9 @@ settings:
 ### 修改窗口 / Live2D UI
 
 1. 窗口生命周期与 OS 能力：`window-manager.ts`。
-2. dual 模式 Avatar：`AvatarApp.tsx`、`Live2DView.tsx`、hit-region IPC。
-3. dual 模式 UI：`UiApp.tsx` 与 `renderer-shared.tsx`。
-4. combined 模式兼容：`App.tsx`。
-5. 修改默认窗口设置时同步 `UiSettings`、`settings-service` 默认值和设置 UI。
+2. 双窗口 Avatar：`AvatarApp.tsx`、`Live2DView.tsx`、hit-region IPC。
+3. 双窗口 UI：`UiApp.tsx` 与 `renderer-shared.tsx`。
+4. 修改默认窗口设置时同步 `UiSettings`、`settings-service` 默认值和设置 UI。
 
 ### 新增包
 

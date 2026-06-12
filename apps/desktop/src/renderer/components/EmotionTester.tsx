@@ -109,7 +109,7 @@ export function EmotionTester({
           </button>
         </div>
         <small className="settings-hint">
-          清除后会回到 App.tsx 里的 <code>currentEmotion = null</code> 状态，
+          清除后会回到当前情绪为空的状态，
           Live2DView 内部 effect 会判定为 &quot;system disabled / no message&quot; 而不切换表情。
         </small>
       </section>

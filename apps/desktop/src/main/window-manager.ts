@@ -8,14 +8,13 @@ import type { CompactInputAnchor, PublicSettings, UiSettings, AvatarHitRegionRec
 const isDev = process.env.NODE_ENV === "development"
 const currentDir = dirname(fileURLToPath(import.meta.url))
 
-type WindowRole = "avatar" | "ui" | "combined"
+type WindowRole = "avatar" | "ui"
 
 export class WindowManager {
-  /** Single-window (combined) mode — the default behaviour. */
-  private combinedWindow?: BrowserWindow
-
-  /** Dual-window mode — dedicated avatar / UI windows. */
+  /** Dedicated avatar window (transparent, frameless, always-on-top). */
   private avatarWindow?: BrowserWindow
+
+  /** Dedicated UI window (chat + settings + debug). */
   private uiWindow?: BrowserWindow
 
   /** Current UI mode for the dual-window UI window. */
@@ -24,21 +23,15 @@ export class WindowManager {
   /** Set to true when the app is quitting, to allow window destruction. */
   private isQuitting = false
 
-  /** Drag state — supports both combined and avatar windows. */
+  /** Drag state — supports avatar window. */
   private dragTimer?: NodeJS.Timeout
   private dragStart?: {
-    windowType: "combined" | "avatar"
+    windowType: "avatar"
     cursorX: number; cursorY: number
     windowX: number; windowY: number
     windowWidth: number; windowHeight: number
     contentWidth: number; contentHeight: number
   }
-
-  private getDragWindow(windowType: "combined" | "avatar"): BrowserWindow | undefined {
-    return windowType === "avatar" ? this.avatarWindow : this.combinedWindow
-  }
-
-  private lockedSize?: { width: number; height: number }
 
   /** Per-window content-size locks to prevent DPI drift during drag/resize. */
   private lockedContentSizes = new Map<WindowRole, { width: number; height: number }>()
@@ -64,32 +57,43 @@ export class WindowManager {
   private avatarMouseIgnored?: boolean
 
   // ════════════════════════════════════════════════════════════════
-  //  Single-window (combined) mode — backward-compatible API
+  //  Dual-window mode (default startup)
   // ════════════════════════════════════════════════════════════════
 
   /**
-   * Create the combined single window (current default behaviour).
-   * The renderer loads without a `?window=` query param, which signals
-   * the monolithic App root (default `"combined"` role).
+   * Create separate avatar + UI windows.
+   *
+   * - **Avatar window**: transparent, frameless, always-on-top, skip taskbar.
+   *   Interactive only when mouse is over the Live2D model area (dynamic passthrough).
+   *   Loads renderer with `?window=avatar`.
+   * - **UI window**: transparent, frameless, always-on-top, skip taskbar.
+   *   Starts hidden, shown on demand via showCompactInput/showDetailPanel.
+   *   Loads renderer with `?window=ui`.
+   *
+   * Both windows share the same preload and context‑isolation settings.
    */
-  async create(ui?: Pick<UiSettings, "width" | "height">): Promise<void> {
+  async createDual(ui?: Pick<UiSettings, "width" | "height" | "panelWidth" | "panelHeight">): Promise<void> {
     const display = screen.getPrimaryDisplay()
     const { width: workWidth, height: workHeight } = display.workAreaSize
-    const windowWidth = clampWindowDimension(ui?.width, 360)
-    const windowHeight = clampWindowDimension(ui?.height, 720)
+    const avatarWidth = clampWindowDimension(ui?.width, 360)
+    const avatarHeight = clampWindowDimension(ui?.height, 720)
+    this.panelWidth = clampWindowDimension(ui?.panelWidth, 460)
+    this.panelHeight = clampWindowDimension(ui?.panelHeight, 760)
 
-    this.combinedWindow = new BrowserWindow({
-      width: windowWidth,
-      height: windowHeight,
+    // ── Avatar window ───────────────────────────────────────────
+    this.avatarWindow = new BrowserWindow({
+      width: avatarWidth,
+      height: avatarHeight,
       useContentSize: true,
-      x: Math.max(0, workWidth - windowWidth - 20),
-      y: Math.max(0, workHeight - windowHeight - 20),
+      x: Math.max(0, workWidth - avatarWidth - 20),
+      y: Math.max(0, workHeight - avatarHeight - 20),
       transparent: true,
       backgroundColor: "#00000000",
       frame: false,
+      focusable: false,
       resizable: false,
       alwaysOnTop: true,
-      skipTaskbar: false,
+      skipTaskbar: true,
       hasShadow: false,
       webPreferences: {
         preload: join(currentDir, "../preload/index.js"),
@@ -98,61 +102,148 @@ export class WindowManager {
         sandbox: true,
       },
     })
+    this.avatarWindow.setMenuBarVisibility(false)
+    this.avatarWindow.setMaximizable(false)
+    this.avatarWindow.setAlwaysOnTop(true, "floating")
+    this.cachedAvatarHitRects = []
+    this.avatarMouseIgnored = undefined
+    this.setAvatarIgnoreMouseEvents(true, "initial")
+    await this.loadRenderer(this.avatarWindow, "avatar")
+    this.lockWindowContentSize("avatar", this.avatarWindow)
 
-    this.combinedWindow.setMenuBarVisibility(false)
-    this.combinedWindow.setMaximizable(false)
-    this.lockCurrentWindowSize(this.combinedWindow)
+    // ── UI window ───────────────────────────────────────────────
+    // Use compact input dimensions initially; will be resized when switching modes.
+    const COMPACT_WIDTH = 420
+    const COMPACT_HEIGHT = 150
 
-    await this.loadRenderer(this.combinedWindow)
+    const uiPos = this.positionBelowAvatar(COMPACT_WIDTH, COMPACT_HEIGHT)
+
+    this.uiWindow = new BrowserWindow({
+      width: COMPACT_WIDTH,
+      height: COMPACT_HEIGHT,
+      useContentSize: true,
+      x: uiPos.x,
+      y: uiPos.y,
+      show: false,           // <-- 启动时隐藏
+      transparent: true,     // <-- 支持透明
+      backgroundColor: "#00000000",
+      frame: false,          // <-- 无边框
+      resizable: false,
+      alwaysOnTop: true,
+      skipTaskbar: true,     // <-- 不在任务栏显示
+      hasShadow: false,
+      webPreferences: {
+        preload: join(currentDir, "../preload/index.js"),
+        nodeIntegration: false,
+        contextIsolation: true,
+        sandbox: true,
+      },
+    })
+    this.uiWindow.setMenuBarVisibility(false)
+    this.uiWindow.setMaximizable(false)
+    this.uiWindow.setAlwaysOnTop(true, "pop-up-menu")
+
+    // 阻止关闭时销毁，改为隐藏
+    this.uiWindow.on("close", (event) => {
+      if (!this.isQuitting) {
+        event.preventDefault()
+        this.hideUiWindow()
+      }
+    })
+
+    await this.loadRenderer(this.uiWindow, "ui")
   }
 
-  /** Whether the combined single-window still exists. */
-  hasWindow(): boolean {
-    return this.combinedWindow !== undefined && !this.combinedWindow.isDestroyed()
+  /**
+   * Check whether any managed window (avatar or UI) is alive.
+   */
+  hasAnyWindow(): boolean {
+    return (
+      (this.avatarWindow !== undefined && !this.avatarWindow.isDestroyed()) ||
+      (this.uiWindow !== undefined && !this.uiWindow.isDestroyed())
+    )
   }
 
-  /** Send an AgentEvent to the combined window (backward compat). */
-  sendAgentEvent(event: AgentEvent): void {
-    this.combinedWindow?.webContents.send(IPC_CHANNELS.ON_AGENT_EVENT, event)
+  /** Send a raw IPC message to the avatar window (if it exists). */
+  sendToAvatar(channel: string, ...args: unknown[]): void {
+    this.avatarWindow?.webContents.send(channel, ...args)
   }
 
+  /** Send a raw IPC message to the UI window (if it exists). */
+  sendToUi(channel: string, ...args: unknown[]): void {
+    this.uiWindow?.webContents.send(channel, ...args)
+  }
+
+  /**
+   * Broadcast an AgentEvent to both avatar and UI windows.
+   */
+  broadcastAgentEvent(event: AgentEvent): void {
+    const channel = IPC_CHANNELS.ON_AGENT_EVENT
+    if (this.avatarWindow && !this.avatarWindow.isDestroyed()) {
+      this.avatarWindow.webContents.send(channel, event)
+    }
+    if (this.uiWindow && !this.uiWindow.isDestroyed()) {
+      this.uiWindow.webContents.send(channel, event)
+    }
+  }
+
+  /**
+   * Broadcast updated PublicSettings to both avatar and UI windows.
+   */
+  broadcastSettings(settings: PublicSettings): void {
+    const channel = IPC_CHANNELS.SETTINGS_UPDATED
+    if (this.avatarWindow && !this.avatarWindow.isDestroyed()) {
+      this.avatarWindow.webContents.send(channel, settings)
+    }
+    if (this.uiWindow && !this.uiWindow.isDestroyed()) {
+      this.uiWindow.webContents.send(channel, settings)
+    }
+  }
+
+  /**
+   * Broadcast a live2d:reloaded event to both windows.
+   */
+  broadcastLive2DReloaded(): void {
+    const channel = IPC_CHANNELS.LIVE2D_RELOADED
+    if (this.avatarWindow && !this.avatarWindow.isDestroyed()) {
+      this.avatarWindow.webContents.send(channel)
+    }
+    if (this.uiWindow && !this.uiWindow.isDestroyed()) {
+      this.uiWindow.webContents.send(channel)
+    }
+  }
+
+  // ════════════════════════════════════════════════════════════════
+  //  Dual-window UI mode control
+  // ════════════════════════════════════════════════════════════════
+
+  /** Mark that the application is about to quit. */
+  setQuitting(): void {
+    this.isQuitting = true
+  }
+
+  /** Resize the avatar window only. */
   setSize(width: number, height: number): void {
     const nextWidth = clampWindowDimension(width, 360)
     const nextHeight = clampWindowDimension(height, 720)
 
-    // In dual mode, resize the avatar window only; the UI window keeps its own size.
     if (this.avatarWindow && !this.avatarWindow.isDestroyed()) {
       this.avatarWindow.setMinimumSize(200, 200)
       this.avatarWindow.setMaximumSize(4000, 4000)
       this.avatarWindow.setContentSize(nextWidth, nextHeight, false)
       this.applyAvatarHitShape()
-      return
     }
-
-    if (!this.combinedWindow || this.combinedWindow.isDestroyed()) return
-    this.combinedWindow.setMinimumSize(200, 200)
-    this.combinedWindow.setMaximumSize(4000, 4000)
-    this.combinedWindow.setContentSize(nextWidth, nextHeight, false)
-    this.lockCurrentWindowSize(this.combinedWindow)
   }
 
-  moveBy(dx: number, dy: number): void {
-    if (!this.combinedWindow || this.combinedWindow.isDestroyed()) return
-    if (!Number.isFinite(dx) || !Number.isFinite(dy)) return
-    const [x, y] = this.combinedWindow.getPosition()
-    this.combinedWindow.setPosition(Math.round(x + dx), Math.round(y + dy), false)
-    this.restoreLockedSize(this.combinedWindow)
-  }
-
-  startDrag(windowType: "combined" | "avatar" = "combined"): void {
-    const target = this.getDragWindow(windowType)
+  startDrag(_windowType?: "avatar"): void {
+    const target = this.avatarWindow
     if (!target || target.isDestroyed()) return
     this.endDrag()
     const cursor = screen.getCursorScreenPoint()
     const bounds = target.getBounds()
     const [contentWidth, contentHeight] = target.getContentSize()
     this.dragStart = {
-      windowType,
+      windowType: "avatar",
       cursorX: cursor.x,
       cursorY: cursor.y,
       windowX: bounds.x,
@@ -162,13 +253,11 @@ export class WindowManager {
       contentWidth,
       contentHeight,
     }
-    if (windowType === "avatar") {
-      this.isDraggingAvatar = true
-    }
+    this.isDraggingAvatar = true
     this.dragTimer = setInterval(() => this.updateDragPosition(), 16)
   }
 
-  endDrag(_windowType?: "combined" | "avatar"): void {
+  endDrag(): void {
     if (this.dragTimer) {
       clearInterval(this.dragTimer)
       this.dragTimer = undefined
@@ -189,7 +278,7 @@ export class WindowManager {
       this.endDrag()
       return
     }
-    const target = this.getDragWindow(this.dragStart.windowType)
+    const target = this.avatarWindow
     if (!target || target.isDestroyed()) {
       this.endDrag()
       return
@@ -211,28 +300,19 @@ export class WindowManager {
     if (cw !== this.dragStart.contentWidth || ch !== this.dragStart.contentHeight) {
       target.setContentSize(this.dragStart.contentWidth, this.dragStart.contentHeight, false)
     }
-
-    if (this.dragStart.windowType === "combined") {
-      this.restoreLockedSize(target)
-    }
   }
 
-  setMousePassthrough(enabled: boolean, windowType: "combined" | "avatar" = "combined"): void {
-    if (windowType === "avatar") {
-      if (!this.avatarWindow || this.avatarWindow.isDestroyed()) return
-      if (process.platform === "darwin") {
-        // macOS: allow dynamic toggle for fallback mousemove passthrough
-        this.setAvatarIgnoreMouseEvents(enabled, "darwin-fallback")
-      } else {
-        // Non-macOS: ignore renderer's dynamic toggles. setShape constrains the
-        // native hit-test area, so false is safe only when at least one shaped
-        // interactive rect exists; otherwise keep the full window pass-through.
-        this.applyAvatarHitShape()
-      }
-      return
+  setMousePassthrough(enabled: boolean, _windowType?: "avatar"): void {
+    if (!this.avatarWindow || this.avatarWindow.isDestroyed()) return
+    if (process.platform === "darwin") {
+      // macOS: allow dynamic toggle for fallback mousemove passthrough
+      this.setAvatarIgnoreMouseEvents(enabled, "darwin-fallback")
+    } else {
+      // Non-macOS: ignore renderer's dynamic toggles. setShape constrains the
+      // native hit-test area, so false is safe only when at least one shaped
+      // interactive rect exists; otherwise keep the full window pass-through.
+      this.applyAvatarHitShape()
     }
-    if (!this.combinedWindow || this.combinedWindow.isDestroyed()) return
-    this.combinedWindow.setIgnoreMouseEvents(enabled, { forward: true })
   }
 
   /**
@@ -367,193 +447,6 @@ export class WindowManager {
       if (a[i].x !== b[i].x || a[i].y !== b[i].y || a[i].width !== b[i].width || a[i].height !== b[i].height) return false
     }
     return true
-  }
-
-  // ════════════════════════════════════════════════════════════════
-  //  Dual-window mode — default startup (Phase 5+)
-  // ════════════════════════════════════════════════════════════════
-
-  /**
-   * Create separate avatar + UI windows.
-   *
-   * - **Avatar window**: transparent, frameless, always-on-top, skip taskbar.
-   *   Interactive only when mouse is over the Live2D model area (dynamic passthrough).
-   *   Loads renderer with `?window=avatar`.
-   * - **UI window**: transparent, frameless, always-on-top, skip taskbar.
-   *   Starts hidden, shown on demand via showCompactInput/showDetailPanel.
-   *   Loads renderer with `?window=ui`.
-   *
-   * Both windows share the same preload and context‑isolation settings.
-   * This is the default startup mode (called from `bootstrap()` in main.ts).
-   * The combined single-window `create()` path remains as a fallback.
-   */
-  async createDual(ui?: Pick<UiSettings, "width" | "height" | "panelWidth" | "panelHeight">): Promise<void> {
-    const display = screen.getPrimaryDisplay()
-    const { width: workWidth, height: workHeight } = display.workAreaSize
-    const avatarWidth = clampWindowDimension(ui?.width, 360)
-    const avatarHeight = clampWindowDimension(ui?.height, 720)
-    this.panelWidth = clampWindowDimension(ui?.panelWidth, 460)
-    this.panelHeight = clampWindowDimension(ui?.panelHeight, 760)
-
-    // ── Avatar window ───────────────────────────────────────────
-    this.avatarWindow = new BrowserWindow({
-      width: avatarWidth,
-      height: avatarHeight,
-      useContentSize: true,
-      x: Math.max(0, workWidth - avatarWidth - 20),
-      y: Math.max(0, workHeight - avatarHeight - 20),
-      transparent: true,
-      backgroundColor: "#00000000",
-      frame: false,
-      focusable: false,
-      resizable: false,
-      alwaysOnTop: true,
-      skipTaskbar: true,
-      hasShadow: false,
-      webPreferences: {
-        preload: join(currentDir, "../preload/index.js"),
-        nodeIntegration: false,
-        contextIsolation: true,
-        sandbox: true,
-      },
-    })
-    this.avatarWindow.setMenuBarVisibility(false)
-    this.avatarWindow.setMaximizable(false)
-    this.avatarWindow.setAlwaysOnTop(true, "floating")
-    this.cachedAvatarHitRects = []
-    this.avatarMouseIgnored = undefined
-    this.setAvatarIgnoreMouseEvents(true, "initial")
-    await this.loadRenderer(this.avatarWindow, "avatar")
-    this.lockWindowContentSize("avatar", this.avatarWindow)
-
-    // ── UI window ───────────────────────────────────────────────
-    // Use compact input dimensions initially; will be resized when switching modes.
-    const COMPACT_WIDTH = 420
-    const COMPACT_HEIGHT = 150
-
-    const uiPos = this.positionBelowAvatar(COMPACT_WIDTH, COMPACT_HEIGHT)
-
-    this.uiWindow = new BrowserWindow({
-      width: COMPACT_WIDTH,
-      height: COMPACT_HEIGHT,
-      useContentSize: true,
-      x: uiPos.x,
-      y: uiPos.y,
-      show: false,           // <-- 启动时隐藏
-      transparent: true,     // <-- 支持透明
-      backgroundColor: "#00000000",
-      frame: false,          // <-- 无边框
-      resizable: false,
-      alwaysOnTop: true,
-      skipTaskbar: true,     // <-- 不在任务栏显示
-      hasShadow: false,
-      webPreferences: {
-        preload: join(currentDir, "../preload/index.js"),
-        nodeIntegration: false,
-        contextIsolation: true,
-        sandbox: true,
-      },
-    })
-    this.uiWindow.setMenuBarVisibility(false)
-    this.uiWindow.setMaximizable(false)
-    this.uiWindow.setAlwaysOnTop(true, "pop-up-menu")
-
-    // 阻止关闭时销毁，改为隐藏
-    this.uiWindow.on("close", (event) => {
-      if (!this.isQuitting) {
-        event.preventDefault()
-        this.hideUiWindow()
-      }
-    })
-
-    await this.loadRenderer(this.uiWindow, "ui")
-  }
-
-  /**
-   * Check whether **any** managed window is alive (combined, avatar,
-   * or UI).  Useful for `app.on("activate")` when dual mode may be active.
-   */
-  hasAnyWindow(): boolean {
-    return (
-      (this.combinedWindow !== undefined && !this.combinedWindow.isDestroyed()) ||
-      (this.avatarWindow !== undefined && !this.avatarWindow.isDestroyed()) ||
-      (this.uiWindow !== undefined && !this.uiWindow.isDestroyed())
-    )
-  }
-
-  /** Send a raw IPC message to the avatar window (if it exists). */
-  sendToAvatar(channel: string, ...args: unknown[]): void {
-    this.avatarWindow?.webContents.send(channel, ...args)
-  }
-
-  /** Send a raw IPC message to the UI window (if it exists). */
-  sendToUi(channel: string, ...args: unknown[]): void {
-    this.uiWindow?.webContents.send(channel, ...args)
-  }
-
-  /**
-   * Broadcast an AgentEvent to every open window.
-   *
-   * In combined mode this sends to the single window; in dual mode it
-   * sends to both avatar and UI windows.  Callers can safely use this
-   * instead of `sendAgentEvent` once dual windows are enabled.
-   */
-  broadcastAgentEvent(event: AgentEvent): void {
-    const channel = IPC_CHANNELS.ON_AGENT_EVENT
-    if (this.combinedWindow && !this.combinedWindow.isDestroyed()) {
-      this.combinedWindow.webContents.send(channel, event)
-    }
-    if (this.avatarWindow && !this.avatarWindow.isDestroyed()) {
-      this.avatarWindow.webContents.send(channel, event)
-    }
-    if (this.uiWindow && !this.uiWindow.isDestroyed()) {
-      this.uiWindow.webContents.send(channel, event)
-    }
-  }
-
-  /**
-   * Broadcast updated PublicSettings to all open windows.
-   * Used after every settings mutation so that AvatarApp / UiApp / App
-   * receive the latest values without polling.
-   */
-  broadcastSettings(settings: PublicSettings): void {
-    const channel = IPC_CHANNELS.SETTINGS_UPDATED
-    if (this.combinedWindow && !this.combinedWindow.isDestroyed()) {
-      this.combinedWindow.webContents.send(channel, settings)
-    }
-    if (this.avatarWindow && !this.avatarWindow.isDestroyed()) {
-      this.avatarWindow.webContents.send(channel, settings)
-    }
-    if (this.uiWindow && !this.uiWindow.isDestroyed()) {
-      this.uiWindow.webContents.send(channel, settings)
-    }
-  }
-
-  /**
-   * Broadcast a live2d:reloaded event to all windows.
-   * Called when the UiApp requests a Live2D reload via invoke (LIVE2D_RELOAD).
-   * The avatar window can react by bumping its reload key.
-   */
-  broadcastLive2DReloaded(): void {
-    const channel = IPC_CHANNELS.LIVE2D_RELOADED
-    if (this.combinedWindow && !this.combinedWindow.isDestroyed()) {
-      this.combinedWindow.webContents.send(channel)
-    }
-    if (this.avatarWindow && !this.avatarWindow.isDestroyed()) {
-      this.avatarWindow.webContents.send(channel)
-    }
-    if (this.uiWindow && !this.uiWindow.isDestroyed()) {
-      this.uiWindow.webContents.send(channel)
-    }
-  }
-
-  // ════════════════════════════════════════════════════════════════
-  //  Dual-window UI mode control
-  // ════════════════════════════════════════════════════════════════
-
-  /** Mark that the application is about to quit. */
-  setQuitting(): void {
-    this.isQuitting = true
   }
 
   /**
@@ -757,29 +650,26 @@ export class WindowManager {
   }
 
   /**
-   * Load the renderer HTML/URL into `win`, optionally with a `?window=`
-   * query param that the renderer-side `getWindowRole()` will read.
+   * Load the renderer HTML/URL into `win`, with a `?window=` query param
+   * that the renderer-side `getWindowRole()` will read.
    *
    * - **Development**: appends `?window=<role>` to `ELECTRON_RENDERER_URL`.
-   *   DevTools are opened for the combined window only.
+   *   DevTools are opened for the avatar window only.
    * - **Production / packaged**: uses `loadFile` with `query` option.
    */
-  private async loadRenderer(win: BrowserWindow, role?: WindowRole): Promise<void> {
+  private async loadRenderer(win: BrowserWindow, role: WindowRole): Promise<void> {
     if (isDev && process.env.ELECTRON_RENDERER_URL) {
       let url = process.env.ELECTRON_RENDERER_URL
-      if (role) {
-        const separator = url.includes("?") ? "&" : "?"
-        url = `${url}${separator}window=${role}`
-      }
+      const separator = url.includes("?") ? "&" : "?"
+      url = `${url}${separator}window=${role}`
       await win.loadURL(url)
-      // Open DevTools only for the combined window in dev mode
-      if (!role || role === "combined") {
+      // Open DevTools only for the avatar window in dev mode
+      if (role === "avatar") {
         win.webContents.openDevTools({ mode: "detach" })
       }
     } else {
       // Packaged / production — pass query via Electron's loadFile API
-      const query = role ? { window: role } : undefined
-      await win.loadFile(join(currentDir, "../renderer/index.html"), { query })
+      await win.loadFile(join(currentDir, "../renderer/index.html"), { query: { window: role } })
     }
 
     // Prevent drag-and-drop files from opening new windows / navigating
@@ -795,14 +685,6 @@ export class WindowManager {
     })
   }
 
-  private lockCurrentWindowSize(win: BrowserWindow): void {
-    if (win.isDestroyed()) return
-    const [width, height] = win.getSize()
-    this.lockedSize = { width, height }
-    win.setMinimumSize(width, height)
-    win.setMaximumSize(width, height)
-  }
-
   private lockWindowContentSize(role: WindowRole, win: BrowserWindow): void {
     if (win.isDestroyed()) return
     const [width, height] = win.getContentSize()
@@ -811,27 +693,6 @@ export class WindowManager {
     const bounds = win.getBounds()
     win.setMinimumSize(bounds.width, bounds.height)
     win.setMaximumSize(bounds.width, bounds.height)
-  }
-
-  private restoreWindowContentSize(role: WindowRole, win: BrowserWindow): void {
-    const locked = this.lockedContentSizes.get(role)
-    if (!locked || win.isDestroyed()) return
-    const [width, height] = win.getContentSize()
-    if (width === locked.width && height === locked.height) return
-    win.setContentSize(locked.width, locked.height, false)
-  }
-
-  private restoreLockedSize(win?: BrowserWindow): void {
-    const target = win ?? this.combinedWindow
-    if (!target || target.isDestroyed() || !this.lockedSize) return
-    const bounds = target.getBounds()
-    if (bounds.width === this.lockedSize.width && bounds.height === this.lockedSize.height) return
-    target.setBounds({
-      x: bounds.x,
-      y: bounds.y,
-      width: this.lockedSize.width,
-      height: this.lockedSize.height,
-    }, false)
   }
 }
 

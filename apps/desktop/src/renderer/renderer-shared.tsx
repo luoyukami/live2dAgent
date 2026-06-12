@@ -34,7 +34,6 @@ export interface SettingsForm {
   windowHeight: string
   panelWidth: string
   panelHeight: string
-  windowMode: "dual" | "combined"
   promptPresets: PromptPresetSettings
   emotion: EmotionSettings
   voice: VoiceInputSettings
@@ -131,7 +130,6 @@ export function defaultForm(): SettingsForm {
     windowHeight: "720",
     panelWidth: "460",
     panelHeight: "760",
-    windowMode: "dual",
     promptPresets: { ...DEFAULT_PROMPT_PRESET_SETTINGS },
     emotion: {
       enabled: true,
