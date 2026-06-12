@@ -21,9 +21,12 @@ import type { RemoteContextId } from "../ws/ws-types.js"
 /** A single message in a conversation (plain-text only for Phase 1). */
 export interface ConversationMessage {
   id: string
-  role: "user" | "assistant"
+  role: "user" | "assistant" | "tool"
   content: string
   createdAt: number
+  toolCallId?: string
+  toolName?: string
+  extra?: Record<string, unknown>
 }
 
 /** A user-facing conversation. */

@@ -965,6 +965,11 @@ export class RunController {
     run.completedAt = Date.now()
     run.updatedAt = Date.now()
 
+    if (run.toolCallCount > 0) {
+      this.conversationManager.setLastRemoteContextId(run.conversationId, null)
+      this.wsSessionManager.setRemoteContextId(run.conversationId, null)
+    }
+
     const ds = this.deltaStates.get(run.conversationId)
 
     this.emit({

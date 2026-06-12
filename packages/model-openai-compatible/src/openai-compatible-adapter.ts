@@ -8,6 +8,7 @@ import type {
   ArtifactRef,
   MultimodalContent,
 } from "@live2d-agent/agent-core"
+import { buildToolHistorySummary } from "@live2d-agent/agent-core"
 
 /**
  * Configuration for an OpenAI-compatible Chat Completions endpoint.
@@ -192,14 +193,23 @@ export class OpenAiCompatibleAdapter implements ModelAdapter {
 
   formatObservations(results: ToolResult[]): AgentMessage[] {
     return results.flatMap((result) => {
+      const content = this.formatObservationText(result)
+      const toolHistorySummary = buildToolHistorySummary({
+        toolName: result.tool,
+        status: result.ok ? "ok" : "error",
+        summary: result.ok ? result.content : result.error?.message ?? result.content,
+        output: content,
+      })
       const observation: AgentMessage = {
         id: `obs_${result.actionId}`,
         role: "tool",
-        content: this.formatObservationText(result),
+        content,
         toolCallId: result.providerToolCallId ?? result.actionId,
         createdAt: result.endedAt,
         extra: {
           ok: result.ok,
+          toolName: result.tool,
+          toolHistorySummary,
           ...(result.error ? { error: result.error } : {}),
         },
       }

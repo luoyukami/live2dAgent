@@ -36,6 +36,7 @@ import type {
 } from "../model/model-runtime.js"
 import { WS_RUNTIME_CONSTANTS } from "../ws/ws-runtime-constants.js"
 import { ToolResultLimiter } from "../tools/tool-result-limiter.js"
+import { buildToolHistorySummary } from "../tools/tool-history-summary.js"
 import type { ArtifactWriter } from "../tools/tool-result-limiter.js"
 import { buildDoomLoopErrorOutput } from "../tools/doom-loop-detector.js"
 import { AssistantRun } from "./assistant-run.js"
@@ -82,7 +83,9 @@ export interface ConversationStoreMessage {
   role: string
   content: string
   attachments?: AudioContextAttachmentLike[]
-  extra?: { artifactRefs?: ArtifactRefLike[] }
+  toolCallId?: string
+  toolName?: string
+  extra?: { artifactRefs?: ArtifactRefLike[]; toolHistorySummary?: string; [key: string]: unknown }
 }
 
 /* ------------------------------------------------------------------ */
@@ -106,6 +109,7 @@ export interface ConversationStore {
     toolCallId: string,
     toolName: string,
     output: string,
+    historySummary?: string,
   ): void
   updateAssistantMessage(conversationId: string, messageId: string, content: string): boolean
   setRemoteResponseId(conversationId: string, responseId: string | null): void
@@ -959,6 +963,13 @@ export class AssistantRuntime {
         output: limited.output,
         artifactRef: limited.artifactRef,
       }
+      const historySummary = buildToolHistorySummary({
+        toolName: call.name,
+        status: limitedResult.status,
+        summary: limitedResult.summary,
+        output: limitedResult.output,
+        artifactRef: limitedResult.artifactRef,
+      })
 
       // --- Emit tool.completed / tool.failed ---
       if (result.status === "ok") {
@@ -985,6 +996,7 @@ export class AssistantRuntime {
         call.callId,
         call.name,
         limitedResult.output,
+        historySummary,
       )
 
       // --- Continue with tool result ---
@@ -996,6 +1008,10 @@ export class AssistantRuntime {
     // model consumed the last tool result and produced text. Complete.
     if (run.isActive) {
       run.complete()
+      if (run.toolCallCount > 0) {
+        this.conversationStore.setRemoteResponseId(run.conversationId, null)
+        run.remoteResponseId = null
+      }
       this.emit({
         type: "run.completed",
         conversationId: run.conversationId,

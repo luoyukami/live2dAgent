@@ -43,7 +43,7 @@ export interface ContextManagerInput {
   /** Recent conversation messages (with createdAt for windowing). */
   conversationMessages: Array<{
     id: string
-    role: "user" | "assistant"
+    role: "user" | "assistant" | "tool"
     content: string
     createdAt: number
   }>

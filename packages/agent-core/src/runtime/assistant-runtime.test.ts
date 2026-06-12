@@ -214,6 +214,15 @@ class FakeConversationStore implements ConversationStore {
     remoteResponseId: string | null
   }>()
 
+  /** Recorded appendToolResultMessage calls for assertion. */
+  public toolResultCalls: Array<{
+    conversationId: string
+    toolCallId: string
+    toolName: string
+    output: string
+    historySummary?: string
+  }> = []
+
   createConversation(id?: string): string {
     const convId = id ?? `conv_${this.conversations.size + 1}`
     this.conversations.set(convId, {
@@ -254,6 +263,7 @@ class FakeConversationStore implements ConversationStore {
     toolCallId: string,
     toolName: string,
     output: string,
+    historySummary?: string,
   ): void {
     const conv = this.conversations.get(conversationId)
     if (!conv) return
@@ -262,6 +272,7 @@ class FakeConversationStore implements ConversationStore {
       role: "tool",
       content: output,
     })
+    this.toolResultCalls.push({ conversationId, toolCallId, toolName, output, historySummary })
   }
 
   updateAssistantMessage(conversationId: string, messageId: string, content: string): boolean {
@@ -1812,5 +1823,152 @@ describe("AssistantRuntime — retryable provider failure replay", () => {
     assert.equal(failedEvents.length, 1)
     // Only one create call (no replay)
     assert.equal(provider.createCallCount, 1)
+  })
+})
+
+/* ------------------------------------------------------------------ */
+/*  Test: Tool round completion clears remoteResponseId                */
+/*  and appendToolResultMessage receives historySummary                */
+/* ------------------------------------------------------------------ */
+
+describe("AssistantRuntime — tool round completion clears remoteResponseId", () => {
+  test("after tool round completes, remoteResponseId is cleared and historySummary is forwarded", async () => {
+    const store = new FakeConversationStore()
+    const provider = new FakeProviderRuntime()
+    const toolManager = new FakeToolManager()
+    const events: AssistantRuntimeEvent[] = []
+
+    const runtime = new AssistantRuntime({
+      conversationStore: store,
+      provider,
+      contextBuilder: new FakeContextBuilder(),
+      toolManager,
+      model: "test-model",
+      systemPrompt: "You are a test assistant.",
+    })
+    runtime.onEvent((ev) => events.push(ev))
+    const convId = store.createConversation("conv_tool_clear")
+
+    // Initial: tool call
+    provider.setSingleCreateSequence([
+      { type: "response.created", responseId: "resp_1" },
+      {
+        type: "tool.call",
+        responseId: "resp_1",
+        callId: "call_1",
+        name: "shell.run",
+        argumentsText: JSON.stringify({ command: "echo hi" }),
+      },
+      { type: "response.completed", responseId: "resp_1" },
+    ])
+    // Continuation: text response (no further tool calls)
+    provider.setContinuationSequence([
+      { type: "response.created", responseId: "resp_2" },
+      { type: "text.delta", responseId: "resp_2", delta: "Done!" },
+      { type: "response.completed", responseId: "resp_2" },
+    ])
+
+    await runtime.sendUserMessage(convId, "Run command")
+    await waitForRun(provider)
+
+    // After the tool round completes, remoteResponseId should be cleared
+    // (because toolCallCount > 0, the code sets remoteResponseId to null)
+    assert.equal(store.getRemoteResponseId(convId), null,
+      "remoteResponseId must be cleared after tool round completion")
+
+    // The run should have completed successfully
+    assert.ok(events.some((e) => e.type === "run.completed"), "run should complete")
+
+    // appendToolResultMessage should have been called with a historySummary
+    assert.ok(store.toolResultCalls.length > 0, "appendToolResultMessage should have been called")
+    const toolResultCall = store.toolResultCalls[0]!
+    assert.equal(toolResultCall.toolName, "shell.run")
+    assert.ok(typeof toolResultCall.historySummary === "string" && toolResultCall.historySummary.length > 0,
+      "historySummary must be a non-empty string")
+    assert.ok(toolResultCall.historySummary!.startsWith("[Tool Result Summary]"),
+      "historySummary must start with [Tool Result Summary]")
+    assert.ok(toolResultCall.historySummary!.includes("shell.run"),
+      "historySummary must include the tool name")
+  })
+
+  test("tool result message in store has the limited output (not historySummary)", async () => {
+    const store = new FakeConversationStore()
+    const provider = new FakeProviderRuntime()
+    const toolManager = new FakeToolManager()
+    const events: AssistantRuntimeEvent[] = []
+
+    const runtime = new AssistantRuntime({
+      conversationStore: store,
+      provider,
+      contextBuilder: new FakeContextBuilder(),
+      toolManager,
+      model: "test-model",
+      systemPrompt: "You are a test assistant.",
+    })
+    runtime.onEvent((ev) => events.push(ev))
+    const convId = store.createConversation("conv_tool_raw")
+
+    provider.setSingleCreateSequence([
+      { type: "response.created", responseId: "resp_1" },
+      {
+        type: "tool.call",
+        responseId: "resp_1",
+        callId: "call_1",
+        name: "shell.run",
+        argumentsText: JSON.stringify({ command: "echo hi" }),
+      },
+      { type: "response.completed", responseId: "resp_1" },
+    ])
+    provider.setContinuationSequence([
+      { type: "response.created", responseId: "resp_2" },
+      { type: "text.delta", responseId: "resp_2", delta: "Done" },
+      { type: "response.completed", responseId: "resp_2" },
+    ])
+
+    await runtime.sendUserMessage(convId, "Run")
+    await waitForRun(provider)
+
+    // The tool message in the conversation store should have the limited output
+    // (ToolResultLimiter wraps even short output in { status, summary, content }),
+    // NOT the [Tool Result Summary] history summary.
+    const msgs = store.getConversationMessages(convId)
+    const toolMsg = msgs.find((m) => m.role === "tool")
+    assert.ok(toolMsg, "tool message should exist in store")
+    const parsed = JSON.parse(toolMsg!.content)
+    assert.ok(parsed.status !== undefined, "stored tool message should be a limited JSON envelope, not a summary")
+    // The historySummary is a SEPARATE parameter, not the stored content
+    assert.ok(!toolMsg!.content.startsWith("[Tool Result Summary]"),
+      "stored tool content must NOT be the history summary")
+  })
+
+  test("text-only response (no tools) preserves remoteResponseId", async () => {
+    const store = new FakeConversationStore()
+    const provider = new FakeProviderRuntime()
+    const events: AssistantRuntimeEvent[] = []
+
+    const runtime = new AssistantRuntime({
+      conversationStore: store,
+      provider,
+      contextBuilder: new FakeContextBuilder(),
+      toolManager: new FakeToolManager(),
+      model: "test-model",
+      systemPrompt: "You are a test assistant.",
+    })
+    runtime.onEvent((ev) => events.push(ev))
+    const convId = store.createConversation("conv_no_tools")
+
+    provider.setSingleCreateSequence([
+      { type: "response.created", responseId: "resp_1" },
+      { type: "text.delta", responseId: "resp_1", delta: "Hello" },
+      { type: "response.completed", responseId: "resp_1" },
+    ])
+
+    await runtime.sendUserMessage(convId, "Hi")
+    await waitForRun(provider)
+
+    // Text-only response should preserve the remoteResponseId
+    assert.equal(store.getRemoteResponseId(convId), "resp_1",
+      "remoteResponseId should be preserved for text-only responses")
+    assert.ok(events.some((e) => e.type === "run.completed"))
   })
 })

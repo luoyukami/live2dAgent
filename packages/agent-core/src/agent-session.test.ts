@@ -28,6 +28,7 @@ import {
   AgentSession,
   EventBus,
   ToolRegistry,
+  isToolHistorySummary,
   type AgentEvent,
   type AgentMessage,
   type ModelAdapter,
@@ -418,4 +419,222 @@ test("tool execution results do not generate emotion.set events", async () => {
   const emotionEvents = captured.filter((e) => e.type === "emotion.set")
   assert.equal(emotionEvents.length, 1, "only the first (text) turn should emit emotion.set")
   assert.equal(emotionEvents[0]?.emotion, "thinking")
+})
+
+/* ================================================================== */
+/*  Tool History Compaction                                            */
+/* ================================================================== */
+
+/**
+ * runTransientUserMessage compacts historical tool messages into
+ * [Tool Result Summary] blocks before querying the model.
+ */
+test("runTransientUserMessage compacts historical tool messages", async () => {
+  const events = new EventBus()
+  const captured: AgentEvent[] = []
+  events.subscribe((event) => captured.push(event))
+  const trace: TraceStore = { append: (event) => captured.push(event) }
+  let queriedMessages: AgentMessage[] = []
+  const model: ModelAdapter = {
+    async query(input) {
+      queriedMessages = input.messages
+      return { id: "asst_after_compact", role: "assistant", content: "done", createdAt: 0 }
+    },
+    formatObservations() { return [] },
+  }
+  const session = new AgentSession(
+    model,
+    new ToolRegistry(),
+    { async executeMany(): Promise<ToolResult[]> { return [] } },
+    { async check() { return { status: "approved" as const, actions: [] } } },
+    trace,
+    events,
+    { maxSteps: 5, emotion: { ...DEFAULT_EMOTION_SETTINGS, enabled: false, injectPrompt: false } },
+  )
+
+  // Seed history: user → assistant with tool call → tool observation (full output)
+  session.messages.push({ id: "u1", role: "user", content: "run something", createdAt: 0 })
+  session.messages.push({
+    id: "a1",
+    role: "assistant",
+    content: "",
+    actions: [{ id: "act_1", tool: "shell.run", args: { command: "echo hi" }, source: "llm", createdAt: 0 }],
+    createdAt: 0,
+  })
+  session.messages.push({
+    id: "t1",
+    role: "tool",
+    content: "stdout: hello world\nstderr: \nexit code: 0",
+    toolCallId: "act_1",
+    extra: { toolName: "shell.run", ok: true },
+    createdAt: 0,
+  })
+
+  await session.runTransientUserMessage("follow up")
+
+  // The tool message in session.messages should now be compacted
+  const toolMsg = session.messages.find((m) => m.role === "tool")!
+  assert.ok(typeof toolMsg.content === "string" && isToolHistorySummary(toolMsg.content), "tool message content must be compacted to [Tool Result Summary]")
+  assert.ok((toolMsg.extra as Record<string, unknown>)?.toolHistoryCompacted === true, "extra.toolHistoryCompacted must be true")
+  assert.ok(typeof (toolMsg.extra as Record<string, unknown>)?.toolHistorySummary === "string")
+
+  // The model should also receive the compacted version
+  const toolMsgInQuery = queriedMessages.find((m) => m.role === "tool")!
+  assert.ok(typeof toolMsgInQuery.content === "string" && isToolHistorySummary(toolMsgInQuery.content), "model query must see compacted tool content")
+})
+
+test("runUserMessage compacts historical tool messages before normal query", async () => {
+  const events = new EventBus()
+  events.subscribe(() => {})
+  const trace: TraceStore = { append: () => undefined }
+  let queriedMessages: AgentMessage[] = []
+  const model: ModelAdapter = {
+    async query(input) {
+      queriedMessages = input.messages
+      return { id: "asst_after_normal_compact", role: "assistant", content: "done", createdAt: 0 }
+    },
+    formatObservations() { return [] },
+  }
+  const session = new AgentSession(
+    model,
+    new ToolRegistry(),
+    { async executeMany(): Promise<ToolResult[]> { return [] } },
+    { async check() { return { status: "approved" as const, actions: [] } } },
+    trace,
+    events,
+    { maxSteps: 5, emotion: { ...DEFAULT_EMOTION_SETTINGS, enabled: false, injectPrompt: false } },
+  )
+
+  session.messages.push({
+    id: "t_normal",
+    role: "tool",
+    content: "full historical stdout that should not be sent again",
+    toolCallId: "act_normal",
+    extra: { toolName: "shell.run", ok: true },
+    createdAt: 0,
+  })
+
+  await session.runUserMessage("normal follow up")
+
+  const storedTool = session.messages.find((m) => m.id === "t_normal")!
+  const queriedTool = queriedMessages.find((m) => m.id === "t_normal")!
+  assert.ok(typeof storedTool.content === "string" && isToolHistorySummary(storedTool.content))
+  assert.ok(typeof queriedTool.content === "string" && isToolHistorySummary(queriedTool.content))
+})
+
+/**
+ * Tool messages that are already [Tool Result Summary] are not re-compacted.
+ */
+test("runTransientUserMessage skips already-compacted tool messages", async () => {
+  const events = new EventBus()
+  events.subscribe(() => {})
+  const trace: TraceStore = { append: () => undefined }
+  let queriedMessages: AgentMessage[] = []
+  const model: ModelAdapter = {
+    async query(input) {
+      queriedMessages = input.messages
+      return { id: "asst_skip", role: "assistant", content: "ok", createdAt: 0 }
+    },
+    formatObservations() { return [] },
+  }
+  const session = new AgentSession(
+    model,
+    new ToolRegistry(),
+    { async executeMany(): Promise<ToolResult[]> { return [] } },
+    { async check() { return { status: "approved" as const, actions: [] } } },
+    trace,
+    events,
+    { maxSteps: 5, emotion: { ...DEFAULT_EMOTION_SETTINGS, enabled: false, injectPrompt: false } },
+  )
+
+  const alreadyCompacted = "[Tool Result Summary]\nTool: shell.run\nStatus: ok\nSummary: done\nFull output omitted from future context."
+  session.messages.push({
+    id: "t_already",
+    role: "tool",
+    content: alreadyCompacted,
+    extra: { toolName: "shell.run", ok: true, toolHistoryCompacted: true, toolHistorySummary: alreadyCompacted },
+    createdAt: 0,
+  })
+
+  await session.runTransientUserMessage("next")
+
+  // Should remain exactly the same
+  const toolMsg = session.messages.find((m) => m.role === "tool")!
+  assert.equal(toolMsg.content, alreadyCompacted, "already-compacted message must not be modified")
+})
+
+/**
+ * runUserMessage does NOT compact tool observations during the current round.
+ * Tool observation content stays full-length in session.messages until a
+ * subsequent runTransientUserMessage compacts historical ones.
+ */
+test("runUserMessage keeps current-round tool observations intact (no compaction)", async () => {
+  const events = new EventBus()
+  events.subscribe(() => {})
+  const trace: TraceStore = { append: () => undefined }
+  let step = 0
+  const model: ModelAdapter = {
+    async query() {
+      step += 1
+      if (step === 1) {
+        // First model call: request a tool
+        return {
+          id: "asst_tool_call",
+          role: "assistant",
+          content: "",
+          actions: [{ id: "act_x", tool: "shell.run", args: {}, source: "llm", createdAt: 0 }],
+          createdAt: 0,
+        }
+      }
+      // Second model call: text reply (ends the loop)
+      return {
+        id: "asst_final",
+        role: "assistant",
+        content: "finished",
+        createdAt: 0,
+      }
+    },
+    formatObservations(results) {
+      // Simulate model adapter formatting observations as tool messages
+      return results.map((r) => ({
+        id: `obs_${r.actionId}`,
+        role: "tool" as const,
+        content: `Full observation: ${r.content}`,
+        toolCallId: r.actionId,
+        createdAt: Date.now(),
+      }))
+    },
+  }
+
+  const longOutput = "A".repeat(2000)
+  const session = new AgentSession(
+    model,
+    new ToolRegistry(),
+    {
+      async executeMany(actions) {
+        return actions.map((a) => ({
+          actionId: a.id,
+          tool: a.tool,
+          ok: true,
+          content: longOutput,
+          startedAt: Date.now(),
+          endedAt: Date.now(),
+        }))
+      },
+    },
+    { async check(actions) { return { status: "approved" as const, actions } } },
+    trace,
+    events,
+    { maxSteps: 5, emotion: { ...DEFAULT_EMOTION_SETTINGS, enabled: false, injectPrompt: false } },
+  )
+
+  await session.runUserMessage("do something")
+
+  // The tool observation in session.messages should still be the FULL content
+  const toolMsg = session.messages.find((m) => m.role === "tool")
+  assert.ok(toolMsg, "tool observation must exist")
+  assert.equal(toolMsg.content, `Full observation: ${longOutput}`,
+    "current-round tool observation must NOT be compacted")
+  assert.ok(!isToolHistorySummary(toolMsg.content),
+    "tool observation must not be a [Tool Result Summary] during current round")
 })

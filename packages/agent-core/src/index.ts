@@ -165,6 +165,8 @@ export type {
   LimitedOutput,
   ToolResultLimiterOptions,
 } from "./tools/tool-result-limiter.js"
+export { buildToolHistorySummary, isToolHistorySummary } from "./tools/tool-history-summary.js"
+export type { BuildToolHistorySummaryInput } from "./tools/tool-history-summary.js"
 
 /* ---- Doom Loop Detector (Phase 1) ---- */
 export { DoomLoopDetector, buildDoomLoopErrorOutput } from "./tools/doom-loop-detector.js"

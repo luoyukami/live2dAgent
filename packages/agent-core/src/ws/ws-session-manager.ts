@@ -336,7 +336,7 @@ export class WsSessionManager {
     return this.sessions.get(conversationId)?.remoteContextId ?? null
   }
 
-  setRemoteContextId(conversationId: string, id: string): void {
+  setRemoteContextId(conversationId: string, id: string | null): void {
     const session = this.sessions.get(conversationId)
     if (!session) return
     session.remoteContextId = id

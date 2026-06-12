@@ -14,6 +14,7 @@ import type { ModelAdapter } from "./model-adapter.js"
 import type { ToolRegistry } from "./tool-registry.js"
 import { EventBus } from "./events.js"
 import { parseEmotionTag } from "./emotion-parser.js"
+import { buildToolHistorySummary, isToolHistorySummary } from "./tools/tool-history-summary.js"
 
 /* ------------------------------------------------------------------ */
 /*  Interfaces that MUST be implemented by the host environment        */
@@ -104,6 +105,8 @@ export class AgentSession {
     const text = typeof textOrInput === "string" ? textOrInput : textOrInput.text
     const attachments = typeof textOrInput === "string" ? undefined : textOrInput.attachments
     const artifactRefs = typeof textOrInput === "string" ? undefined : textOrInput.artifactRefs
+
+    this.compactHistoricalToolMessages()
 
     const extra: Record<string, unknown> = {}
     if (artifactRefs && artifactRefs.length > 0) {
@@ -209,6 +212,8 @@ export class AgentSession {
     const attachments = typeof textOrInput === "string" ? undefined : textOrInput.attachments
     const artifactRefs = typeof textOrInput === "string" ? undefined : textOrInput.artifactRefs
 
+    this.compactHistoricalToolMessages()
+
     const extra: Record<string, unknown> = {}
     if (artifactRefs && artifactRefs.length > 0) extra.artifactRefs = artifactRefs
 
@@ -237,6 +242,29 @@ export class AgentSession {
   private addMessage(message: AgentMessage): void {
     this.messages.push(message)
     this.emit({ type: "message.added", message })
+  }
+
+  private compactHistoricalToolMessages(): void {
+    for (const message of this.messages) {
+      if (message.role !== "tool" || typeof message.content !== "string") continue
+      if (isToolHistorySummary(message.content)) continue
+
+      const toolName = typeof message.extra?.toolName === "string" ? message.extra.toolName : "unknown"
+      const status = typeof message.extra?.ok === "boolean"
+        ? (message.extra.ok ? "ok" : "error")
+        : "unknown"
+      const existingSummary = typeof message.extra?.toolHistorySummary === "string"
+        ? message.extra.toolHistorySummary
+        : undefined
+      const historySummary = existingSummary ?? buildToolHistorySummary({
+        toolName,
+        status,
+        output: message.content,
+      })
+
+      message.content = historySummary
+      message.extra = { ...message.extra, toolHistorySummary: historySummary, toolHistoryCompacted: true }
+    }
   }
 
   private emit(event: AgentEvent): void {

@@ -3,7 +3,7 @@ import { spawn } from "node:child_process"
 import { existsSync, mkdirSync, readFileSync, realpathSync, writeFileSync } from "node:fs"
 import { dirname, isAbsolute, resolve, relative } from "node:path"
 import { pathToFileURL } from "node:url"
-import { AgentSession, AssistantRuntime, ContextManager, ConversationManager, DefaultProviderRuntimeRegistry, EventBus, RunController, ToolRegistry, WsSessionManager, composePromptPresetInstructions, composeSystemPrompt, isEmotionPromptInjected, ToolResultLimiter, WS_RUNTIME_CONSTANTS, estimateTokens, sanitizeTextForTts, segmentLongText, extractTtsInstruction, isTtsInstructionInjected, type AgentEvent, type AgentAction, type AgentRuntimeEvent, type ArtifactWriter, type ToolResult, type ToolRuntime, type ToolArtifact, type ConversationStore, type ConversationStoreMessage, type ContextBuilder, type ToolManager, type ToolValidationResult, type CanonicalToolDefinition, type ModelToolCall, type ValidatedToolCall, type CanonicalToolResult, type CanonicalCreateInput, type CanonicalToolContinuationInput, type AssistantRuntimeEvent, type ProviderRuntime, type ModelMessage, type ModelContentPart, type AgentMessageMetadata, type AgentMessage, type ModelAdapter } from "@live2d-agent/agent-core"
+import { AgentSession, AssistantRuntime, ContextManager, ConversationManager, DefaultProviderRuntimeRegistry, EventBus, RunController, ToolRegistry, WsSessionManager, composePromptPresetInstructions, composeSystemPrompt, isEmotionPromptInjected, ToolResultLimiter, WS_RUNTIME_CONSTANTS, estimateTokens, sanitizeTextForTts, segmentLongText, extractTtsInstruction, isTtsInstructionInjected, buildToolHistorySummary, type AgentEvent, type AgentAction, type AgentRuntimeEvent, type ArtifactWriter, type ToolResult, type ToolRuntime, type ToolArtifact, type ConversationStore, type ConversationStoreMessage, type ContextBuilder, type ToolManager, type ToolValidationResult, type CanonicalToolDefinition, type ModelToolCall, type ValidatedToolCall, type CanonicalToolResult, type CanonicalCreateInput, type CanonicalToolContinuationInput, type AssistantRuntimeEvent, type ProviderRuntime, type ModelMessage, type ModelContentPart, type AgentMessageMetadata, type AgentMessage, type ModelAdapter } from "@live2d-agent/agent-core"
 import { OpenAiCompatibleAdapter, OpenAiCompatibleWsClient, MimoWsRuntime } from "@live2d-agent/model-openai-compatible"
 import { createDefaultTools, type RuntimeToolContext } from "@live2d-agent/tools"
 import type { ArtifactRef, AudioArtifactRef, AudioContextAttachment, DebugEmotionInfo, Emotion, MessageAudioState } from "@live2d-agent/shared"
@@ -1548,15 +1548,22 @@ class ConversationStoreAdapter implements ConversationStore {
     toolCallId: string,
     toolName: string,
     output: string,
+    historySummary?: string,
   ): void {
-    // ConversationManager doesn't have a dedicated tool message append.
-    // Append as a user message with tool call metadata for now.
     const conv = (this.mgr as any).getConversation(conversationId)
     if (!conv) return
+    const toolHistorySummary = historySummary ?? buildToolHistorySummary({
+      toolName,
+      status: "unknown",
+      output,
+    })
     conv.messages.push({
       id: `msg_tool_${Date.now()}_${Math.random().toString(36).slice(2, 9)}`,
       role: "tool" as const,
       content: output,
+      toolCallId,
+      toolName,
+      extra: { toolHistorySummary },
       createdAt: Date.now(),
     })
   }
@@ -1580,18 +1587,20 @@ class ConversationStoreAdapter implements ConversationStore {
     const msgs = this.mgr.getMessages(conversationId)
     const conv = (this.mgr as any).getConversation(conversationId)
     if (!conv) return msgs
-    return msgs.map((m: { id: string; role: "user" | "assistant"; content: string; createdAt: number }) => {
+    return msgs.map((m: { id: string; role: "user" | "assistant" | "tool"; content: string; createdAt: number; toolCallId?: string; toolName?: string; extra?: Record<string, unknown> }) => {
       const stored = conv.messages.find((s: { id: string }) => s.id === m.id)
       if (stored && (stored.attachments || stored.extra)) {
         return {
           id: m.id,
           role: m.role,
           content: m.content,
+          toolCallId: m.toolCallId ?? stored.toolCallId,
+          toolName: m.toolName ?? stored.toolName,
           attachments: stored.attachments,
-          extra: stored.extra,
+          extra: { ...m.extra, ...stored.extra },
         }
       }
-      return { id: m.id, role: m.role, content: m.content }
+      return { id: m.id, role: m.role, content: m.content, toolCallId: m.toolCallId, toolName: m.toolName, extra: m.extra }
     })
   }
 
@@ -1764,10 +1773,12 @@ class ContextBuilderAdapter implements ContextBuilder {
     // historical messages use file_ref instead.
     for (const msg of convMessages) {
       const isCurrentTurn = params.currentUserMessageId != null && msg.id === params.currentUserMessageId
+      const messageForModel = this._messageForModel(params, msg)
       const role = msg.role as "user" | "assistant" | "tool"
       modelMessages.push({
         role,
-        content: this._buildContentParts(msg, isCurrentTurn),
+        toolCallId: messageForModel.toolCallId,
+        content: this._buildContentParts(messageForModel, isCurrentTurn),
       })
     }
 
@@ -1887,6 +1898,33 @@ class ContextBuilderAdapter implements ContextBuilder {
     return parts
   }
 
+  private _messageForModel(
+    params: { messages: ConversationStoreMessage[]; currentUserMessageId?: string },
+    msg: ConversationStoreMessage,
+  ): ConversationStoreMessage {
+    if (msg.role !== "tool" || this._isCurrentRunToolMessage(params, msg)) return msg
+
+    const historySummary = typeof msg.extra?.toolHistorySummary === "string"
+      ? msg.extra.toolHistorySummary
+      : buildToolHistorySummary({
+        toolName: msg.toolName ?? "unknown",
+        status: typeof msg.extra?.status === "string" ? msg.extra.status : "unknown",
+        output: msg.content,
+      })
+
+    return { ...msg, content: historySummary }
+  }
+
+  private _isCurrentRunToolMessage(
+    params: { messages: ConversationStoreMessage[]; currentUserMessageId?: string },
+    msg: ConversationStoreMessage,
+  ): boolean {
+    if (!params.currentUserMessageId) return false
+    const currentUserIndex = params.messages.findIndex((message) => message.id === params.currentUserMessageId)
+    const messageIndex = params.messages.findIndex((message) => message.id === msg.id)
+    return currentUserIndex >= 0 && messageIndex > currentUserIndex
+  }
+
   /**
    * Enforce artifact raw byte budget: total inline image/audio bytes
    * must not exceed MAX_ARTIFACT_RAW_BYTES. If exceeded, replace earlier
@@ -1990,10 +2028,12 @@ class ContextBuilderAdapter implements ContextBuilder {
       .slice(-n)
     for (const msg of lastN) {
       const isCurrentTurn = params.currentUserMessageId != null && msg.id === params.currentUserMessageId
+      const messageForModel = this._messageForModel(params, msg)
       const role = msg.role as "user" | "assistant" | "tool"
       modelMessages.push({
         role,
-        content: this._buildContentParts(msg, isCurrentTurn),
+        toolCallId: messageForModel.toolCallId,
+        content: this._buildContentParts(messageForModel, isCurrentTurn),
       })
     }
 
