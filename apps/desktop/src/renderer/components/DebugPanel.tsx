@@ -169,6 +169,11 @@ export function DebugPanel({
               <h4>MCP</h4>
               <div className="debug-kv">
                 <div><span>Enabled</span><span>{snapshot?.mcp?.enabled ? "true" : "false"}</span></div>
+                <div><span>Search enabled</span><span>{snapshot?.mcp?.search?.enabled ? "true" : "false"}</span></div>
+                <div><span>Search auto-register</span><span>{snapshot?.mcp?.search?.autoRegisterServer ? "true" : "false"}</span></div>
+                <div><span>Brave key in settings</span><span>{snapshot?.mcp?.search?.hasApiKey ? "true" : "false"}</span></div>
+                <div><span>BRAVE_API_KEY env</span><span>{snapshot?.mcp?.search?.hasEnvApiKey ? "true" : "false"}</span></div>
+                <div><span>Configured servers</span><span>{snapshot?.mcp?.configuredServers?.join(", ") || "—"}</span></div>
                 <div><span>Connected servers</span><span>{snapshot?.mcp?.connectedServers?.join(", ") || "—"}</span></div>
                 <div><span>Registered tools</span><span>{snapshot?.mcp?.registeredToolCount ?? 0}</span></div>
                 <div><span>Last error</span><span>{snapshot?.mcp?.lastErrors?.[0]?.error ?? "none"}</span></div>

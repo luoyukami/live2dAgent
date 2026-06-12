@@ -500,6 +500,8 @@ export interface DebugSnapshot {
     registeredToolCount: number
     registeredTools: Array<{ name: string; serverName: string; remoteName: string; permission: PermissionLevel }>
     lastErrors: Array<{ serverName: string; error: string; at: number }>
+    search: { enabled: boolean; autoRegisterServer: boolean; hasApiKey: boolean; hasEnvApiKey: boolean }
+    configuredServers: string[]
   }
 
   /* ---- Voice input (v0 voice feature) ---- */

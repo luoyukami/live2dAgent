@@ -46,19 +46,16 @@ export class McpService {
     }
 
     const servers = this.resolveServers(appSettings)
-    for (const [serverName, serverConfig] of Object.entries(servers)) {
-      if (serverConfig.enabled === false) continue
+    const enabledServers = Object.entries(servers).filter(([, serverConfig]) => serverConfig.enabled !== false)
+    if (enabledServers.length === 0) {
+      this.recordError("mcp", "MCP 已启用，但没有可启动的 server。请配置 MCP JSON，或为 Brave Search 配置 API Key / BRAVE_API_KEY 环境变量。")
+    }
+    for (const [serverName, serverConfig] of enabledServers) {
       try {
         await this.connectServer(serverName, serverConfig, appSettings.mcp.defaultTimeoutMs)
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error)
-        this.lastErrors.unshift({ serverName, error: message, at: Date.now() })
-        this.lastErrors = this.lastErrors.slice(0, 10)
-        this.appendTrace({
-          type: "mcp.server.error",
-          serverName,
-          error: message,
-        })
+        this.recordError(serverName, message)
       }
     }
   }
@@ -69,9 +66,12 @@ export class McpService {
     registeredToolCount: number
     registeredTools: Array<{ name: string; serverName: string; remoteName: string; permission: PermissionLevel }>
     lastErrors: Array<{ serverName: string; error: string; at: number }>
+    search: { enabled: boolean; autoRegisterServer: boolean; hasApiKey: boolean; hasEnvApiKey: boolean }
+    configuredServers: string[]
   } {
+    const settings = this.settings.get()
     return {
-      enabled: this.settings.get().mcp.enabled,
+      enabled: settings.mcp.enabled,
       connectedServers: Array.from(this.connections.keys()),
       registeredToolCount: this.tools.size,
       registeredTools: Array.from(this.tools.values()).map((tool) => ({
@@ -81,6 +81,13 @@ export class McpService {
         permission: tool.permission,
       })),
       lastErrors: [...this.lastErrors],
+      search: {
+        enabled: settings.mcp.search.enabled,
+        autoRegisterServer: settings.mcp.search.autoRegisterServer,
+        hasApiKey: Boolean(settings.mcp.search.braveApiKey?.trim()),
+        hasEnvApiKey: Boolean(process.env.BRAVE_API_KEY?.trim()),
+      },
+      configuredServers: Object.keys(settings.mcp.servers),
     }
   }
 
@@ -210,7 +217,7 @@ export class McpService {
     const merged: Record<string, McpServerSettings> = { ...fromFile, ...settings.mcp.servers }
     const search = settings.mcp.search
     if (search.enabled && search.provider === "brave" && search.autoRegisterServer) {
-      const apiKey = search.braveApiKey?.trim()
+      const apiKey = search.braveApiKey?.trim() || process.env.BRAVE_API_KEY?.trim()
       if (apiKey) {
         merged["brave-search"] = {
           enabled: true,
@@ -222,6 +229,8 @@ export class McpService {
           trust: false,
           ...(merged["brave-search"] ?? {}),
         }
+      } else {
+        this.recordError("brave-search", "Brave Search MCP 已启用，但缺少 Brave Search API Key。请在设置页填写，或设置 BRAVE_API_KEY 环境变量后重启应用。")
       }
     }
     return merged
@@ -229,6 +238,12 @@ export class McpService {
 
   private appendTrace(event: Record<string, unknown>): void {
     this.trace.append(redact(event) as any)
+  }
+
+  private recordError(serverName: string, error: string): void {
+    this.lastErrors.unshift({ serverName, error, at: Date.now() })
+    this.lastErrors = this.lastErrors.slice(0, 10)
+    this.appendTrace({ type: "mcp.server.error", serverName, error })
   }
 
   private result(action: AgentAction, startedAt: number, ok: boolean, content: string, data?: unknown, code?: string): ToolResult {
