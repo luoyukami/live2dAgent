@@ -41,4 +41,6 @@ test("prompt contains the required format instructions", () => {
   assert.ok(prompt.includes("不要写完整长句"))
   assert.ok(prompt.includes("强度 + 情感/状态 + 语速"))
   assert.ok(prompt.includes("不要加入“请”“这句话”“保持音色”"))
+  assert.ok(prompt.includes("回复正文、TTS_INSTRUCTION、最后一行的 emotion tag"))
+  assert.ok(prompt.includes("此时 TTS_INSTRUCTION 不是最后一行"))
 })

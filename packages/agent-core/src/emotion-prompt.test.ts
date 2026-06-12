@@ -65,7 +65,7 @@ test("isEmotionPromptInjected recognises the marker", () => {
   assert.equal(isEmotionPromptInjected(undefined), false)
 })
 
-test("composePromptPresetInstructions slots role and user info into markdown sections", () => {
+test("composePromptPresetInstructions slots role, behavior rules, and user reference into markdown sections", () => {
   const result = composePromptPresetInstructions({
     rolePrompt: "你是小花。",
     userInfoPrompt: "用户偏好中文。",
@@ -73,8 +73,15 @@ test("composePromptPresetInstructions slots role and user info into markdown sec
 
   assert.ok(result.includes("# Assistant Runtime Prompt"))
   assert.ok(result.includes("## 角色提示词\n\n你是小花。"))
-  assert.ok(result.includes("## 用户信息提示词\n\n用户偏好中文。"))
   assert.ok(result.includes("## 固定行为与工具规则"))
+  assert.ok(result.includes("## 参考信息｜用户\n\n用户偏好中文。"))
+  assert.ok(result.indexOf("## 固定行为与工具规则") < result.indexOf("## 参考信息｜用户"))
+})
+
+test("emotion instructions define TTS-before-emotion output order", () => {
+  const instructions = getEmotionTagInstructions()
+  assert.ok(instructions.includes("reply body, then one TTS_INSTRUCTION line, then the emotion tag as the final line"))
+  assert.ok(instructions.includes("The emotion tag always remains the last line"))
 })
 
 /* ------------------------------------------------------------------ */

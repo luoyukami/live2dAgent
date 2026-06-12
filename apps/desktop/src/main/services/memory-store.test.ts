@@ -3,7 +3,7 @@ import assert from "node:assert/strict"
 import { mkdtempSync, readFileSync, rmSync, writeFileSync, existsSync, readdirSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
-import { ENTRY_DELIMITER, MemoryStore, parseMemoryEntries, scanMemoryContent } from "./memory-store.js"
+import { ENTRY_DELIMITER, MEMORY_GUIDANCE, MemoryStore, parseMemoryEntries, scanMemoryContent } from "./memory-store.js"
 
 function withTempDir(fn: (dir: string) => void): void {
   const dir = mkdtempSync(join(tmpdir(), "live2d-memory-"))
@@ -29,6 +29,12 @@ describe("scanMemoryContent", () => {
 })
 
 describe("MemoryStore", () => {
+  test("memory guidance explains user and memory targets", () => {
+    assert.match(MEMORY_GUIDANCE, /two targets/)
+    assert.match(MEMORY_GUIDANCE, /user = who the user is/)
+    assert.match(MEMORY_GUIDANCE, /memory = your agent notes/)
+  })
+
   test("loads missing files as empty and formats no prompt block", () => withTempDir((dir) => {
     const store = new MemoryStore({ memoryDir: dir })
     store.loadFromDisk()

@@ -60,6 +60,7 @@ export function parseMemoryEntries(raw: string): string[] {
 
 export const MEMORY_GUIDANCE = [
   "You have persistent memory across sessions. Save durable facts using the memory tool: user preferences, environment details, tool quirks, and stable conventions. Memory is injected into future turns, so keep it compact and focused on facts that will still matter later.",
+  "The memory tool has two targets: user = who the user is, stable preferences, background, communication style; memory = your agent notes, environment facts, project conventions, tool quirks, and lessons learned. Choose the correct target before saving.",
   "Prioritize facts that reduce future user steering. The most valuable memory prevents the user from having to repeat themselves. User preferences and recurring corrections matter more than procedural task details.",
   "Do not save task progress, session outcomes, completed-work logs, or temporary TODO state. Do not record PR numbers, issue numbers, commit SHAs, completed bug fixes, phase completion, file counts, or anything likely to be stale within 7 days.",
   "Write memories as declarative facts, not instructions to yourself. Prefer 'User prefers concise responses' over 'Always respond concisely.' Imperative phrasing may be misread as a directive in later sessions.",
