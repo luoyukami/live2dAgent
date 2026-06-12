@@ -1,10 +1,12 @@
 import { BrowserWindow, screen } from "electron"
-import { join } from "node:path"
+import { dirname, join } from "node:path"
+import { fileURLToPath } from "node:url"
 import { IPC_CHANNELS } from "@live2d-agent/shared"
 import type { AgentEvent } from "@live2d-agent/agent-core"
 import type { CompactInputAnchor, PublicSettings, UiSettings, AvatarHitRegionRect } from "@live2d-agent/shared"
 
 const isDev = process.env.NODE_ENV === "development"
+const currentDir = dirname(fileURLToPath(import.meta.url))
 
 type WindowRole = "avatar" | "ui" | "combined"
 
@@ -90,7 +92,7 @@ export class WindowManager {
       skipTaskbar: false,
       hasShadow: false,
       webPreferences: {
-        preload: join(__dirname, "../preload/index.js"),
+        preload: join(currentDir, "../preload/index.js"),
         nodeIntegration: false,
         contextIsolation: true,
         sandbox: true,
@@ -409,7 +411,7 @@ export class WindowManager {
       skipTaskbar: true,
       hasShadow: false,
       webPreferences: {
-        preload: join(__dirname, "../preload/index.js"),
+        preload: join(currentDir, "../preload/index.js"),
         nodeIntegration: false,
         contextIsolation: true,
         sandbox: true,
@@ -446,7 +448,7 @@ export class WindowManager {
       skipTaskbar: true,     // <-- 不在任务栏显示
       hasShadow: false,
       webPreferences: {
-        preload: join(__dirname, "../preload/index.js"),
+        preload: join(currentDir, "../preload/index.js"),
         nodeIntegration: false,
         contextIsolation: true,
         sandbox: true,
@@ -777,7 +779,7 @@ export class WindowManager {
     } else {
       // Packaged / production — pass query via Electron's loadFile API
       const query = role ? { window: role } : undefined
-      await win.loadFile(join(__dirname, "../renderer/index.html"), { query })
+      await win.loadFile(join(currentDir, "../renderer/index.html"), { query })
     }
 
     // Prevent drag-and-drop files from opening new windows / navigating
