@@ -235,7 +235,8 @@ export interface McpServerSettings {
 
 export interface McpSearchSettings {
   enabled: boolean
-  provider: "brave"
+  provider: "parallel" | "brave"
+  parallelApiKey?: string
   braveApiKey?: string
   autoRegisterServer: boolean
 }
@@ -249,13 +250,14 @@ export interface McpSettings {
 }
 
 export const DEFAULT_MCP_SETTINGS: McpSettings = {
-  enabled: false,
+  enabled: true,
   configPath: "",
   defaultTimeoutMs: 30_000,
   servers: {},
   search: {
-    enabled: false,
-    provider: "brave",
+    enabled: true,
+    provider: "parallel",
+    parallelApiKey: undefined,
     braveApiKey: undefined,
     autoRegisterServer: true,
   },
@@ -500,7 +502,7 @@ export interface DebugSnapshot {
     registeredToolCount: number
     registeredTools: Array<{ name: string; serverName: string; remoteName: string; permission: PermissionLevel }>
     lastErrors: Array<{ serverName: string; error: string; at: number }>
-    search: { enabled: boolean; autoRegisterServer: boolean; hasApiKey: boolean; hasEnvApiKey: boolean }
+    search: { enabled: boolean; provider: string; autoRegisterServer: boolean; hasApiKey: boolean; hasEnvApiKey: boolean; keyless: boolean }
     configuredServers: string[]
   }
 

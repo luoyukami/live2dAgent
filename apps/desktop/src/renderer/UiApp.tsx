@@ -592,12 +592,15 @@ export function UiApp(): JSX.Element {
       if (form.mcp.defaultTimeoutMs !== (settingsMcp?.defaultTimeoutMs ?? 30000)) mcpPatch.defaultTimeoutMs = form.mcp.defaultTimeoutMs
       if (form.mcp.search.enabled !== (settingsMcp?.search?.enabled ?? false) ||
         form.mcp.search.autoRegisterServer !== (settingsMcp?.search?.autoRegisterServer ?? true) ||
+        form.mcp.search.provider !== (settingsMcp?.search?.provider ?? "parallel") ||
+        Boolean(form.mcp.search.parallelApiKey?.trim()) ||
         Boolean(form.mcp.search.braveApiKey?.trim())) {
         const searchPatch: Record<string, unknown> = {
           enabled: form.mcp.search.enabled,
-          provider: "brave",
+          provider: form.mcp.search.provider,
           autoRegisterServer: form.mcp.search.autoRegisterServer,
         }
+        if (form.mcp.search.parallelApiKey?.trim()) searchPatch.parallelApiKey = form.mcp.search.parallelApiKey.trim()
         if (form.mcp.search.braveApiKey?.trim()) searchPatch.braveApiKey = form.mcp.search.braveApiKey.trim()
         mcpPatch.search = searchPatch
       }

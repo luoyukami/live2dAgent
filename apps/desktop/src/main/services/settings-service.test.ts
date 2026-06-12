@@ -7,7 +7,7 @@
  */
 import { test } from "node:test"
 import assert from "node:assert/strict"
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs"
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { DEFAULT_PROMPT_PRESET_SETTINGS } from "@live2d-agent/shared"
@@ -121,6 +121,50 @@ test("reasoningEffort defaults to low and validates public patches", () => {
       () => service.updatePublicPatch({ reasoningEffort: "ultra" as never }),
       /Invalid reasoning effort/,
     )
+  } finally {
+    cleanup(dir)
+  }
+})
+
+test("default MCP config file is generated and points settings to a usable path", () => {
+  const dir = makeTempUserDataDir()
+  try {
+    const service = new SettingsService(dir)
+    const settings = service.getPublicSettings()
+    const expectedPath = join(dir, "mcp.json")
+
+    assert.equal(settings.mcp.configPath, expectedPath)
+    assert.equal(existsSync(expectedPath), true)
+
+    const parsed = JSON.parse(readFileSync(expectedPath, "utf8")) as Record<string, unknown>
+    assert.deepEqual(parsed.mcpServers, {})
+    assert.equal(settings.mcp.enabled, true)
+    assert.equal(settings.mcp.search.enabled, true)
+    assert.equal(settings.mcp.search.provider, "parallel")
+  } finally {
+    cleanup(dir)
+  }
+})
+
+test("legacy empty MCP config migrates to built-in Parallel search instead of requiring manual JSON", () => {
+  const dir = makeTempUserDataDir()
+  try {
+    writeSettingsJson(dir, {
+      mcp: {
+        enabled: true,
+        configPath: "",
+        servers: {},
+        search: { enabled: false, provider: "brave", autoRegisterServer: true },
+      },
+    })
+
+    const service = new SettingsService(dir)
+    const settings = service.getPublicSettings()
+
+    assert.equal(settings.mcp.configPath, join(dir, "mcp.json"))
+    assert.equal(settings.mcp.search.enabled, true)
+    assert.equal(settings.mcp.search.provider, "parallel")
+    assert.equal(existsSync(settings.mcp.configPath), true)
   } finally {
     cleanup(dir)
   }

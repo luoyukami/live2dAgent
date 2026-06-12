@@ -7,6 +7,7 @@ import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/
 import type { Transport } from "@modelcontextprotocol/sdk/shared/transport.js"
 import type { AgentAction, ToolDefinition, ToolResult } from "@live2d-agent/agent-core"
 import type { AppSettings, McpServerSettings, PermissionLevel } from "@live2d-agent/shared"
+import { McpStreamableHttpClient, ParallelSearchProvider } from "./parallel-search-provider.js"
 import type { SettingsService } from "./settings-service.js"
 import type { TraceService } from "./trace-service.js"
 
@@ -30,6 +31,8 @@ interface McpConnection {
 export class McpService {
   private connections = new Map<string, McpConnection>()
   private tools = new Map<string, McpRuntimeTool>()
+  private virtualTools = new Map<string, McpRuntimeTool>()
+  private parallelSearch?: ParallelSearchProvider
   private lastErrors: Array<{ serverName: string; error: string; at: number }> = []
 
   constructor(
@@ -45,10 +48,12 @@ export class McpService {
       return
     }
 
+    this.configureBuiltInSearch(appSettings)
+
     const servers = this.resolveServers(appSettings)
     const enabledServers = Object.entries(servers).filter(([, serverConfig]) => serverConfig.enabled !== false)
-    if (enabledServers.length === 0) {
-      this.recordError("mcp", "MCP 已启用，但没有可启动的 server。请配置 MCP JSON，或为 Brave Search 配置 API Key / BRAVE_API_KEY 环境变量。")
+    if (enabledServers.length === 0 && this.virtualTools.size === 0) {
+      this.appendTrace({ type: "mcp.no_servers", configPath: appSettings.mcp.configPath })
     }
     for (const [serverName, serverConfig] of enabledServers) {
       try {
@@ -66,15 +71,15 @@ export class McpService {
     registeredToolCount: number
     registeredTools: Array<{ name: string; serverName: string; remoteName: string; permission: PermissionLevel }>
     lastErrors: Array<{ serverName: string; error: string; at: number }>
-    search: { enabled: boolean; autoRegisterServer: boolean; hasApiKey: boolean; hasEnvApiKey: boolean }
+    search: { enabled: boolean; provider: string; autoRegisterServer: boolean; hasApiKey: boolean; hasEnvApiKey: boolean; keyless: boolean }
     configuredServers: string[]
   } {
     const settings = this.settings.get()
     return {
       enabled: settings.mcp.enabled,
       connectedServers: Array.from(this.connections.keys()),
-      registeredToolCount: this.tools.size,
-      registeredTools: Array.from(this.tools.values()).map((tool) => ({
+      registeredToolCount: this.virtualTools.size + this.tools.size,
+      registeredTools: [...this.virtualTools.values(), ...this.tools.values()].map((tool) => ({
         name: tool.exposedName,
         serverName: tool.serverName,
         remoteName: tool.remoteName,
@@ -83,16 +88,18 @@ export class McpService {
       lastErrors: [...this.lastErrors],
       search: {
         enabled: settings.mcp.search.enabled,
+        provider: settings.mcp.search.provider,
         autoRegisterServer: settings.mcp.search.autoRegisterServer,
-        hasApiKey: Boolean(settings.mcp.search.braveApiKey?.trim()),
-        hasEnvApiKey: Boolean(process.env.BRAVE_API_KEY?.trim()),
+        hasApiKey: Boolean((settings.mcp.search.provider === "parallel" ? settings.mcp.search.parallelApiKey : settings.mcp.search.braveApiKey)?.trim()),
+        hasEnvApiKey: Boolean((settings.mcp.search.provider === "parallel" ? process.env.PARALLEL_API_KEY : process.env.BRAVE_API_KEY)?.trim()),
+        keyless: settings.mcp.search.provider === "parallel" && !settings.mcp.search.parallelApiKey?.trim() && !process.env.PARALLEL_API_KEY?.trim(),
       },
       configuredServers: Object.keys(settings.mcp.servers),
     }
   }
 
   getToolDefinitions(): ToolDefinition[] {
-    return Array.from(this.tools.values()).map((tool) => ({
+    return [...this.virtualTools.values(), ...this.tools.values()].map((tool) => ({
       name: tool.exposedName,
       description: tool.description,
       inputSchema: tool.inputSchema,
@@ -101,11 +108,12 @@ export class McpService {
   }
 
   hasTool(name: string): boolean {
-    return this.tools.has(name)
+    return this.virtualTools.has(name) || this.tools.has(name)
   }
 
   async execute(action: AgentAction): Promise<ToolResult> {
     const startedAt = Date.now()
+    if (this.virtualTools.has(action.tool)) return this.executeVirtualTool(action, startedAt)
     const tool = this.tools.get(action.tool)
     if (!tool) return this.result(action, startedAt, false, `Unknown MCP tool: ${action.tool}`, undefined, "UNKNOWN_MCP_TOOL")
     const connection = this.connections.get(tool.serverName)
@@ -140,6 +148,8 @@ export class McpService {
     const connections = Array.from(this.connections.values())
     this.connections.clear()
     this.tools.clear()
+    this.virtualTools.clear()
+    this.parallelSearch = undefined
     await Promise.allSettled(connections.map(async (connection) => {
       try {
         await connection.client.close()
@@ -234,6 +244,72 @@ export class McpService {
       }
     }
     return merged
+  }
+
+  private configureBuiltInSearch(settings: AppSettings): void {
+    const search = settings.mcp.search
+    if (!search.enabled || search.provider !== "parallel") return
+    const apiKey = search.parallelApiKey?.trim() || process.env.PARALLEL_API_KEY?.trim()
+    this.parallelSearch = new ParallelSearchProvider(
+      new McpStreamableHttpClient({
+        apiKey,
+        clientName: "live2d-agent",
+        clientVersion: "0.0.0",
+        timeoutMs: settings.mcp.defaultTimeoutMs,
+      }),
+      "live2d-agent",
+      20,
+      5,
+    )
+    this.virtualTools.set("web_search", {
+      exposedName: "web_search",
+      serverName: "parallel-search",
+      remoteName: "web_search",
+      description: "Search the web for current information. Returns web results with title, URL, description, and position. The query is sent to Parallel Search MCP; it works keyless by default and uses PARALLEL_API_KEY or the configured Parallel API key when available.",
+      inputSchema: {
+        type: "object",
+        properties: {
+          query: { type: "string", description: "The web search query." },
+          limit: { type: "integer", minimum: 1, maximum: 20, default: 5 },
+        },
+        required: ["query"],
+      },
+      permission: "workspace_read",
+      timeoutMs: settings.mcp.defaultTimeoutMs,
+    })
+    this.virtualTools.set("web_fetch", {
+      exposedName: "web_fetch",
+      serverName: "parallel-search",
+      remoteName: "web_fetch",
+      description: "Fetch readable markdown-like content from one or more public web URLs. Use after web_search to inspect specific pages. The URLs are sent to Parallel Search MCP and private/internal URLs are blocked.",
+      inputSchema: {
+        type: "object",
+        properties: { urls: { type: "array", items: { type: "string" }, minItems: 1, maxItems: 5 } },
+        required: ["urls"],
+      },
+      permission: "workspace_read",
+      timeoutMs: settings.mcp.defaultTimeoutMs,
+    })
+    this.appendTrace({ type: "mcp.search.parallel.configured", keyless: !apiKey })
+  }
+
+  private async executeVirtualTool(action: AgentAction, startedAt: number): Promise<ToolResult> {
+    if (!this.parallelSearch) return this.result(action, startedAt, false, "Parallel Search provider is not configured", undefined, "MCP_SERVER_NOT_CONNECTED")
+    this.appendTrace({ type: "mcp.tool.started", serverName: "parallel-search", tool: action.tool, args: redact(action.args) })
+    try {
+      const args = asObject(action.args)
+      const data = action.tool === "web_search"
+        ? await this.parallelSearch.search(String(args.query ?? ""), typeof args.limit === "number" ? args.limit : Number(args.limit ?? 5))
+        : await this.parallelSearch.fetch(Array.isArray(args.urls) ? args.urls.map(String) : [])
+      const ok = Boolean((data as { success?: unknown }).success)
+      const content = JSON.stringify(data, null, 2)
+      this.appendTrace({ type: ok ? "mcp.tool.finished" : "mcp.tool.error", serverName: "parallel-search", tool: action.tool, ok, durationMs: Date.now() - startedAt })
+      return this.result(action, startedAt, ok, content, redact(data), ok ? undefined : "MCP_EXECUTION_ERROR")
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error)
+      this.appendTrace({ type: "mcp.tool.error", serverName: "parallel-search", tool: action.tool, error: message, durationMs: Date.now() - startedAt })
+      return this.result(action, startedAt, false, message, undefined, "MCP_EXECUTION_ERROR")
+    }
   }
 
   private appendTrace(event: Record<string, unknown>): void {

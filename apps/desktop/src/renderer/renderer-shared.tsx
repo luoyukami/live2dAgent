@@ -196,7 +196,7 @@ export function McpSettingsSection({ form, setForm }: { form: SettingsForm; setF
           />
           <span>启用 MCP 工具</span>
         </label>
-        <small className="settings-hint">默认关闭。启用后会读取下方配置文件和内置搜索配置，启动 server 后自动 tools/list 并注册工具。</small>
+        <small className="settings-hint">默认开启。启用后会读取下方配置文件，并注册内置 keyless 联网搜索工具或自定义 MCP server。</small>
       </div>
 
       <div className="settings-group">
@@ -229,19 +229,39 @@ export function McpSettingsSection({ form, setForm }: { form: SettingsForm; setF
             disabled={!form.mcp.enabled}
             onChange={(e) => setForm((f) => ({ ...f, mcp: { ...f.mcp, search: { ...f.mcp.search, enabled: e.target.checked } } }))}
           />
-          <span>启用联网搜索 MCP server（Brave Search）</span>
+          <span>启用联网搜索工具（Parallel keyless）</span>
         </label>
-        <small className="settings-hint">搜索能力通过 Brave Search MCP server 接入，不硬编码进聊天主流程。</small>
+        <small className="settings-hint">默认走 Parallel Search MCP 匿名模式；填写 Parallel API Key 或设置 PARALLEL_API_KEY 可提升限额。</small>
       </div>
 
       <div className="settings-group">
-        <label>Brave Search API Key</label>
+        <label>搜索 Provider</label>
+        <select
+          value={form.mcp.search.provider}
+          disabled={!form.mcp.enabled || !form.mcp.search.enabled}
+          onChange={(e) => setForm((f) => ({ ...f, mcp: { ...f.mcp, search: { ...f.mcp.search, provider: e.target.value as "parallel" | "brave" } } }))}
+        >
+          <option value="parallel">Parallel Search MCP（默认，无 key 可用）</option>
+          <option value="brave">Brave Search MCP（需要 API Key）</option>
+        </select>
+      </div>
+
+      <div className="settings-group">
+        <label>{form.mcp.search.provider === "parallel" ? "Parallel API Key（可选）" : "Brave Search API Key"}</label>
         <input
           type="password"
-          value={form.mcp.search.braveApiKey ?? ""}
+          value={form.mcp.search.provider === "parallel" ? (form.mcp.search.parallelApiKey ?? "") : (form.mcp.search.braveApiKey ?? "")}
           disabled={!form.mcp.enabled || !form.mcp.search.enabled}
-          onChange={(e) => setForm((f) => ({ ...f, mcp: { ...f.mcp, search: { ...f.mcp.search, braveApiKey: e.target.value } } }))}
-          placeholder="仅保存在本地 settings.json，不写入 trace"
+          onChange={(e) => setForm((f) => ({
+            ...f,
+            mcp: {
+              ...f.mcp,
+              search: form.mcp.search.provider === "parallel"
+                ? { ...f.mcp.search, parallelApiKey: e.target.value }
+                : { ...f.mcp.search, braveApiKey: e.target.value },
+            },
+          }))}
+          placeholder={form.mcp.search.provider === "parallel" ? "可留空走 keyless 匿名模式" : "Brave 模式必须填写"}
         />
       </div>
     </div>

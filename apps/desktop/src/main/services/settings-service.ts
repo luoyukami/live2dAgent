@@ -88,9 +88,21 @@ export function createDefaultSettings(userDataDir: string): AppSettings {
     voice: { ...DEFAULT_VOICE_INPUT_SETTINGS },
     companionWatch: { ...DEFAULT_COMPANION_WATCH_SETTINGS },
     tts: { ...DEFAULT_LOCAL_TTS_SETTINGS },
-    mcp: { ...DEFAULT_MCP_SETTINGS, servers: {}, search: { ...DEFAULT_MCP_SETTINGS.search } },
+    mcp: { ...DEFAULT_MCP_SETTINGS, configPath: getDefaultMcpConfigPath(userDataDir), servers: {}, search: { ...DEFAULT_MCP_SETTINGS.search } },
   }
 }
+
+function getDefaultMcpConfigPath(userDataDir: string): string {
+  return join(userDataDir, "mcp.json")
+}
+
+const DEFAULT_MCP_CONFIG_JSON = `${JSON.stringify({
+  mcpServers: {},
+  _live2dAgent: {
+    note: "默认无需配置即可使用内置 web_search / web_fetch；它们通过 Parallel Search MCP keyless 模式工作。可在 mcpServers 中添加自定义 MCP server。",
+    builtinTools: ["web_search", "web_fetch"],
+  },
+}, null, 2)}\n`
 
 /* ------------------------------------------------------------------ */
 /*  Local development config                                           */
@@ -263,8 +275,9 @@ function mergeMcpSettings(parsed: Partial<McpSettings>, defaults: McpSettings): 
       ...defaults.search,
       ...(isPlainObject(parsed.search) ? parsed.search : {}),
       enabled: typeof parsed.search?.enabled === "boolean" ? parsed.search.enabled : defaults.search.enabled,
-      provider: parsed.search?.provider === "brave" ? parsed.search.provider : defaults.search.provider,
+      provider: parsed.search?.provider === "parallel" || parsed.search?.provider === "brave" ? parsed.search.provider : defaults.search.provider,
       autoRegisterServer: typeof parsed.search?.autoRegisterServer === "boolean" ? parsed.search.autoRegisterServer : defaults.search.autoRegisterServer,
+      parallelApiKey: typeof parsed.search?.parallelApiKey === "string" ? parsed.search.parallelApiKey : defaults.search.parallelApiKey,
       braveApiKey: typeof parsed.search?.braveApiKey === "string" ? parsed.search.braveApiKey : defaults.search.braveApiKey,
     },
   }
@@ -524,6 +537,7 @@ export class SettingsService {
 
     this.disableProactiveCompanionWatchOnStartup()
     this.applyLocalDevModelFallback()
+    this.ensureDefaultMcpConfig()
   }
 
   reload(): PublicSettings {
@@ -536,6 +550,7 @@ export class SettingsService {
       this.persist()
     }
     this.applyLocalDevModelFallback()
+    this.ensureDefaultMcpConfig()
     return this.getPublicSettings()
   }
 
@@ -544,14 +559,56 @@ export class SettingsService {
     return { ...this._settings }
   }
 
+  private ensureDefaultMcpConfig(): void {
+    const defaultConfigPath = getDefaultMcpConfigPath(this.userDataDir)
+    let changed = false
+
+    if (!this._settings.mcp.configPath.trim()) {
+      this._settings = {
+        ...this._settings,
+        mcp: { ...this._settings.mcp, configPath: defaultConfigPath },
+      }
+      changed = true
+    }
+
+    const configPath = this._settings.mcp.configPath.trim()
+    if (configPath === defaultConfigPath && !existsSync(configPath)) {
+      writeFileSync(configPath, DEFAULT_MCP_CONFIG_JSON, "utf8")
+    }
+
+    const hasConfiguredServer = Object.keys(this._settings.mcp.servers).length > 0
+    const shouldEnableBuiltinSearch = this._settings.mcp.enabled
+      && !hasConfiguredServer
+      && configPath === defaultConfigPath
+      && (!this._settings.mcp.search.enabled || this._settings.mcp.search.provider !== "parallel")
+
+    if (shouldEnableBuiltinSearch) {
+      this._settings = {
+        ...this._settings,
+        mcp: {
+          ...this._settings.mcp,
+          search: {
+            ...this._settings.mcp.search,
+            enabled: true,
+            provider: "parallel",
+            autoRegisterServer: true,
+          },
+        },
+      }
+      changed = true
+    }
+
+    if (changed) this.persist()
+  }
+
   /** Public-safe settings — apiKey replaced with hasApiKey boolean */
   getPublicSettings(): PublicSettings {
     const { openaiApiKey: _key, ...rest } = this._settings
     const publicSettings = { ...rest, hasApiKey: Boolean(this._settings.openaiApiKey) }
-    if (publicSettings.mcp?.search?.braveApiKey) {
+    if (publicSettings.mcp?.search?.braveApiKey || publicSettings.mcp?.search?.parallelApiKey) {
       publicSettings.mcp = {
         ...publicSettings.mcp,
-        search: { ...publicSettings.mcp.search, braveApiKey: undefined },
+        search: { ...publicSettings.mcp.search, braveApiKey: undefined, parallelApiKey: undefined },
       }
     }
     return publicSettings
@@ -947,8 +1004,12 @@ function validatePublicSettingsPatch(patch: unknown): AppSettingsPublicPatch {
         searchPatch.enabled = search.enabled
       }
       if (search.provider !== undefined) {
-        if (search.provider !== "brave") throw new Error("mcp.search.provider must be brave")
-        searchPatch.provider = "brave"
+        if (search.provider !== "parallel" && search.provider !== "brave") throw new Error("mcp.search.provider must be parallel or brave")
+        searchPatch.provider = search.provider
+      }
+      if (search.parallelApiKey !== undefined) {
+        if (typeof search.parallelApiKey !== "string") throw new Error("mcp.search.parallelApiKey must be a string")
+        searchPatch.parallelApiKey = search.parallelApiKey
       }
       if (search.braveApiKey !== undefined) {
         if (typeof search.braveApiKey !== "string") throw new Error("mcp.search.braveApiKey must be a string")
