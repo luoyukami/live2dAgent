@@ -30,6 +30,7 @@ interface McpConnection {
 export class McpService {
   private connections = new Map<string, McpConnection>()
   private tools = new Map<string, McpRuntimeTool>()
+  private lastErrors: Array<{ serverName: string; error: string; at: number }> = []
 
   constructor(
     private readonly settings: SettingsService,
@@ -50,12 +51,36 @@ export class McpService {
       try {
         await this.connectServer(serverName, serverConfig, appSettings.mcp.defaultTimeoutMs)
       } catch (error) {
+        const message = error instanceof Error ? error.message : String(error)
+        this.lastErrors.unshift({ serverName, error: message, at: Date.now() })
+        this.lastErrors = this.lastErrors.slice(0, 10)
         this.appendTrace({
           type: "mcp.server.error",
           serverName,
-          error: error instanceof Error ? error.message : String(error),
+          error: message,
         })
       }
+    }
+  }
+
+  getDebugState(): {
+    enabled: boolean
+    connectedServers: string[]
+    registeredToolCount: number
+    registeredTools: Array<{ name: string; serverName: string; remoteName: string; permission: PermissionLevel }>
+    lastErrors: Array<{ serverName: string; error: string; at: number }>
+  } {
+    return {
+      enabled: this.settings.get().mcp.enabled,
+      connectedServers: Array.from(this.connections.keys()),
+      registeredToolCount: this.tools.size,
+      registeredTools: Array.from(this.tools.values()).map((tool) => ({
+        name: tool.exposedName,
+        serverName: tool.serverName,
+        remoteName: tool.remoteName,
+        permission: tool.permission,
+      })),
+      lastErrors: [...this.lastErrors],
     }
   }
 

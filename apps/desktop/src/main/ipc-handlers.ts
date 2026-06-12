@@ -129,7 +129,7 @@ export function registerIpcHandlers(services: IpcServices): void {
   /* ---- Agent mode (legacy compat, uses public-patch internally) ---- */
   ipcMain.handle(IPC_CHANNELS.SET_AGENT_MODE, async (_event, mode) => {
     services.settings.updatePublicPatch({ mode })
-    services.agent.reconfigure()
+    await reconfigureAgentServices(services)
     const publicSettings = services.settings.getPublicSettings()
     services.trace.append({ type: "settings.updated", settings: publicSettings })
     services.window.broadcastSettings(publicSettings)
@@ -152,7 +152,7 @@ export function registerIpcHandlers(services: IpcServices): void {
     if (patch?.ui && ("panelWidth" in patch.ui || "panelHeight" in patch.ui)) {
       services.window.setPanelDimensions(ui.panelWidth, ui.panelHeight)
     }
-    services.agent.reconfigure()
+    await reconfigureAgentServices(services)
     const publicSettings = services.settings.getPublicSettings()
     services.trace.append({ type: "settings.updated", settings: publicSettings })
     services.window.broadcastSettings(publicSettings)
@@ -194,7 +194,7 @@ export function registerIpcHandlers(services: IpcServices): void {
   /** Update API key (stays in main process) */
   ipcMain.handle(IPC_CHANNELS.SETTINGS_UPDATE_API_KEY, async (_event, apiKey: string) => {
     services.settings.updateApiKey(apiKey)
-    services.agent.reconfigure()
+    await reconfigureAgentServices(services)
     const publicSettings = services.settings.getPublicSettings()
     services.trace.append({ type: "settings.updated", settings: publicSettings })
     services.window.broadcastSettings(publicSettings)
@@ -210,7 +210,7 @@ export function registerIpcHandlers(services: IpcServices): void {
   /** Update workspace directory (creates if missing) */
   ipcMain.handle(IPC_CHANNELS.SETTINGS_UPDATE_WORKSPACE, async (_event, path: string) => {
     services.settings.updateWorkspaceDir(path)
-    services.agent.reconfigure()
+    await reconfigureAgentServices(services)
     const publicSettings = services.settings.getPublicSettings()
     services.trace.append({ type: "settings.updated", settings: publicSettings })
     services.window.broadcastSettings(publicSettings)
@@ -250,6 +250,7 @@ export function registerIpcHandlers(services: IpcServices): void {
       emotion: debug.emotion,
       voice: debug.voice,
       tts: debug.tts,
+      mcp: services.mcp?.getDebugState(),
 
       model: settings.openaiModel,
       reasoningEffort: settings.reasoningEffort,
@@ -289,7 +290,7 @@ export function registerIpcHandlers(services: IpcServices): void {
 
   ipcMain.handle(IPC_CHANNELS.SETTINGS_RELOAD, async () => {
     const publicSettings = services.settings.reload()
-    services.agent.reconfigure()
+    await reconfigureAgentServices(services)
     services.trace.append({ type: "settings.updated", settings: publicSettings })
     services.window.broadcastSettings(publicSettings)
     return publicSettings
@@ -297,7 +298,7 @@ export function registerIpcHandlers(services: IpcServices): void {
 
   ipcMain.handle(IPC_CHANNELS.PROMPT_RELOAD, async () => {
     services.prompts.reload()
-    services.agent.reconfigure()
+    await reconfigureAgentServices(services)
   })
 
   ipcMain.handle(IPC_CHANNELS.LIVE2D_RELOAD, async () => {
@@ -546,7 +547,7 @@ export function registerIpcHandlers(services: IpcServices): void {
 
   ipcMain.handle(IPC_CHANNELS.TTS_UPDATE_SETTINGS, async (_event, patch: Partial<LocalTtsSettings>) => {
     services.tts.updateSettings(patch)
-    services.agent.reconfigure()
+    await reconfigureAgentServices(services)
     const publicSettings = services.settings.getPublicSettings()
     services.trace.append({ type: "settings.updated", settings: publicSettings })
     services.window.broadcastSettings(publicSettings)

@@ -384,7 +384,22 @@ export class AgentService implements ToolRuntime {
   private composeActiveSystemPrompt(): string {
     const settings = this.deps.settings.get()
     const base = composePromptPresetInstructions(settings.promptPresets)
-    return composeSystemPrompt(base, settings.emotion, settings.tts)
+    const prompt = composeSystemPrompt(base, settings.emotion, settings.tts)
+    const mcpTools = this.deps.mcp?.getToolDefinitions() ?? []
+    if (!settings.mcp.enabled || mcpTools.length === 0) return prompt
+    const searchTools = mcpTools.filter((tool) => /search|fetch|browse|web/i.test(`${tool.name} ${tool.description}`))
+    const toolSummary = (searchTools.length > 0 ? searchTools : mcpTools)
+      .slice(0, 12)
+      .map((tool) => `- ${tool.name}: ${tool.description}`)
+      .join("\n")
+    return [
+      prompt,
+      "",
+      "【系统指令｜MCP 工具能力】",
+      "当前已接入 MCP 工具。需要实时信息、网页搜索、联网查询或抓取网页内容时，优先调用可用的 MCP 搜索/网页工具；不要声称自己没有联网搜索能力。若工具调用失败，应如实说明失败原因。",
+      "当前可用 MCP 工具摘要：",
+      toolSummary,
+    ].join("\n")
   }
 
   async sendUserMessage(input: string | { text: string; attachments?: AudioContextAttachment[]; artifactRefs?: ArtifactRefType[]; conversationId?: string; skipCompanionScreenshot?: boolean; rememberForRetry?: boolean }): Promise<void> {

@@ -166,6 +166,26 @@ export function DebugPanel({
             </section>
 
             <section className="debug-section">
+              <h4>MCP</h4>
+              <div className="debug-kv">
+                <div><span>Enabled</span><span>{snapshot?.mcp?.enabled ? "true" : "false"}</span></div>
+                <div><span>Connected servers</span><span>{snapshot?.mcp?.connectedServers?.join(", ") || "—"}</span></div>
+                <div><span>Registered tools</span><span>{snapshot?.mcp?.registeredToolCount ?? 0}</span></div>
+                <div><span>Last error</span><span>{snapshot?.mcp?.lastErrors?.[0]?.error ?? "none"}</span></div>
+              </div>
+              <div className="debug-last-items">
+                <details>
+                  <summary>MCP Registered Tools</summary>
+                  <pre className="trace-json">{JSON.stringify(snapshot?.mcp?.registeredTools ?? [], null, 2)}</pre>
+                </details>
+                <details>
+                  <summary>MCP Last Errors</summary>
+                  <pre className="trace-json">{JSON.stringify(snapshot?.mcp?.lastErrors ?? [], null, 2)}</pre>
+                </details>
+              </div>
+            </section>
+
+            <section className="debug-section">
               <h4>语音输入</h4>
               <div className="debug-kv">
                 <div><span>Enabled</span><span>{snapshot?.voice?.enabled ? "true" : "false"}</span></div>

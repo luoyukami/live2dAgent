@@ -493,6 +493,15 @@ export interface DebugSnapshot {
   tracePath: string
   lastPermission?: unknown
 
+  /* ---- MCP ---- */
+  mcp?: {
+    enabled: boolean
+    connectedServers: string[]
+    registeredToolCount: number
+    registeredTools: Array<{ name: string; serverName: string; remoteName: string; permission: PermissionLevel }>
+    lastErrors: Array<{ serverName: string; error: string; at: number }>
+  }
+
   /* ---- Voice input (v0 voice feature) ---- */
   voice?: DebugVoiceInfo
 
