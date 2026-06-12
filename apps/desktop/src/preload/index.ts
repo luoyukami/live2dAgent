@@ -105,6 +105,8 @@ const api = {
     ipcRenderer.invoke(IPC_CHANNELS.ARTIFACT_OPEN_FOLDER),
   openPromptFolder: (): Promise<void> =>
     ipcRenderer.invoke(IPC_CHANNELS.PROMPT_OPEN_FOLDER),
+  openMemoryFolder: (): Promise<void> =>
+    ipcRenderer.invoke(IPC_CHANNELS.MEMORY_OPEN_FOLDER),
   reloadSettings: (): Promise<PublicSettings> =>
     ipcRenderer.invoke(IPC_CHANNELS.SETTINGS_RELOAD),
   reloadPrompt: (): Promise<void> =>

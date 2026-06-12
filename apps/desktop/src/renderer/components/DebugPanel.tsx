@@ -16,6 +16,7 @@ interface Props {
   onOpenTraceFolder: () => void
   onOpenArtifactFolder: () => void
   onOpenPromptFolder: () => void
+  onOpenMemoryFolder: () => void
   onReloadSettings: () => void
   onReloadPrompt: () => void
   onReloadLive2D: () => void
@@ -48,6 +49,7 @@ export function DebugPanel({
   onOpenTraceFolder,
   onOpenArtifactFolder,
   onOpenPromptFolder,
+  onOpenMemoryFolder,
   onReloadSettings,
   onReloadPrompt,
   onReloadLive2D,
@@ -294,6 +296,7 @@ export function DebugPanel({
                 <button className="ghost-btn" onClick={() => void onOpenTraceFolder()}>打开 trace 文件夹</button>
                 <button className="ghost-btn" onClick={() => void onOpenArtifactFolder()}>打开 artifact 文件夹</button>
                 <button className="ghost-btn" onClick={() => void onOpenPromptFolder()}>打开 prompt 文件夹</button>
+                <button className="ghost-btn" onClick={() => void onOpenMemoryFolder()}>打开 memory 文件夹</button>
                 <button className="ghost-btn" onClick={() => void onReloadSettings()}>Reload Settings</button>
                 <button className="ghost-btn" onClick={() => void onReloadPrompt()}>Reload Prompt</button>
                 <button className="ghost-btn" onClick={() => void onReloadLive2D()}>Reload Live2D</button>

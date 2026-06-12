@@ -1,4 +1,5 @@
 import { ipcMain, shell, dialog } from "electron"
+import { mkdirSync } from "node:fs"
 import { IPC_CHANNELS, type AudioContextAttachment, type AudioMimeType, type AudioArtifactRef, type ImageContextAttachment, type CompactInputAnchor, type DebugSnapshot, type AvatarHitRegionRect, type IpcTestModelConnectionRequest, type IpcTestModelConnectionResponse, type IpcTtsGenerateRequest, type IpcTtsRegisterVoiceRequest, type LocalTtsSettings } from "@live2d-agent/shared"
 import type { AgentEvent } from "@live2d-agent/agent-core"
 import type { AgentService } from "./services/agent-service.js"
@@ -287,6 +288,11 @@ export function registerIpcHandlers(services: IpcServices): void {
   ipcMain.handle(IPC_CHANNELS.TRACE_OPEN_FOLDER, async () => { await shell.openPath(services.trace.getTracesDir()) })
   ipcMain.handle(IPC_CHANNELS.ARTIFACT_OPEN_FOLDER, async () => { await shell.openPath(services.artifacts.getBaseDir()) })
   ipcMain.handle(IPC_CHANNELS.PROMPT_OPEN_FOLDER, async () => { await shell.openPath(services.prompts.getDir()) })
+  ipcMain.handle(IPC_CHANNELS.MEMORY_OPEN_FOLDER, async () => {
+    const memoryDir = services.settings.getMemoryDir()
+    mkdirSync(memoryDir, { recursive: true })
+    await shell.openPath(memoryDir)
+  })
 
   ipcMain.handle(IPC_CHANNELS.SETTINGS_RELOAD, async () => {
     const publicSettings = services.settings.reload()

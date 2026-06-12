@@ -62,6 +62,7 @@ export const IPC_CHANNELS = {
   TRACE_OPEN_FOLDER: "trace:open-folder",
   ARTIFACT_OPEN_FOLDER: "artifact:open-folder",
   PROMPT_OPEN_FOLDER: "prompt:open-folder",
+  MEMORY_OPEN_FOLDER: "memory:open-folder",
   SETTINGS_RELOAD: "settings:reload",
   PROMPT_RELOAD: "prompt:reload",
   LIVE2D_RELOAD: "live2d:reload",

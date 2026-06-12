@@ -17,6 +17,7 @@ import type { SettingsService } from "./settings-service.js"
 import type { TraceService } from "./trace-service.js"
 import type { TtsService } from "./tts/tts-service.js"
 import type { McpService } from "./mcp-service.js"
+import { MEMORY_GUIDANCE, MemoryStore, type MemoryTarget } from "./memory-store.js"
 import { AgentRuntimeEventBridge } from "../agent-runtime-event-bridge.js"
 import { resolveRuntimeMode } from "../runtime-mode.js"
 
@@ -144,6 +145,7 @@ export class AgentService implements ToolRuntime {
   private companionAgentBusy = false
   private companionTtsBusy = false
   private companionVoiceBusy = false
+  private memoryStore?: MemoryStore
 
   constructor(private readonly deps: AgentServiceDeps) {
     this.events.subscribe((event) => this.captureEvent(event))
@@ -173,8 +175,11 @@ export class AgentService implements ToolRuntime {
     }
     this.runtimeMode = resolution.mode
 
+    this.configureMemoryStore(settings)
+
+    const baseTools = createDefaultTools().filter((tool) => tool.name !== "memory" || this.memoryStore)
     const definitions = this.deps.prompts.applyToolOverrides([
-      ...createDefaultTools(),
+      ...baseTools,
       ...(this.deps.mcp?.getToolDefinitions() ?? []),
     ])
     const registry = new ToolRegistry()
@@ -383,7 +388,18 @@ export class AgentService implements ToolRuntime {
    */
   private composeActiveSystemPrompt(): string {
     const settings = this.deps.settings.get()
-    const base = composePromptPresetInstructions(settings.promptPresets)
+    const baseParts = [composePromptPresetInstructions(settings.promptPresets)]
+    if (this.memoryStore) baseParts.push(["【系统指令｜持久化记忆】", MEMORY_GUIDANCE].join("\n"))
+    const memoryBlocks: string[] = []
+    if (this.memoryStore && settings.memory.enabled) {
+      const block = this.memoryStore.formatForSystemPrompt("memory")
+      if (block) memoryBlocks.push(block)
+    }
+    if (this.memoryStore && settings.memory.userProfileEnabled) {
+      const block = this.memoryStore.formatForSystemPrompt("user")
+      if (block) memoryBlocks.push(block)
+    }
+    const base = [...baseParts, ...memoryBlocks].filter(Boolean).join("\n\n")
     const prompt = composeSystemPrompt(base, settings.emotion, settings.tts)
     const mcpTools = this.deps.mcp?.getToolDefinitions() ?? []
     if (!settings.mcp.enabled || mcpTools.length === 0) return prompt
@@ -1072,6 +1088,19 @@ export class AgentService implements ToolRuntime {
         const artifact: ToolArtifact = { id: ref.id, type: "screenshot", mimeType: ref.mimeType, path: ref.path, artifact: ref }
         return this.result(action, startedAt, true, "Screenshot captured", { mimeType: shot.mimeType, artifact: ref }, [artifact])
       }],
+      ["memory", async (action) => {
+        const startedAt = Date.now()
+        const args = asRecord(action.args)
+        const result = this.executeMemoryTool(args)
+        return this.result(
+          action,
+          startedAt,
+          result.success,
+          JSON.stringify(result, null, 2),
+          result,
+          result.success ? undefined : "MEMORY_TOOL_ERROR",
+        )
+      }],
       ["task.finish", async (action) => {
         const startedAt = Date.now()
         const args = action.args
@@ -1286,6 +1315,42 @@ export class AgentService implements ToolRuntime {
       })
       this.scheduleTtsAutoGenerationForMessage(event.message)
     }
+  }
+
+  private configureMemoryStore(settings: import("@live2d-agent/shared").AppSettings): void {
+    this.memoryStore = undefined
+    if (!settings.memory.enabled && !settings.memory.userProfileEnabled) return
+    try {
+      const store = new MemoryStore({
+        memoryDir: this.deps.settings.getMemoryDir(),
+        memoryCharLimit: settings.memory.memoryCharLimit,
+        userCharLimit: settings.memory.userCharLimit,
+      })
+      store.loadFromDisk()
+      this.memoryStore = store
+    } catch (error) {
+      console.warn("[agent-service] Failed to initialize memory store:", error)
+    }
+  }
+
+  private executeMemoryTool(args: Record<string, unknown>): ReturnType<MemoryStore["add"]> {
+    if (!this.memoryStore) return { success: false, error: "Memory is not available." }
+    const action = typeof args.action === "string" ? args.action : ""
+    const target = typeof args.target === "string" ? args.target : "memory"
+    if (target !== "memory" && target !== "user") return { success: false, error: "Invalid target. Use memory or user." }
+    if (action === "add") {
+      if (typeof args.content !== "string") return { success: false, error: "content is required for add." }
+      return this.memoryStore.add(target as MemoryTarget, args.content)
+    }
+    if (action === "replace") {
+      if (typeof args.old_text !== "string" || typeof args.content !== "string") return { success: false, error: "old_text and content are required for replace." }
+      return this.memoryStore.replace(target as MemoryTarget, args.old_text, args.content)
+    }
+    if (action === "remove") {
+      if (typeof args.old_text !== "string") return { success: false, error: "old_text is required for remove." }
+      return this.memoryStore.remove(target as MemoryTarget, args.old_text)
+    }
+    return { success: false, error: "Unknown action. Use add, replace, or remove." }
   }
 
   private updateCompanionIdleStateFromEvent(event: AgentEvent): void {

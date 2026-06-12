@@ -540,3 +540,76 @@ test("reload(): settings.json written by a previous session is re-sanitized on l
     cleanup(dir)
   }
 })
+
+test("memory settings default, merge persisted values, and accept public patches", () => {
+  const { service, dir } = makeServiceWith({ memory: { memoryCharLimit: 3333 } })
+  try {
+    const initial = service.getPublicSettings().memory
+    assert.equal(initial.enabled, true)
+    assert.equal(initial.userProfileEnabled, true)
+    assert.equal(initial.nudgeInterval, 10)
+    assert.equal(initial.memoryCharLimit, 3333)
+    assert.equal(initial.userCharLimit, 1375)
+
+    service.updatePublicPatch({
+      memory: {
+        userProfileEnabled: true,
+        nudgeInterval: 0,
+        userCharLimit: 2048,
+      },
+    })
+
+    const updated = service.getPublicSettings().memory
+    assert.equal(updated.enabled, true)
+    assert.equal(updated.userProfileEnabled, true)
+    assert.equal(updated.nudgeInterval, 0)
+    assert.equal(updated.userCharLimit, 2048)
+    assert.equal(service.getMemoryDir(), join(dir, "memories"))
+
+    assert.throws(
+      () => service.updatePublicPatch({ memory: { memoryCharLimit: 10 } }),
+      /memory\.memoryCharLimit/,
+    )
+  } finally {
+    cleanup(dir)
+  }
+})
+
+test("memory settings migrate the previous disabled default to enabled", () => {
+  const { service, dir } = makeServiceWith({
+    memory: {
+      enabled: false,
+      userProfileEnabled: false,
+      nudgeInterval: 10,
+      memoryCharLimit: 2200,
+      userCharLimit: 1375,
+    },
+  })
+  try {
+    const memory = service.getPublicSettings().memory
+    assert.equal(memory.enabled, true)
+    assert.equal(memory.userProfileEnabled, true)
+  } finally {
+    cleanup(dir)
+  }
+})
+
+test("memory settings preserve an explicit customized disabled setting", () => {
+  const { service, dir } = makeServiceWith({
+    memory: {
+      enabled: false,
+      userProfileEnabled: false,
+      nudgeInterval: 0,
+      memoryCharLimit: 2200,
+      userCharLimit: 1375,
+    },
+  })
+  try {
+    const memory = service.getPublicSettings().memory
+    assert.equal(memory.enabled, false)
+    assert.equal(memory.userProfileEnabled, false)
+    assert.equal(memory.nudgeInterval, 0)
+  } finally {
+    cleanup(dir)
+  }
+})

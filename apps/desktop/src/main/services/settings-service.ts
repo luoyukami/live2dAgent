@@ -7,6 +7,7 @@ import {
   DEFAULT_VOICE_INPUT_SETTINGS,
   DEFAULT_LOCAL_TTS_SETTINGS,
   DEFAULT_COMPANION_WATCH_SETTINGS,
+  DEFAULT_MEMORY_SETTINGS,
   DEFAULT_MCP_SETTINGS,
   isEmotion,
   type AgentMode,
@@ -29,6 +30,8 @@ import {
   type VoiceInputSettings,
   type VoiceInputSettingsPatch,
   type CompanionWatchSettings,
+  type MemorySettings,
+  type MemorySettingsPatch,
   type TtsSettingsPatch,
   type LocalTtsSettings,
   type McpSettings,
@@ -87,6 +90,7 @@ export function createDefaultSettings(userDataDir: string): AppSettings {
     emotion: { ...DEFAULT_EMOTION_SETTINGS },
     voice: { ...DEFAULT_VOICE_INPUT_SETTINGS },
     companionWatch: { ...DEFAULT_COMPANION_WATCH_SETTINGS },
+    memory: { ...DEFAULT_MEMORY_SETTINGS },
     tts: { ...DEFAULT_LOCAL_TTS_SETTINGS },
     mcp: { ...DEFAULT_MCP_SETTINGS, configPath: getDefaultMcpConfigPath(userDataDir), servers: {}, search: { ...DEFAULT_MCP_SETTINGS.search } },
   }
@@ -251,6 +255,10 @@ function deepMergeDefaults(parsed: Record<string, unknown>, defaults: AppSetting
       (parsed.companionWatch ?? {}) as Partial<CompanionWatchSettings>,
       defaults.companionWatch,
     ),
+    memory: mergeMemorySettings(
+      shouldMigrateOldDisabledMemoryDefault(parsed.memory) ? {} : ((parsed.memory ?? {}) as Partial<MemorySettings>),
+      defaults.memory,
+    ),
     tts: {
       ...defaults.tts,
       ...((parsed.tts ?? {}) as Partial<LocalTtsSettings>),
@@ -261,6 +269,28 @@ function deepMergeDefaults(parsed: Record<string, unknown>, defaults: AppSetting
     },
     mcp: mergeMcpSettings((parsed.mcp ?? {}) as Partial<McpSettings>, defaults.mcp),
   }
+}
+
+function mergeMemorySettings(parsed: Partial<MemorySettings>, defaults: MemorySettings): MemorySettings {
+  return {
+    ...defaults,
+    ...parsed,
+    enabled: typeof parsed.enabled === "boolean" ? parsed.enabled : defaults.enabled,
+    userProfileEnabled: typeof parsed.userProfileEnabled === "boolean" ? parsed.userProfileEnabled : defaults.userProfileEnabled,
+    nudgeInterval: typeof parsed.nudgeInterval === "number" ? Math.max(0, Math.min(1000, Math.floor(parsed.nudgeInterval))) : defaults.nudgeInterval,
+    memoryCharLimit: typeof parsed.memoryCharLimit === "number" ? Math.max(100, Math.min(100_000, Math.floor(parsed.memoryCharLimit))) : defaults.memoryCharLimit,
+    userCharLimit: typeof parsed.userCharLimit === "number" ? Math.max(100, Math.min(100_000, Math.floor(parsed.userCharLimit))) : defaults.userCharLimit,
+  }
+}
+
+function shouldMigrateOldDisabledMemoryDefault(value: unknown): boolean {
+  if (!isPlainObject(value)) return false
+  const memory = value as Record<string, unknown>
+  return memory.enabled === false
+    && memory.userProfileEnabled === false
+    && (memory.nudgeInterval === undefined || memory.nudgeInterval === 10)
+    && (memory.memoryCharLimit === undefined || memory.memoryCharLimit === 2200)
+    && (memory.userCharLimit === undefined || memory.userCharLimit === 1375)
 }
 
 function mergeMcpSettings(parsed: Partial<McpSettings>, defaults: McpSettings): McpSettings {
@@ -559,6 +589,10 @@ export class SettingsService {
     return { ...this._settings }
   }
 
+  getMemoryDir(): string {
+    return join(this.userDataDir, "memories")
+  }
+
   private ensureDefaultMcpConfig(): void {
     const defaultConfigPath = getDefaultMcpConfigPath(this.userDataDir)
     let changed = false
@@ -653,6 +687,9 @@ export class SettingsService {
     }
     if (validated.companionWatch !== undefined) {
       this._settings.companionWatch = { ...this._settings.companionWatch, ...validated.companionWatch }
+    }
+    if (validated.memory !== undefined) {
+      this._settings.memory = { ...this._settings.memory, ...validated.memory }
     }
     if (validated.tts !== undefined) {
       this._settings.tts = { ...this._settings.tts, ...validated.tts }
@@ -931,6 +968,26 @@ function validatePublicSettingsPatch(patch: unknown): AppSettingsPublicPatch {
       patch.proactiveInterval = companionWatch.proactiveInterval
     }
     if (Object.keys(patch).length > 0) output.companionWatch = patch
+  }
+
+  if (input.memory !== undefined && typeof input.memory === "object") {
+    const memory = input.memory as Record<string, unknown>
+    const patch: MemorySettingsPatch = {}
+    if (memory.enabled !== undefined) {
+      if (typeof memory.enabled !== "boolean") throw new Error("memory.enabled must be a boolean")
+      patch.enabled = memory.enabled
+    }
+    if (memory.userProfileEnabled !== undefined) {
+      if (typeof memory.userProfileEnabled !== "boolean") throw new Error("memory.userProfileEnabled must be a boolean")
+      patch.userProfileEnabled = memory.userProfileEnabled
+    }
+    const nudgeInterval = integerInRange(memory.nudgeInterval, "memory.nudgeInterval", 0, 1000)
+    if (nudgeInterval !== undefined) patch.nudgeInterval = nudgeInterval
+    const memoryCharLimit = integerInRange(memory.memoryCharLimit, "memory.memoryCharLimit", 100, 100_000)
+    if (memoryCharLimit !== undefined) patch.memoryCharLimit = memoryCharLimit
+    const userCharLimit = integerInRange(memory.userCharLimit, "memory.userCharLimit", 100, 100_000)
+    if (userCharLimit !== undefined) patch.userCharLimit = userCharLimit
+    if (Object.keys(patch).length > 0) output.memory = patch
   }
 
   if (input.tts !== undefined && typeof input.tts === "object") {

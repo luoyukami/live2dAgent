@@ -269,6 +269,25 @@ export const DEFAULT_COMPANION_WATCH_SETTINGS: CompanionWatchSettings = {
   proactiveInterval: "30s",
 }
 
+export interface MemorySettings {
+  /** Enable MEMORY.md agent notes. */
+  enabled: boolean
+  /** Enable USER.md user profile notes. */
+  userProfileEnabled: boolean
+  /** Reserved for background review cadence; 0 disables review nudges. */
+  nudgeInterval: number
+  memoryCharLimit: number
+  userCharLimit: number
+}
+
+export const DEFAULT_MEMORY_SETTINGS: MemorySettings = {
+  enabled: true,
+  userProfileEnabled: true,
+  nudgeInterval: 10,
+  memoryCharLimit: 2200,
+  userCharLimit: 1375,
+}
+
 /** Tool permission settings */
 export interface PermissionSettings {
   mode: ToolPermissionMode
@@ -310,6 +329,7 @@ export interface AppSettings {
   emotion: EmotionSettings
   voice: VoiceInputSettings
   companionWatch: CompanionWatchSettings
+  memory: MemorySettings
   tts: LocalTtsSettings
   mcp: McpSettings
 }
@@ -351,6 +371,8 @@ export type McpSettingsPatch = Partial<{
   servers: Record<string, McpServerSettings>
   search: Partial<McpSearchSettings>
 }>
+
+export type MemorySettingsPatch = Partial<MemorySettings>
 
 /* ------------------------------------------------------------------ */
 /*  TTS settings (Phase 1)                                             */
@@ -434,6 +456,7 @@ export interface AppSettingsPublicPatch {
   emotion?: EmotionSettingsPatch
   voice?: VoiceInputSettingsPatch
   companionWatch?: CompanionWatchSettingsPatch
+  memory?: MemorySettingsPatch
   tts?: TtsSettingsPatch
   mcp?: McpSettingsPatch
 }

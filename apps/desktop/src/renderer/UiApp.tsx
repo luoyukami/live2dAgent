@@ -1373,6 +1373,7 @@ export function UiApp(): JSX.Element {
                   onOpenTraceFolder={() => void window.petAgent.openTraceFolder()}
                   onOpenArtifactFolder={() => void window.petAgent.openArtifactFolder()}
                   onOpenPromptFolder={() => void window.petAgent.openPromptFolder()}
+                  onOpenMemoryFolder={() => void window.petAgent.openMemoryFolder()}
                   onOpenAudioFolder={() => void window.petAgent.openAudioFolder?.()}
                   onReloadSettings={async () => {
                     try {
