@@ -118,12 +118,17 @@ export class PermissionService implements PermissionController {
   }
 
   private policyFor(permission: PermissionLevel, action: AgentAction): string {
+    if (isHighImpactMcpTool(action.tool)) return "confirm_each"
     if (this.settings.get().permissions.mode !== "permissive") return DEFAULT_PERMISSION_POLICY[permission]
 
     if (permission === "dangerous") return "deny"
     if (permission === "shell" && isHighImpactShellCommand(action.args)) return "confirm_each"
     return "auto"
   }
+}
+
+function isHighImpactMcpTool(toolName: string): boolean {
+  return /^mcp__/.test(toolName) && /__(?:delete|remove|write|update|create|exec|shell|command|run|spawn|apply|mutate)/i.test(toolName)
 }
 
 function isHighImpactShellCommand(args: unknown): boolean {

@@ -4,6 +4,7 @@ import {
   DEFAULT_PROMPT_PRESET_SETTINGS,
   DEFAULT_LOCAL_TTS_SETTINGS,
   DEFAULT_COMPANION_WATCH_SETTINGS,
+  DEFAULT_MCP_SETTINGS,
   type Emotion,
   type EmotionSettings,
   type PromptPresetSettings,
@@ -12,6 +13,7 @@ import {
   type VoiceInputSettings,
   type LocalTtsSettings,
   type CompanionWatchSettings,
+  type McpSettings,
 } from "@live2d-agent/shared"
 
 /* ------------------------------------------------------------------ */
@@ -37,6 +39,7 @@ export interface SettingsForm {
   emotion: EmotionSettings
   voice: VoiceInputSettings
   companionWatch: CompanionWatchSettings
+  mcp: McpSettings
   tts: {
     enabled: boolean
     apiBaseUrl: string
@@ -144,6 +147,7 @@ export function defaultForm(): SettingsForm {
       pushToTalkHotkey: "CommandOrControl+Alt+V",
     },
     companionWatch: { ...DEFAULT_COMPANION_WATCH_SETTINGS },
+    mcp: { ...DEFAULT_MCP_SETTINGS, servers: {}, search: { ...DEFAULT_MCP_SETTINGS.search } },
     tts: {
       enabled: DEFAULT_LOCAL_TTS_SETTINGS.enabled,
       apiBaseUrl: DEFAULT_LOCAL_TTS_SETTINGS.apiBaseUrl,
@@ -177,6 +181,71 @@ export function buildCompanionWatchPatch(
     patch.proactiveInterval = form.companionWatch.proactiveInterval
   }
   return Object.keys(patch).length > 0 ? patch : undefined
+}
+
+export function McpSettingsSection({ form, setForm }: { form: SettingsForm; setForm: Dispatch<SetStateAction<SettingsForm>> }): JSX.Element {
+  return (
+    <div className="settings-card">
+      <h3 className="settings-card-title">MCP 与联网搜索</h3>
+      <div className="settings-group">
+        <label className="checkbox-label">
+          <input
+            type="checkbox"
+            checked={form.mcp.enabled}
+            onChange={(e) => setForm((f) => ({ ...f, mcp: { ...f.mcp, enabled: e.target.checked } }))}
+          />
+          <span>启用 MCP 工具</span>
+        </label>
+        <small className="settings-hint">默认关闭。启用后会读取下方配置文件和内置搜索配置，启动 server 后自动 tools/list 并注册工具。</small>
+      </div>
+
+      <div className="settings-group">
+        <label>MCP 配置文件（JSON）</label>
+        <input
+          value={form.mcp.configPath}
+          onChange={(e) => setForm((f) => ({ ...f, mcp: { ...f.mcp, configPath: e.target.value } }))}
+          placeholder="例如 C:\\Users\\you\\mcp.json，支持 { mcpServers: { ... } }"
+        />
+        <small className="settings-hint">支持 stdio、sse、streamable_http/http server；密钥建议写成 $ENV_NAME 或 ${"${ENV_NAME}"}。</small>
+      </div>
+
+      <div className="settings-group">
+        <label>默认超时（毫秒）</label>
+        <input
+          type="number"
+          min={1000}
+          max={600000}
+          step={1000}
+          value={form.mcp.defaultTimeoutMs}
+          onChange={(e) => setForm((f) => ({ ...f, mcp: { ...f.mcp, defaultTimeoutMs: Number(e.target.value) || 30000 } }))}
+        />
+      </div>
+
+      <div className="settings-group">
+        <label className="checkbox-label">
+          <input
+            type="checkbox"
+            checked={form.mcp.search.enabled}
+            disabled={!form.mcp.enabled}
+            onChange={(e) => setForm((f) => ({ ...f, mcp: { ...f.mcp, search: { ...f.mcp.search, enabled: e.target.checked } } }))}
+          />
+          <span>启用联网搜索 MCP server（Brave Search）</span>
+        </label>
+        <small className="settings-hint">搜索能力通过 Brave Search MCP server 接入，不硬编码进聊天主流程。</small>
+      </div>
+
+      <div className="settings-group">
+        <label>Brave Search API Key</label>
+        <input
+          type="password"
+          value={form.mcp.search.braveApiKey ?? ""}
+          disabled={!form.mcp.enabled || !form.mcp.search.enabled}
+          onChange={(e) => setForm((f) => ({ ...f, mcp: { ...f.mcp, search: { ...f.mcp.search, braveApiKey: e.target.value } } }))}
+          placeholder="仅保存在本地 settings.json，不写入 trace"
+        />
+      </div>
+    </div>
+  )
 }
 
 export function CompanionWatchSettingsSection({
@@ -279,6 +348,11 @@ export function messageContentToText(message: AgentMessage): string {
 }
 
 export function riskForTool(tool: string): string {
+  if (tool.startsWith("mcp__")) {
+    return /__(delete|remove|write|update|create|exec|shell|command|run|spawn|apply|mutate)/i.test(tool)
+      ? "shell"
+      : "workspace_read"
+  }
   if (tool === "shell.run") return "shell"
   if (tool === "file.write") return "workspace_write"
   if (tool === "file.read") return "workspace_read"
@@ -299,6 +373,10 @@ export function summarize(text: string, max = 240): string {
 }
 
 export function renderActionSummary(tool: string, args: Record<string, unknown>): JSX.Element {
+  if (tool.startsWith("mcp__")) {
+    const [, server, ...rest] = tool.split("__")
+    return <><span>MCP：{server}/{rest.join("__")}</span><span>参数：{summarize(JSON.stringify(args), 300)}</span></>
+  }
   if (tool === "shell.run") {
     return <><span>命令：{String(args.command ?? "")}</span><span>工作目录：{String(args.cwd ?? "workspace")}</span></>
   }

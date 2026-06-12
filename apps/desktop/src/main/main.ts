@@ -11,6 +11,7 @@ import { PromptService } from "./services/prompt-service.js"
 import { SettingsService } from "./services/settings-service.js"
 import { TraceService } from "./services/trace-service.js"
 import { TtsService } from "./services/tts/tts-service.js"
+import { McpService } from "./services/mcp-service.js"
 import { patchLive2DModelJsonFileReferences } from "./services/live2d-model-json.js"
 
 // 增加mcp调试的默认端口暴露
@@ -22,6 +23,7 @@ if (!app.isPackaged && process.env.ELECTRON_REMOTE_DEBUGGING !== "0") {
 
 let windowManager: WindowManager | undefined
 let agentService: AgentService | undefined
+let mcpService: McpService | undefined
 
 protocol.registerSchemesAsPrivileged([
   {
@@ -104,10 +106,12 @@ async function bootstrap(): Promise<void> {
   })
 
   const tts = new TtsService(settings)
-  agentService = new AgentService({ settings, trace, permissions, artifacts, prompts, tts })
+  mcpService = new McpService(settings, trace)
+  await mcpService.reconfigure()
+  agentService = new AgentService({ settings, trace, permissions, artifacts, prompts, tts, mcp: mcpService })
   agentService.onEvent((event) => windowManager?.broadcastAgentEvent(event))
 
-  registerIpcHandlers({ agent: agentService, permissions, settings, trace, artifacts, prompts, window: windowManager, tts })
+  registerIpcHandlers({ agent: agentService, permissions, settings, trace, artifacts, prompts, window: windowManager, tts, mcp: mcpService })
   const ui = settings.get().ui
   if (ui.windowMode === "combined") {
     await windowManager.create(ui)
@@ -136,4 +140,5 @@ app.on("window-all-closed", () => {
 
 app.on("before-quit", () => {
   windowManager?.setQuitting()
+  void mcpService?.closeAll()
 })

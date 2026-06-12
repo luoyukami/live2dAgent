@@ -29,6 +29,7 @@ import {
   defaultForm,
   buildCompanionWatchPatch,
   CompanionWatchSettingsSection,
+  McpSettingsSection,
   formatAttachmentLabel,
   formatAttachmentSubLabel,
   messageContentToText,
@@ -85,7 +86,7 @@ export function UiApp(): JSX.Element {
   const [showInput, setShowInput] = useState(false)
   const [showDetail, setShowDetail] = useState(false)
   const [detailTab, setDetailTab] = useState<"chat" | "settings" | "debug">("chat")
-  const [activeSettingsSection, setActiveSettingsSection] = useState<"general" | "presets" | "emotion" | "voice" | "tts" | "companion">("general")
+  const [activeSettingsSection, setActiveSettingsSection] = useState<"general" | "presets" | "emotion" | "voice" | "tts" | "companion" | "mcp">("general")
 
   /* ---- TTS state ---- */
   const ttsManager = useTtsManager()
@@ -189,6 +190,7 @@ export function UiApp(): JSX.Element {
         },
         voice: settings.voice ?? prev.voice,
         companionWatch: settings.companionWatch ?? prev.companionWatch,
+        mcp: settings.mcp ?? prev.mcp,
         tts: {
           enabled: settings.tts?.enabled ?? prev.tts.enabled,
           apiBaseUrl: settings.tts?.apiBaseUrl ?? prev.tts.apiBaseUrl,
@@ -583,6 +585,24 @@ export function UiApp(): JSX.Element {
         publicPatch.companionWatch = companionWatchPatch
       }
 
+      const settingsMcp = settings?.mcp
+      const mcpPatch: Record<string, unknown> = {}
+      if (form.mcp.enabled !== (settingsMcp?.enabled ?? false)) mcpPatch.enabled = form.mcp.enabled
+      if (form.mcp.configPath !== (settingsMcp?.configPath ?? "")) mcpPatch.configPath = form.mcp.configPath
+      if (form.mcp.defaultTimeoutMs !== (settingsMcp?.defaultTimeoutMs ?? 30000)) mcpPatch.defaultTimeoutMs = form.mcp.defaultTimeoutMs
+      if (form.mcp.search.enabled !== (settingsMcp?.search?.enabled ?? false) ||
+        form.mcp.search.autoRegisterServer !== (settingsMcp?.search?.autoRegisterServer ?? true) ||
+        Boolean(form.mcp.search.braveApiKey?.trim())) {
+        const searchPatch: Record<string, unknown> = {
+          enabled: form.mcp.search.enabled,
+          provider: "brave",
+          autoRegisterServer: form.mcp.search.autoRegisterServer,
+        }
+        if (form.mcp.search.braveApiKey?.trim()) searchPatch.braveApiKey = form.mcp.search.braveApiKey.trim()
+        mcpPatch.search = searchPatch
+      }
+      if (Object.keys(mcpPatch).length > 0) publicPatch.mcp = mcpPatch
+
       if (Object.keys(publicPatch).length > 0) {
         await window.petAgent.updatePublicSettings(publicPatch)
       }
@@ -679,6 +699,7 @@ export function UiApp(): JSX.Element {
     { key: "voice" as const, label: "语音" },
     { key: "tts" as const, label: "TTS" },
     { key: "companion" as const, label: "陪看" },
+    { key: "mcp" as const, label: "MCP" },
   ]
 
   const canSubmit = !isSending && (input.trim().length > 0 || attachments.length > 0 || imageAttachments.length > 0)
@@ -1325,6 +1346,10 @@ export function UiApp(): JSX.Element {
                       form={form}
                       setForm={setForm}
                     />
+                  )}
+
+                  {activeSettingsSection === "mcp" && (
+                    <McpSettingsSection form={form} setForm={setForm} />
                   )}
 
                   {settingsError && <div className="settings-error">{settingsError}</div>}

@@ -7,6 +7,7 @@ import {
   DEFAULT_VOICE_INPUT_SETTINGS,
   DEFAULT_LOCAL_TTS_SETTINGS,
   DEFAULT_COMPANION_WATCH_SETTINGS,
+  DEFAULT_MCP_SETTINGS,
   isEmotion,
   type AgentMode,
   type AppSettings,
@@ -30,6 +31,8 @@ import {
   type CompanionWatchSettings,
   type TtsSettingsPatch,
   type LocalTtsSettings,
+  type McpSettings,
+  type McpSettingsPatch,
 } from "@live2d-agent/shared"
 
 /* ------------------------------------------------------------------ */
@@ -85,6 +88,7 @@ export function createDefaultSettings(userDataDir: string): AppSettings {
     voice: { ...DEFAULT_VOICE_INPUT_SETTINGS },
     companionWatch: { ...DEFAULT_COMPANION_WATCH_SETTINGS },
     tts: { ...DEFAULT_LOCAL_TTS_SETTINGS },
+    mcp: { ...DEFAULT_MCP_SETTINGS, servers: {}, search: { ...DEFAULT_MCP_SETTINGS.search } },
   }
 }
 
@@ -243,7 +247,31 @@ function deepMergeDefaults(parsed: Record<string, unknown>, defaults: AppSetting
         ...(((parsed.tts ?? {}) as Partial<LocalTtsSettings>).voiceDisplayNames ?? {}),
       },
     },
+    mcp: mergeMcpSettings((parsed.mcp ?? {}) as Partial<McpSettings>, defaults.mcp),
   }
+}
+
+function mergeMcpSettings(parsed: Partial<McpSettings>, defaults: McpSettings): McpSettings {
+  return {
+    ...defaults,
+    ...parsed,
+    enabled: typeof parsed.enabled === "boolean" ? parsed.enabled : defaults.enabled,
+    configPath: typeof parsed.configPath === "string" ? parsed.configPath : defaults.configPath,
+    defaultTimeoutMs: typeof parsed.defaultTimeoutMs === "number" ? parsed.defaultTimeoutMs : defaults.defaultTimeoutMs,
+    servers: isPlainObject(parsed.servers) ? (parsed.servers as McpSettings["servers"]) : defaults.servers,
+    search: {
+      ...defaults.search,
+      ...(isPlainObject(parsed.search) ? parsed.search : {}),
+      enabled: typeof parsed.search?.enabled === "boolean" ? parsed.search.enabled : defaults.search.enabled,
+      provider: parsed.search?.provider === "brave" ? parsed.search.provider : defaults.search.provider,
+      autoRegisterServer: typeof parsed.search?.autoRegisterServer === "boolean" ? parsed.search.autoRegisterServer : defaults.search.autoRegisterServer,
+      braveApiKey: typeof parsed.search?.braveApiKey === "string" ? parsed.search.braveApiKey : defaults.search.braveApiKey,
+    },
+  }
+}
+
+function isPlainObject(value: unknown): value is Record<string, unknown> {
+  return Boolean(value && typeof value === "object" && !Array.isArray(value))
 }
 
 function mergeCompanionWatchSettings(
@@ -519,7 +547,14 @@ export class SettingsService {
   /** Public-safe settings — apiKey replaced with hasApiKey boolean */
   getPublicSettings(): PublicSettings {
     const { openaiApiKey: _key, ...rest } = this._settings
-    return { ...rest, hasApiKey: Boolean(this._settings.openaiApiKey) }
+    const publicSettings = { ...rest, hasApiKey: Boolean(this._settings.openaiApiKey) }
+    if (publicSettings.mcp?.search?.braveApiKey) {
+      publicSettings.mcp = {
+        ...publicSettings.mcp,
+        search: { ...publicSettings.mcp.search, braveApiKey: undefined },
+      }
+    }
+    return publicSettings
   }
 
   /**
@@ -564,6 +599,9 @@ export class SettingsService {
     }
     if (validated.tts !== undefined) {
       this._settings.tts = { ...this._settings.tts, ...validated.tts }
+    }
+    if (validated.mcp !== undefined) {
+      this._settings.mcp = mergeMcpSettings(validated.mcp as Partial<McpSettings>, this._settings.mcp)
     }
     this.persist()
   }
@@ -883,5 +921,77 @@ function validatePublicSettingsPatch(patch: unknown): AppSettingsPublicPatch {
     if (Object.keys(patch).length > 0) output.tts = patch
   }
 
+  if (input.mcp !== undefined && typeof input.mcp === "object") {
+    const mcp = input.mcp as Record<string, unknown>
+    const patch: McpSettingsPatch = {}
+    if (mcp.enabled !== undefined) {
+      if (typeof mcp.enabled !== "boolean") throw new Error("mcp.enabled must be a boolean")
+      patch.enabled = mcp.enabled
+    }
+    if (mcp.configPath !== undefined) {
+      if (typeof mcp.configPath !== "string") throw new Error("mcp.configPath must be a string")
+      patch.configPath = mcp.configPath.trim()
+    }
+    const defaultTimeoutMs = integerInRange(mcp.defaultTimeoutMs, "mcp.defaultTimeoutMs", 1_000, 600_000)
+    if (defaultTimeoutMs !== undefined) patch.defaultTimeoutMs = defaultTimeoutMs
+    if (mcp.servers !== undefined) {
+      if (!isPlainObject(mcp.servers)) throw new Error("mcp.servers must be an object")
+      patch.servers = sanitizeMcpServers(mcp.servers)
+    }
+    if (mcp.search !== undefined) {
+      if (!isPlainObject(mcp.search)) throw new Error("mcp.search must be an object")
+      const search = mcp.search as Record<string, unknown>
+      const searchPatch: Partial<import("@live2d-agent/shared").McpSearchSettings> = {}
+      if (search.enabled !== undefined) {
+        if (typeof search.enabled !== "boolean") throw new Error("mcp.search.enabled must be a boolean")
+        searchPatch.enabled = search.enabled
+      }
+      if (search.provider !== undefined) {
+        if (search.provider !== "brave") throw new Error("mcp.search.provider must be brave")
+        searchPatch.provider = "brave"
+      }
+      if (search.braveApiKey !== undefined) {
+        if (typeof search.braveApiKey !== "string") throw new Error("mcp.search.braveApiKey must be a string")
+        searchPatch.braveApiKey = search.braveApiKey
+      }
+      if (search.autoRegisterServer !== undefined) {
+        if (typeof search.autoRegisterServer !== "boolean") throw new Error("mcp.search.autoRegisterServer must be a boolean")
+        searchPatch.autoRegisterServer = search.autoRegisterServer
+      }
+      if (Object.keys(searchPatch).length > 0) patch.search = searchPatch
+    }
+    if (Object.keys(patch).length > 0) output.mcp = patch
+  }
+
   return output
+}
+
+function sanitizeMcpServers(value: Record<string, unknown>): import("@live2d-agent/shared").McpSettings["servers"] {
+  const servers: import("@live2d-agent/shared").McpSettings["servers"] = {}
+  for (const [name, raw] of Object.entries(value)) {
+    if (!/^[A-Za-z0-9_-]{1,64}$/.test(name) || !isPlainObject(raw)) continue
+    const input = raw as Record<string, unknown>
+    const server: import("@live2d-agent/shared").McpServerSettings = {}
+    if (typeof input.enabled === "boolean") server.enabled = input.enabled
+    if (input.type === "stdio" || input.type === "sse" || input.type === "streamable_http" || input.type === "http") server.type = input.type
+    if (typeof input.command === "string") server.command = input.command
+    if (Array.isArray(input.args)) server.args = input.args.filter((item): item is string => typeof item === "string")
+    if (isPlainObject(input.env)) server.env = stringRecord(input.env)
+    if (typeof input.cwd === "string") server.cwd = input.cwd
+    if (typeof input.url === "string") server.url = input.url
+    if (isPlainObject(input.headers)) server.headers = stringRecord(input.headers)
+    if (typeof input.bearerToken === "string") server.bearerToken = input.bearerToken
+    if (typeof input.timeoutMs === "number") server.timeoutMs = input.timeoutMs
+    if (typeof input.trust === "boolean") server.trust = input.trust
+    servers[name] = server
+  }
+  return servers
+}
+
+function stringRecord(value: Record<string, unknown>): Record<string, string> {
+  const out: Record<string, string> = {}
+  for (const [key, child] of Object.entries(value)) {
+    if (typeof child === "string") out[key] = child
+  }
+  return out
 }

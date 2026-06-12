@@ -16,6 +16,7 @@ import type { PromptService } from "./prompt-service.js"
 import type { SettingsService } from "./settings-service.js"
 import type { TraceService } from "./trace-service.js"
 import type { TtsService } from "./tts/tts-service.js"
+import type { McpService } from "./mcp-service.js"
 import { AgentRuntimeEventBridge } from "../agent-runtime-event-bridge.js"
 import { resolveRuntimeMode } from "../runtime-mode.js"
 
@@ -26,6 +27,7 @@ export interface AgentServiceDeps {
   artifacts: ArtifactStore
   prompts: PromptService
   tts: TtsService
+  mcp?: McpService
 }
 
 interface EmotionDebugState {
@@ -171,7 +173,10 @@ export class AgentService implements ToolRuntime {
     }
     this.runtimeMode = resolution.mode
 
-    const definitions = this.deps.prompts.applyToolOverrides(createDefaultTools())
+    const definitions = this.deps.prompts.applyToolOverrides([
+      ...createDefaultTools(),
+      ...(this.deps.mcp?.getToolDefinitions() ?? []),
+    ])
     const registry = new ToolRegistry()
     registry.register(...definitions)
     this.deps.permissions.setToolDefinitions(definitions)
@@ -987,6 +992,9 @@ export class AgentService implements ToolRuntime {
   private async execute(action: AgentAction): Promise<ToolResult> {
     const startedAt = Date.now()
     const executor = this.executors.get(action.tool)
+    if (!executor && this.deps.mcp?.hasTool(action.tool)) {
+      return this.deps.mcp.execute(action)
+    }
     if (!executor) {
       return this.result(action, startedAt, false, `Unknown tool: ${action.tool}`, undefined, "UNKNOWN_TOOL")
     }

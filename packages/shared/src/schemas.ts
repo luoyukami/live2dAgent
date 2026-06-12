@@ -217,6 +217,50 @@ export interface CompanionWatchSettings {
   proactiveInterval: "30s" | "1m" | "2m" | "random"
 }
 
+export type McpServerTransport = "stdio" | "sse" | "streamable_http" | "http"
+
+export interface McpServerSettings {
+  enabled?: boolean
+  type?: McpServerTransport
+  command?: string
+  args?: string[]
+  env?: Record<string, string>
+  cwd?: string
+  url?: string
+  headers?: Record<string, string>
+  bearerToken?: string
+  timeoutMs?: number
+  trust?: boolean
+}
+
+export interface McpSearchSettings {
+  enabled: boolean
+  provider: "brave"
+  braveApiKey?: string
+  autoRegisterServer: boolean
+}
+
+export interface McpSettings {
+  enabled: boolean
+  configPath: string
+  defaultTimeoutMs: number
+  servers: Record<string, McpServerSettings>
+  search: McpSearchSettings
+}
+
+export const DEFAULT_MCP_SETTINGS: McpSettings = {
+  enabled: false,
+  configPath: "",
+  defaultTimeoutMs: 30_000,
+  servers: {},
+  search: {
+    enabled: false,
+    provider: "brave",
+    braveApiKey: undefined,
+    autoRegisterServer: true,
+  },
+}
+
 export const DEFAULT_COMPANION_WATCH_SETTINGS: CompanionWatchSettings = {
   attachScreenshotOnUserMessage: false,
   proactiveEnabled: false,
@@ -265,6 +309,7 @@ export interface AppSettings {
   voice: VoiceInputSettings
   companionWatch: CompanionWatchSettings
   tts: LocalTtsSettings
+  mcp: McpSettings
 }
 
 /** Public-facing settings — API key replaced with a boolean flag */
@@ -296,6 +341,14 @@ export type VoiceInputSettingsPatch = Partial<VoiceInputSettings>
 
 /** Partial patch for companion watch settings (allowed in public patch) */
 export type CompanionWatchSettingsPatch = Partial<CompanionWatchSettings>
+
+export type McpSettingsPatch = Partial<{
+  enabled: boolean
+  configPath: string
+  defaultTimeoutMs: number
+  servers: Record<string, McpServerSettings>
+  search: Partial<McpSearchSettings>
+}>
 
 /* ------------------------------------------------------------------ */
 /*  TTS settings (Phase 1)                                             */
@@ -380,6 +433,7 @@ export interface AppSettingsPublicPatch {
   voice?: VoiceInputSettingsPatch
   companionWatch?: CompanionWatchSettingsPatch
   tts?: TtsSettingsPatch
+  mcp?: McpSettingsPatch
 }
 
 /* ------------------------------------------------------------------ */

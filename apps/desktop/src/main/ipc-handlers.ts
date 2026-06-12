@@ -8,6 +8,7 @@ import type { PromptService } from "./services/prompt-service.js"
 import type { SettingsService } from "./services/settings-service.js"
 import type { TraceService } from "./services/trace-service.js"
 import type { TtsService } from "./services/tts/tts-service.js"
+import type { McpService } from "./services/mcp-service.js"
 import type { WindowManager } from "./window-manager.js"
 
 export interface IpcServices {
@@ -19,6 +20,12 @@ export interface IpcServices {
   prompts: PromptService
   window: WindowManager
   tts: TtsService
+  mcp?: McpService
+}
+
+async function reconfigureAgentServices(services: IpcServices): Promise<void> {
+  await services.mcp?.reconfigure()
+  services.agent.reconfigure()
 }
 
 function buildModelsUrl(baseUrl: string): string {
