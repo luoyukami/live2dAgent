@@ -16,6 +16,7 @@ import { ApprovalBubble } from "./components/ApprovalBubble"
 import { AudioAttachmentCard } from "./components/AudioAttachmentCard"
 import { RecorderButton } from "./components/RecorderButton"
 import { TtsSettingsSection } from "./components/TtsSettingsSection"
+import { SettingsSwitch } from "./components/SettingsSwitch"
 import { useAudioRecorder } from "./audio/useAudioRecorder"
 import { useTtsManager } from "./hooks/useTtsManager"
 import {
@@ -1083,14 +1084,11 @@ export function UiApp(): JSX.Element {
                         </div>
 
                         <div className="settings-group">
-                          <label className="checkbox-label">
-                            <input
-                              type="checkbox"
-                              checked={form.streamingEnabled}
-                              onChange={(e) => setForm((f) => ({ ...f, streamingEnabled: e.target.checked }))}
-                            />
-                            <span>流式输出消息</span>
-                          </label>
+                          <SettingsSwitch
+                            label="流式输出消息"
+                            checked={form.streamingEnabled}
+                            onCheckedChange={(checked) => setForm((f) => ({ ...f, streamingEnabled: checked }))}
+                          />
                           <small className="settings-hint">开启后，助手会边生成边显示文字；关闭后仍在完整回复生成后一次性显示。</small>
                         </div>
                       </div>
@@ -1207,39 +1205,33 @@ export function UiApp(): JSX.Element {
                     <div className="settings-card">
                       <h3 className="settings-card-title">情绪标签</h3>
                       <div className="settings-group">
-                        <label className="checkbox-label">
-                          <input
-                            type="checkbox"
-                            checked={form.emotion.enabled}
-                            onChange={(e) => {
-                              const nextEnabled = e.target.checked
-                              setForm((f) => ({
-                                ...f,
-                                emotion: {
-                                  ...f.emotion,
-                                  enabled: nextEnabled,
-                                  injectPrompt: nextEnabled ? true : false,
-                                },
-                              }))
-                            }}
-                          />
-                          <span>启用情绪标签</span>
-                        </label>
+                        <SettingsSwitch
+                          label="启用情绪标签"
+                          checked={form.emotion.enabled}
+                          onCheckedChange={(checked) => {
+                            const nextEnabled = checked
+                            setForm((f) => ({
+                              ...f,
+                              emotion: {
+                                ...f.emotion,
+                                enabled: nextEnabled,
+                                injectPrompt: nextEnabled ? true : false,
+                              },
+                            }))
+                          }}
+                        />
                         <small className="settings-hint">
                           开启后，助手会在回复末尾生成一个本地可解析的情绪标签，用于驱动 Live2D 等表现层。关闭后不会注入相关提示词，可减少 token 消耗。
                         </small>
                       </div>
 
                       <div className="settings-group">
-                        <label className="checkbox-label">
-                          <input
-                            type="checkbox"
-                            checked={form.emotion.injectPrompt}
-                            disabled={!form.emotion.enabled}
-                            onChange={(e) => setForm((f) => ({ ...f, emotion: { ...f.emotion, injectPrompt: e.target.checked } }))}
-                          />
-                          <span>注入情绪提示词（高级）</span>
-                        </label>
+                        <SettingsSwitch
+                          label="注入情绪提示词（高级）"
+                          checked={form.emotion.injectPrompt}
+                          disabled={!form.emotion.enabled}
+                          onCheckedChange={(checked) => setForm((f) => ({ ...f, emotion: { ...f.emotion, injectPrompt: checked } }))}
+                        />
                         <small className="settings-hint">
                           控制是否在 system prompt 中追加 Assistant Emotion Tag 说明。关闭主开关时此项自动关闭。
                         </small>
@@ -1259,14 +1251,11 @@ export function UiApp(): JSX.Element {
                       </div>
 
                       <div className="settings-group">
-                        <label className="checkbox-label">
-                          <input
-                            type="checkbox"
-                            checked={form.emotion.stripTagWhenDisabled}
-                            onChange={(e) => setForm((f) => ({ ...f, emotion: { ...f.emotion, stripTagWhenDisabled: e.target.checked } }))}
-                          />
-                          <span>关闭时仍剥离尾部情绪标签</span>
-                        </label>
+                        <SettingsSwitch
+                          label="关闭时仍剥离尾部情绪标签"
+                          checked={form.emotion.stripTagWhenDisabled}
+                          onCheckedChange={(checked) => setForm((f) => ({ ...f, emotion: { ...f.emotion, stripTagWhenDisabled: checked } }))}
+                        />
                         <small className="settings-hint">关闭情绪系统后，如果模型仍输出尾部标签，是否从用户可见正文中移除。</small>
                       </div>
                     </div>
@@ -1276,36 +1265,30 @@ export function UiApp(): JSX.Element {
                     <div className="settings-card">
                       <h3 className="settings-card-title">语音输入</h3>
                       <div className="settings-group">
-                        <label className="checkbox-label">
-                          <input
-                            type="checkbox"
-                            checked={form.voice.enabled}
-                            onChange={(e) => {
-                              const nextEnabled = e.target.checked
-                              setForm((f) => ({
-                                ...f,
-                                voice: {
-                                  ...f.voice,
-                                  enabled: nextEnabled,
-                                },
-                              }))
-                            }}
-                          />
-                          <span>启用语音输入</span>
-                        </label>
+                        <SettingsSwitch
+                          label="启用语音输入"
+                          checked={form.voice.enabled}
+                          onCheckedChange={(checked) => {
+                            const nextEnabled = checked
+                            setForm((f) => ({
+                              ...f,
+                              voice: {
+                                ...f.voice,
+                                enabled: nextEnabled,
+                              },
+                            }))
+                          }}
+                        />
                         <small className="settings-hint">{HOTKEY_HINT}</small>
                       </div>
 
                       <div className="settings-group">
-                        <label className="checkbox-label">
-                          <input
-                            type="checkbox"
-                            checked={form.voice.audioInputEnabled}
-                            disabled={!form.voice.enabled}
-                            onChange={(e) => setForm((f) => ({ ...f, voice: { ...f.voice, audioInputEnabled: e.target.checked } }))}
-                          />
-                          <span>将音频发送给模型</span>
-                        </label>
+                        <SettingsSwitch
+                          label="将音频发送给模型"
+                          checked={form.voice.audioInputEnabled}
+                          disabled={!form.voice.enabled}
+                          onCheckedChange={(checked) => setForm((f) => ({ ...f, voice: { ...f.voice, audioInputEnabled: checked } }))}
+                        />
                         <small className="settings-hint">
                           关闭后录音仍会保存为附件，但模型不会收到 `input_audio` 多模态输入。适用于仅用作回放或留痕。
                         </small>

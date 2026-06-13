@@ -1,6 +1,7 @@
 import { useState } from "react"
 import type { PublicSettings } from "@live2d-agent/shared"
 import type { SettingsForm } from "../renderer-shared"
+import { SettingsSwitch } from "./SettingsSwitch"
 
 interface TtsSettingsSectionProps {
   form: SettingsForm
@@ -219,14 +220,11 @@ export function TtsSettingsSection({ form, setForm, settings }: TtsSettingsSecti
       <div className="settings-card">
         <h3 className="settings-card-title">本地 TTS</h3>
         <div className="settings-group">
-          <label className="checkbox-label">
-            <input
-              type="checkbox"
-              checked={form.tts.enabled}
-              onChange={(e) => setForm((f) => ({ ...f, tts: { ...f.tts, enabled: e.target.checked } }))}
-            />
-            <span>启用本地 TTS</span>
-          </label>
+          <SettingsSwitch
+            label="启用本地 TTS"
+            checked={form.tts.enabled}
+            onCheckedChange={(checked) => setForm((f) => ({ ...f, tts: { ...f.tts, enabled: checked } }))}
+          />
           <small className="settings-hint">启用后，助手消息可自动/手动生成语音并播放。</small>
         </div>
 
@@ -425,27 +423,21 @@ export function TtsSettingsSection({ form, setForm, settings }: TtsSettingsSecti
         </div>
 
         <div className="settings-group">
-          <label className="checkbox-label">
-            <input
-              type="checkbox"
-              checked={form.tts.autoGenerateOnAssistantMessage}
-              onChange={(e) => setForm((f) => ({ ...f, tts: { ...f.tts, autoGenerateOnAssistantMessage: e.target.checked } }))}
-              disabled={!form.tts.enabled}
-            />
-            <span>助手回复后自动生成语音</span>
-          </label>
+          <SettingsSwitch
+            label="助手回复后自动生成语音"
+            checked={form.tts.autoGenerateOnAssistantMessage}
+            disabled={!form.tts.enabled}
+            onCheckedChange={(checked) => setForm((f) => ({ ...f, tts: { ...f.tts, autoGenerateOnAssistantMessage: checked } }))}
+          />
         </div>
 
         <div className="settings-group">
-          <label className="checkbox-label">
-            <input
-              type="checkbox"
-              checked={form.tts.autoPlayAfterGenerate}
-              onChange={(e) => setForm((f) => ({ ...f, tts: { ...f.tts, autoPlayAfterGenerate: e.target.checked } }))}
-              disabled={!form.tts.enabled || !form.tts.autoGenerateOnAssistantMessage}
-            />
-            <span>生成后自动播放</span>
-          </label>
+          <SettingsSwitch
+            label="生成后自动播放"
+            checked={form.tts.autoPlayAfterGenerate}
+            disabled={!form.tts.enabled || !form.tts.autoGenerateOnAssistantMessage}
+            onCheckedChange={(checked) => setForm((f) => ({ ...f, tts: { ...f.tts, autoPlayAfterGenerate: checked } }))}
+          />
         </div>
       </div>
 

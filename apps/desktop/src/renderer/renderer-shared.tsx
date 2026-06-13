@@ -1,5 +1,6 @@
 import type { Dispatch, SetStateAction } from "react"
 import type { AgentMessage, AudioContextAttachment } from "@live2d-agent/agent-core"
+import { SettingsSwitch } from "./components/SettingsSwitch"
 import {
   DEFAULT_PROMPT_PRESET_SETTINGS,
   DEFAULT_LOCAL_TTS_SETTINGS,
@@ -188,14 +189,11 @@ export function McpSettingsSection({ form, setForm }: { form: SettingsForm; setF
     <div className="settings-card">
       <h3 className="settings-card-title">MCP 与联网搜索</h3>
       <div className="settings-group">
-        <label className="checkbox-label">
-          <input
-            type="checkbox"
-            checked={form.mcp.enabled}
-            onChange={(e) => setForm((f) => ({ ...f, mcp: { ...f.mcp, enabled: e.target.checked } }))}
-          />
-          <span>启用 MCP 工具</span>
-        </label>
+        <SettingsSwitch
+          label="启用 MCP 工具"
+          checked={form.mcp.enabled}
+          onCheckedChange={(checked) => setForm((f) => ({ ...f, mcp: { ...f.mcp, enabled: checked } }))}
+        />
         <small className="settings-hint">默认开启。启用后会读取下方配置文件，并注册内置 keyless 联网搜索工具或自定义 MCP server。</small>
       </div>
 
@@ -222,15 +220,12 @@ export function McpSettingsSection({ form, setForm }: { form: SettingsForm; setF
       </div>
 
       <div className="settings-group">
-        <label className="checkbox-label">
-          <input
-            type="checkbox"
-            checked={form.mcp.search.enabled}
-            disabled={!form.mcp.enabled}
-            onChange={(e) => setForm((f) => ({ ...f, mcp: { ...f.mcp, search: { ...f.mcp.search, enabled: e.target.checked } } }))}
-          />
-          <span>启用联网搜索工具（Parallel keyless）</span>
-        </label>
+        <SettingsSwitch
+          label="启用联网搜索工具（Parallel keyless）"
+          checked={form.mcp.search.enabled}
+          disabled={!form.mcp.enabled}
+          onCheckedChange={(checked) => setForm((f) => ({ ...f, mcp: { ...f.mcp, search: { ...f.mcp.search, enabled: checked } } }))}
+        />
         <small className="settings-hint">默认走 Parallel Search MCP 匿名模式；填写 Parallel API Key 或设置 PARALLEL_API_KEY 可提升限额。</small>
       </div>
 
@@ -280,34 +275,28 @@ export function CompanionWatchSettingsSection({
       <h3 className="settings-card-title">陪看模式</h3>
 
       <div className="settings-group">
-        <label className="checkbox-label">
-          <input
-            type="checkbox"
-            checked={form.companionWatch.attachScreenshotOnUserMessage}
-            onChange={(e) => setForm((f) => ({
-              ...f,
-              companionWatch: { ...f.companionWatch, attachScreenshotOnUserMessage: e.target.checked },
-            }))}
-          />
-          <span>常驻发送截屏</span>
-        </label>
+        <SettingsSwitch
+          label="常驻发送截屏"
+          checked={form.companionWatch.attachScreenshotOnUserMessage}
+          onCheckedChange={(checked) => setForm((f) => ({
+            ...f,
+            companionWatch: { ...f.companionWatch, attachScreenshotOnUserMessage: checked },
+          }))}
+        />
         <small className="settings-hint">
           开启后，用户发送的每条消息都会自动附带一张当前屏幕截图，让助手结合屏幕内容回答。
         </small>
       </div>
 
       <div className="settings-group">
-        <label className="checkbox-label">
-          <input
-            type="checkbox"
-            checked={form.companionWatch.proactiveEnabled}
-            onChange={(e) => setForm((f) => ({
-              ...f,
-              companionWatch: { ...f.companionWatch, proactiveEnabled: e.target.checked },
-            }))}
-          />
-          <span>助手主动模式</span>
-        </label>
+        <SettingsSwitch
+          label="助手主动模式"
+          checked={form.companionWatch.proactiveEnabled}
+          onCheckedChange={(checked) => setForm((f) => ({
+            ...f,
+            companionWatch: { ...f.companionWatch, proactiveEnabled: checked },
+          }))}
+        />
         <small className="settings-hint">
           开启后会定时截屏，并以系统指令形式让助手主动观察屏幕、找话题聊天。
         </small>
