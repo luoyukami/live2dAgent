@@ -286,12 +286,14 @@ export const Live2DView = forwardRef<Live2DViewHandle, Live2DViewProps>(function
     // Missing binding (not even neutral) ⇒ leave the current pose alone.
     if (!binding) return
     if (binding.motion) playMotion(model, binding.motion, binding.motionIndex)
-    if (binding.expression) {
+    if (emotion === "neutral") {
+      // Returning to the normal idle emotion should clear the transient
+      // expression queue instead of trying to play a model-specific "default"
+      // exp. Most Cubism models return to their base face by having no active
+      // expression.
+      clearExpression(model)
+    } else if (binding.expression) {
       trySetExpression(model, binding.expression)
-    } else if (emotion === "neutral") {
-      // Returning to the normal idle emotion should also clear any transient
-      // expression that was applied by the previous emotion tag.
-      trySetExpression(model, "idle")
     }
   }, [emotion, modelEpoch, emotionProfile])
 
