@@ -126,6 +126,26 @@ test("reasoningEffort defaults to low and validates public patches", () => {
   }
 })
 
+test("agent.streamingEnabled defaults to true and validates public patches", () => {
+  const { service, dir } = makeServiceWith({})
+  try {
+    assert.equal(service.getPublicSettings().agent.streamingEnabled, true)
+
+    service.updatePublicPatch({ agent: { streamingEnabled: false } })
+    assert.equal(service.getPublicSettings().agent.streamingEnabled, false)
+
+    service.updatePublicPatch({ agent: { streamingEnabled: true } })
+    assert.equal(service.getPublicSettings().agent.streamingEnabled, true)
+
+    assert.throws(
+      () => service.updatePublicPatch({ agent: { streamingEnabled: "yes" as never } }),
+      /agent\.streamingEnabled must be a boolean/,
+    )
+  } finally {
+    cleanup(dir)
+  }
+})
+
 test("default MCP config file is generated and points settings to a usable path", () => {
   const dir = makeTempUserDataDir()
   try {

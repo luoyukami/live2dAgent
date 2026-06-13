@@ -168,6 +168,7 @@ export class AgentService implements ToolRuntime {
     this.session = undefined
 
     const settings = this.deps.settings.get()
+    this.bridge.setStreamingEnabled(settings.agent.streamingEnabled)
     const requestedMode = settings.agent.runtimeMode ?? "ws"
     const resolution = resolveRuntimeMode(requestedMode, settings.openaiBaseUrl)
     if (resolution.fallbackReason) {
@@ -310,6 +311,7 @@ export class AgentService implements ToolRuntime {
     this.session = new AgentSession(model, legacyRegistry, this, this.deps.permissions, this.deps.trace, this.events, {
       maxSteps: settings.agent.maxSteps,
       emotion: settings.emotion,
+      streamingEnabled: settings.agent.streamingEnabled,
     })
   }
 

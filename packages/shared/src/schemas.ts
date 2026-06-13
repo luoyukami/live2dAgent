@@ -205,6 +205,8 @@ export interface AgentSettings {
   maxSteps: number
   /** Runtime mode: "ws" uses AssistantRuntime+MimoWsRuntime; "http-legacy" uses old AgentSession+OpenAiCompatibleAdapter */
   runtimeMode: "ws" | "http-legacy"
+  /** Stream assistant text into the chat while the model is generating. */
+  streamingEnabled: boolean
 }
 
 /** Companion watch mode settings */

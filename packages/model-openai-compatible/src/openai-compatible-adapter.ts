@@ -7,6 +7,7 @@ import type {
   ToolArtifact,
   ArtifactRef,
   MultimodalContent,
+  StreamingCallbacks,
 } from "@live2d-agent/agent-core"
 import { buildToolHistorySummary } from "@live2d-agent/agent-core"
 
@@ -73,6 +74,7 @@ export class OpenAiCompatibleAdapter implements ModelAdapter {
   async query(input: {
     messages: AgentMessage[]
     tools: ToolDefinition[]
+    callbacks?: StreamingCallbacks
   }): Promise<AgentMessage> {
     let body: Record<string, unknown>
     try {
@@ -84,6 +86,19 @@ export class OpenAiCompatibleAdapter implements ModelAdapter {
         recoverable: true,
       })
     }
+
+    // When the caller provides a streaming callback, use the SSE path.
+    if (input.callbacks?.onTextDelta) {
+      return this.queryStreaming(body, input.callbacks)
+    }
+
+    // Otherwise fall through to the original non-streaming path.
+    return this.queryNonStreaming(body)
+  }
+
+  /* ---- Non-streaming (original path) ---- */
+
+  private async queryNonStreaming(body: Record<string, unknown>): Promise<AgentMessage> {
     this.config.onModelRequest?.(this.redactRequest(body))
 
     let response: Response
@@ -149,43 +164,161 @@ export class OpenAiCompatibleAdapter implements ModelAdapter {
       })
     }
 
-    /* ---- Extract tool calls ---- */
-    const actions: AgentAction[] = []
-    const rawToolCalls = message.tool_calls as
-      | Array<Record<string, unknown>>
-      | undefined
+    return this.extractMessageFromResponse(message, json)
+  }
 
-    if (rawToolCalls) {
-      for (const tc of rawToolCalls) {
-        const fn = tc.function as Record<string, unknown> | undefined
-        let parsedArgs: unknown
-        try {
-          parsedArgs = JSON.parse((fn?.arguments as string) ?? "{}")
-        } catch {
-          parsedArgs = { _parseError: fn?.arguments ?? "missing arguments" }
-        }
+  /* ---- Streaming (SSE) path ---- */
 
-        actions.push({
-          id: `act_${tc.id as string}`,
-          providerToolCallId: tc.id as string,
-          tool: this.fromProviderToolName((fn?.name as string) ?? "unknown"),
-          args: parsedArgs,
-          source: "llm",
-          createdAt: Date.now(),
-        })
-      }
+  private async queryStreaming(
+    body: Record<string, unknown>,
+    callbacks: StreamingCallbacks,
+  ): Promise<AgentMessage> {
+    const streamBody = { ...body, stream: true }
+    this.config.onModelRequest?.(this.redactRequest(streamBody))
+
+    let response: Response
+    try {
+      response = await fetch(this.chatCompletionsUrl(), {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${this.config.apiKey}`,
+        },
+        body: JSON.stringify(streamBody),
+      })
+    } catch (err: unknown) {
+      const message = err instanceof Error ? err.message : String(err)
+      return this.errorMessage(`Network error: ${message}`, { recoverable: true })
     }
 
-    const content: string =
-      typeof message.content === "string" ? message.content : ""
+    if (!response.ok) {
+      const errorText = await response.text().catch(() => "Unknown error")
+      this.config.onModelResponse?.({ status: response.status, statusText: response.statusText, error: errorText })
+      const isAudioUnsupported = isAudioUnsupportedError(errorText)
+      const isImageUnsupported = isImageUnsupportedError(errorText)
+      let userMessage: string
+      if (isAudioUnsupported) {
+        userMessage = "当前模型可能不支持音频输入，请切换到支持原生 audio input 的多模态模型。"
+      } else if (isImageUnsupported) {
+        userMessage = "当前模型可能不支持图像输入，请切换到支持视觉的模型。"
+      } else {
+        userMessage = `API error ${response.status} ${response.statusText}`
+      }
+      return this.errorMessage(
+        userMessage,
+        { code: "API_ERROR", message: errorText, recoverable: true },
+      )
+    }
+
+    if (!response.body) {
+      return this.errorMessage("Streaming response has no body", { recoverable: true })
+    }
+
+    const messageId = `msg_${Date.now()}_${Math.random().toString(36).slice(2, 9)}`
+    let accumulatedContent = ""
+
+    // Tool-call accumulator: index → { id, name, arguments }
+    const toolCallMap = new Map<number, { id: string; name: string; arguments: string }>()
+
+    const reader = response.body.getReader()
+    const decoder = new TextDecoder()
+    let buffer = ""
+
+    try {
+      while (true) {
+        const { done, value } = await reader.read()
+        if (done) break
+        buffer += decoder.decode(value, { stream: true })
+
+        // Process complete lines
+        let newlineIdx: number
+        while ((newlineIdx = buffer.indexOf("\n")) !== -1) {
+          const line = buffer.slice(0, newlineIdx).trim()
+          buffer = buffer.slice(newlineIdx + 1)
+
+          if (!line) continue
+          if (line === "data: [DONE]") break
+
+          if (!line.startsWith("data: ")) continue
+
+          let parsed: Record<string, unknown>
+          try {
+            parsed = JSON.parse(line.slice(6)) as Record<string, unknown>
+          } catch {
+            // Malformed JSON line — skip and continue
+            continue
+          }
+
+          const choices = parsed.choices as Array<Record<string, unknown>> | undefined
+          const choice = choices?.[0]
+          if (!choice) continue
+
+          const delta = choice.delta as Record<string, unknown> | undefined
+
+          // Accumulate text content
+          if (delta && typeof delta.content === "string" && delta.content) {
+            accumulatedContent += delta.content
+            callbacks.onTextDelta?.(messageId, delta.content)
+          }
+
+          // Accumulate tool-call deltas
+          if (delta && Array.isArray(delta.tool_calls)) {
+            for (const tc of delta.tool_calls as Array<Record<string, unknown>>) {
+              const idx = typeof tc.index === "number" ? tc.index : 0
+              const existing = toolCallMap.get(idx)
+
+              const fn = tc.function as Record<string, unknown> | undefined
+
+              if (!existing) {
+                toolCallMap.set(idx, {
+                  id: (tc.id as string) ?? "",
+                  name: (fn?.name as string) ?? "",
+                  arguments: (fn?.arguments as string) ?? "",
+                })
+              } else {
+                if (tc.id) existing.id = tc.id as string
+                if (fn?.name) existing.name = (existing.name ?? "") + (fn.name as string)
+                if (fn?.arguments) existing.arguments = (existing.arguments ?? "") + (fn.arguments as string)
+              }
+            }
+          }
+        }
+      }
+    } catch (err: unknown) {
+      const message = err instanceof Error ? err.message : String(err)
+      return this.errorMessage(`Streaming read error: ${message}`, { recoverable: true })
+    } finally {
+      reader.releaseLock()
+    }
+
+    // Build the final AgentMessage
+    const actions: AgentAction[] = []
+    for (const [, tc] of toolCallMap) {
+      let parsedArgs: unknown
+      try {
+        parsedArgs = JSON.parse(tc.arguments || "{}")
+      } catch {
+        parsedArgs = { _parseError: tc.arguments || "missing arguments" }
+      }
+      actions.push({
+        id: `act_${tc.id || `unknown_${Date.now()}`}`,
+        providerToolCallId: tc.id || undefined,
+        tool: this.fromProviderToolName(tc.name || "unknown"),
+        args: parsedArgs,
+        source: "llm",
+        createdAt: Date.now(),
+      })
+    }
+
+    this.config.onModelResponse?.({ streaming: true, messageId, contentLength: accumulatedContent.length })
 
     return {
-      id: `msg_${Date.now()}_${Math.random().toString(36).slice(2, 9)}`,
+      id: messageId,
       role: "assistant",
-      content,
+      content: accumulatedContent,
       actions: actions.length > 0 ? actions : undefined,
       createdAt: Date.now(),
-      extra: { rawResponse: json },
+      extra: { streaming: true },
     }
   }
 
@@ -224,6 +357,54 @@ export class OpenAiCompatibleAdapter implements ModelAdapter {
   private chatCompletionsUrl(): string {
     const baseUrl = this.config.baseUrl.replace(/\/+$/, "")
     return /\/chat\/completions$/i.test(baseUrl) ? baseUrl : `${baseUrl}/chat/completions`
+  }
+
+  /**
+   * Extract a complete AgentMessage from a non-streaming API response
+   * message object. Shared by `queryNonStreaming` so the parsing logic
+   * is not duplicated.
+   */
+  private extractMessageFromResponse(
+    message: Record<string, unknown>,
+    rawResponse: Record<string, unknown>,
+  ): AgentMessage {
+    const actions: AgentAction[] = []
+    const rawToolCalls = message.tool_calls as
+      | Array<Record<string, unknown>>
+      | undefined
+
+    if (rawToolCalls) {
+      for (const tc of rawToolCalls) {
+        const fn = tc.function as Record<string, unknown> | undefined
+        let parsedArgs: unknown
+        try {
+          parsedArgs = JSON.parse((fn?.arguments as string) ?? "{}")
+        } catch {
+          parsedArgs = { _parseError: fn?.arguments ?? "missing arguments" }
+        }
+
+        actions.push({
+          id: `act_${tc.id as string}`,
+          providerToolCallId: tc.id as string,
+          tool: this.fromProviderToolName((fn?.name as string) ?? "unknown"),
+          args: parsedArgs,
+          source: "llm",
+          createdAt: Date.now(),
+        })
+      }
+    }
+
+    const content: string =
+      typeof message.content === "string" ? message.content : ""
+
+    return {
+      id: `msg_${Date.now()}_${Math.random().toString(36).slice(2, 9)}`,
+      role: "assistant",
+      content,
+      actions: actions.length > 0 ? actions : undefined,
+      createdAt: Date.now(),
+      extra: { rawResponse },
+    }
   }
 
   private formatScreenshotImageMessage(result: ToolResult): AgentMessage | undefined {

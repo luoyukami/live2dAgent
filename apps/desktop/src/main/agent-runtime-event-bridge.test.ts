@@ -160,6 +160,64 @@ describe("AgentRuntimeEventBridge — message streaming", () => {
     }
   })
 
+  test("streaming disabled suppresses created/delta/completed but still emits final message.added", () => {
+    const bridge = new AgentRuntimeEventBridge(false)
+    const events: AgentEvent[] = []
+    bridge.subscribe((event) => events.push(event))
+
+    bridge.process({
+      type: "message.created",
+      conversationId: "conv_1",
+      runId: "run_1",
+      messageId: "msg_1",
+    })
+    bridge.process({
+      type: "message.delta",
+      conversationId: "conv_1",
+      runId: "run_1",
+      messageId: "msg_1",
+      delta: "Hello ",
+    })
+    bridge.process({
+      type: "message.delta",
+      conversationId: "conv_1",
+      runId: "run_1",
+      messageId: "msg_1",
+      delta: "world!",
+    })
+    bridge.process({
+      type: "message.completed",
+      conversationId: "conv_1",
+      runId: "run_1",
+      messageId: "msg_1",
+    })
+
+    assert.deepEqual(events.map((event) => event.type), ["message.added"])
+    const added = events[0]
+    assert.equal(added?.type, "message.added")
+    if (added?.type === "message.added") {
+      assert.equal(added.message.id, "msg_1")
+      assert.equal(added.message.content, "Hello world!")
+    }
+  })
+
+  test("setStreamingEnabled can re-enable streaming after construction", () => {
+    const bridge = new AgentRuntimeEventBridge(false)
+    const events: AgentEvent[] = []
+    bridge.subscribe((event) => events.push(event))
+    bridge.setStreamingEnabled(true)
+
+    bridge.process({
+      type: "message.created",
+      conversationId: "conv_1",
+      runId: "run_1",
+      messageId: "msg_1",
+    })
+
+    assert.equal(events.length, 1)
+    assert.equal(events[0]?.type, "message.created")
+  })
+
   test("multiple sequential messages don't interfere — full event sequence", () => {
     const { bridge, events } = createHarness()
     // First message

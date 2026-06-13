@@ -183,6 +183,7 @@ export function UiApp(): JSX.Element {
         reasoningEffort: settings.reasoningEffort ?? "low",
         workspaceDir: settings.workspaceDir,
         live2dModelPath: settings.live2d?.modelPath ?? "",
+        streamingEnabled: settings.agent?.streamingEnabled ?? true,
         permissionMode: settings.permissions?.mode ?? "permissive",
         windowWidth: String(settings.ui?.width ?? prev.windowWidth),
         windowHeight: String(settings.ui?.height ?? prev.windowHeight),
@@ -512,6 +513,9 @@ export function UiApp(): JSX.Element {
       if (form.openaiMultimodalModel !== (settings?.openaiMultimodalModel ?? "")) publicPatch.openaiMultimodalModel = form.openaiMultimodalModel
       if (form.reasoningEffort !== (settings?.reasoningEffort ?? "low")) publicPatch.reasoningEffort = form.reasoningEffort
       if (form.permissionMode !== settings?.permissions?.mode) publicPatch.permissions = { mode: form.permissionMode }
+      if (form.streamingEnabled !== (settings?.agent?.streamingEnabled ?? true)) {
+        publicPatch.agent = { ...((publicPatch.agent as Record<string, unknown> | undefined) ?? {}), streamingEnabled: form.streamingEnabled }
+      }
 
       const nextWindowWidth = normalizeFormDimension(form.windowWidth, settings?.ui?.width ?? 360)
       const nextWindowHeight = normalizeFormDimension(form.windowHeight, settings?.ui?.height ?? 720)
@@ -1076,6 +1080,18 @@ export function UiApp(): JSX.Element {
                             <option value="permissive">默许模式</option>
                             <option value="ask">询问模式</option>
                           </select>
+                        </div>
+
+                        <div className="settings-group">
+                          <label className="checkbox-label">
+                            <input
+                              type="checkbox"
+                              checked={form.streamingEnabled}
+                              onChange={(e) => setForm((f) => ({ ...f, streamingEnabled: e.target.checked }))}
+                            />
+                            <span>流式输出消息</span>
+                          </label>
+                          <small className="settings-hint">开启后，助手会边生成边显示文字；关闭后仍在完整回复生成后一次性显示。</small>
                         </div>
                       </div>
 

@@ -638,3 +638,242 @@ test("runUserMessage keeps current-round tool observations intact (no compaction
   assert.ok(!isToolHistorySummary(toolMsg.content),
     "tool observation must not be a [Tool Result Summary] during current round")
 })
+
+/* ================================================================== */
+/*  Streaming event tests                                             */
+/* ================================================================== */
+
+/**
+ * When streamingEnabled is true, the session passes a streaming callback
+ * to the model adapter. The callback emits message.created / message.delta
+ * as text arrives, then message.completed after the query resolves.
+ */
+test("streamingEnabled: emits message.created / message.delta / message.completed events", async () => {
+  const events = new EventBus()
+  // busEvents captures only EventBus events (not trace duplicates)
+  const busEvents: AgentEvent[] = []
+  events.subscribe((event) => busEvents.push(event))
+  const trace: TraceStore = { append: () => {} }
+
+  const model: ModelAdapter = {
+    async query(input) {
+      const cb = input.callbacks?.onTextDelta
+      if (cb) {
+        cb("msg_stream_1", "Hello")
+        cb("msg_stream_1", " world")
+        cb("msg_stream_1", "!")
+      }
+      return {
+        id: "msg_stream_1",
+        role: "assistant",
+        content: "Hello world!",
+        createdAt: Date.now(),
+      }
+    },
+    formatObservations() { return [] },
+  }
+
+  const session = new AgentSession(
+    model,
+    new ToolRegistry(),
+    { async executeMany() { return [] } },
+    { async check() { return { status: "approved" as const, actions: [] } } },
+    trace,
+    events,
+    {
+      maxSteps: 5,
+      emotion: { ...DEFAULT_EMOTION_SETTINGS, enabled: false, injectPrompt: false },
+      streamingEnabled: true,
+    },
+  )
+
+  await session.runUserMessage("hi")
+
+  // Collect streaming events (created, delta, completed)
+  const created = busEvents.filter((e) => e.type === "message.created")
+  const deltas = busEvents.filter((e) => e.type === "message.delta")
+  const completed = busEvents.filter((e) => e.type === "message.completed")
+
+  assert.equal(created.length, 1, "must emit exactly one message.created")
+  assert.equal((created[0] as Extract<AgentEvent, { type: "message.created" }>).message.id, "msg_stream_1")
+  assert.equal((created[0] as Extract<AgentEvent, { type: "message.created" }>).message.role, "assistant")
+
+  assert.equal(deltas.length, 3, "must emit 3 message.delta events")
+  const deltaTexts = deltas.map((d) => (d as Extract<AgentEvent, { type: "message.delta" }>).delta)
+  assert.deepEqual(deltaTexts, ["Hello", " world", "!"])
+
+  assert.equal(completed.length, 1, "must emit exactly one message.completed")
+  assert.equal((completed[0] as Extract<AgentEvent, { type: "message.completed" }>).messageId, "msg_stream_1")
+
+  // message.added must still be emitted for backward compat
+  const added = busEvents.filter((e) => e.type === "message.added" && e.message.role === "assistant")
+  assert.equal(added.length, 1, "must still emit message.added")
+})
+
+/**
+ * When streamingEnabled is false (default), no streaming callbacks are passed
+ * and no message.created / message.delta / message.completed events fire.
+ */
+test("streaming disabled (default): no streaming events emitted", async () => {
+  const events = new EventBus()
+  const busEvents: AgentEvent[] = []
+  events.subscribe((event) => busEvents.push(event))
+  const trace: TraceStore = { append: () => {} }
+
+  let callbackWasPassed = false
+  const model: ModelAdapter = {
+    async query(input) {
+      callbackWasPassed = !!input.callbacks?.onTextDelta
+      return {
+        id: "msg_no_stream",
+        role: "assistant",
+        content: "normal reply",
+        createdAt: Date.now(),
+      }
+    },
+    formatObservations() { return [] },
+  }
+
+  const session = new AgentSession(
+    model,
+    new ToolRegistry(),
+    { async executeMany() { return [] } },
+    { async check() { return { status: "approved" as const, actions: [] } } },
+    trace,
+    events,
+    {
+      maxSteps: 5,
+      emotion: { ...DEFAULT_EMOTION_SETTINGS, enabled: false, injectPrompt: false },
+      // streamingEnabled defaults to false
+    },
+  )
+
+  await session.runUserMessage("hi")
+
+  assert.equal(callbackWasPassed, false, "must not pass streaming callback when disabled")
+
+  const created = busEvents.filter((e) => e.type === "message.created")
+  const deltas = busEvents.filter((e) => e.type === "message.delta")
+  const completed = busEvents.filter((e) => e.type === "message.completed")
+
+  assert.equal(created.length, 0, "must not emit message.created")
+  assert.equal(deltas.length, 0, "must not emit message.delta")
+  assert.equal(completed.length, 0, "must not emit message.completed")
+
+  // message.added must still fire
+  const added = busEvents.filter((e) => e.type === "message.added" && e.message.role === "assistant")
+  assert.equal(added.length, 1, "must still emit message.added")
+})
+
+/**
+ * Streaming also works with runTransientUserMessage.
+ */
+test("streamingEnabled: runTransientUserMessage emits streaming events", async () => {
+  const events = new EventBus()
+  const busEvents: AgentEvent[] = []
+  events.subscribe((event) => busEvents.push(event))
+  const trace: TraceStore = { append: () => {} }
+
+  const model: ModelAdapter = {
+    async query(input) {
+      const cb = input.callbacks?.onTextDelta
+      if (cb) {
+        cb("msg_transient_stream", "Hi there")
+      }
+      return {
+        id: "msg_transient_stream",
+        role: "assistant",
+        content: "Hi there",
+        createdAt: Date.now(),
+      }
+    },
+    formatObservations() { return [] },
+  }
+
+  const session = new AgentSession(
+    model,
+    new ToolRegistry(),
+    { async executeMany() { return [] } },
+    { async check() { return { status: "approved" as const, actions: [] } } },
+    trace,
+    events,
+    {
+      maxSteps: 5,
+      emotion: { ...DEFAULT_EMOTION_SETTINGS, enabled: false, injectPrompt: false },
+      streamingEnabled: true,
+    },
+  )
+
+  await session.runTransientUserMessage("transient")
+
+  const created = busEvents.filter((e) => e.type === "message.created")
+  const deltas = busEvents.filter((e) => e.type === "message.delta")
+  const completed = busEvents.filter((e) => e.type === "message.completed")
+
+  assert.equal(created.length, 1)
+  assert.equal(deltas.length, 1)
+  assert.equal((deltas[0] as Extract<AgentEvent, { type: "message.delta" }>).delta, "Hi there")
+  assert.equal(completed.length, 1)
+
+  // The transient user message should NOT be in session.messages
+  assert.equal(session.messages.length, 1, "transient user message must not be stored")
+  assert.equal(session.messages[0]?.role, "assistant")
+})
+
+/**
+ * Only the first delta triggers message.created; subsequent deltas only emit delta.
+ */
+test("streamingEnabled: message.created is emitted only once", async () => {
+  const events = new EventBus()
+  const busEvents: AgentEvent[] = []
+  events.subscribe((event) => busEvents.push(event))
+  const trace: TraceStore = { append: () => {} }
+
+  const model: ModelAdapter = {
+    async query(input) {
+      const cb = input.callbacks?.onTextDelta
+      if (cb) {
+        cb("msg_single", "A")
+        cb("msg_single", "B")
+        cb("msg_single", "C")
+        cb("msg_single", "D")
+        cb("msg_single", "E")
+      }
+      return {
+        id: "msg_single",
+        role: "assistant",
+        content: "ABCDE",
+        createdAt: Date.now(),
+      }
+    },
+    formatObservations() { return [] },
+  }
+
+  const session = new AgentSession(
+    model,
+    new ToolRegistry(),
+    { async executeMany() { return [] } },
+    { async check() { return { status: "approved" as const, actions: [] } } },
+    trace,
+    events,
+    {
+      maxSteps: 5,
+      emotion: { ...DEFAULT_EMOTION_SETTINGS, enabled: false, injectPrompt: false },
+      streamingEnabled: true,
+    },
+  )
+
+  await session.runUserMessage("hi")
+
+  const created = busEvents.filter((e) => e.type === "message.created")
+  const deltas = busEvents.filter((e) => e.type === "message.delta")
+  const completed = busEvents.filter((e) => e.type === "message.completed")
+
+  assert.equal(created.length, 1, "message.created must fire exactly once")
+  assert.equal(deltas.length, 5, "all 5 deltas must fire")
+  assert.equal(completed.length, 1, "message.completed must fire once")
+
+  // Verify all deltas share the same messageId
+  const deltaIds = deltas.map((d) => (d as Extract<AgentEvent, { type: "message.delta" }>).messageId)
+  assert.ok(deltaIds.every((id) => id === "msg_single"), "all deltas must share the same messageId")
+})

@@ -472,3 +472,341 @@ test("isImageUnsupportedError predicate matches image-related errors", () => {
   assert.equal(isImageUnsupportedError("rate limit exceeded"), false)
   assert.equal(isImageUnsupportedError("audio not supported"), false)
 })
+
+/* ================================================================== */
+/*  Streaming (SSE) tests                                             */
+/* ================================================================== */
+
+/**
+ * Helper: create a minimal ReadableStream from an array of SSE lines.
+ */
+function sseStream(lines: string[]): ReadableStream<Uint8Array> {
+  const encoder = new TextEncoder()
+  const text = lines.join("\n") + "\n"
+  return new ReadableStream({
+    start(controller) {
+      controller.enqueue(encoder.encode(text))
+      controller.close()
+    },
+  })
+}
+
+/**
+ * Helper: build a fake fetch that returns a streaming response.
+ */
+function fakeStreamingFetch(sseBody: string[]) {
+  return async (
+    _url: string | URL | Request,
+    _init?: RequestInit,
+  ): Promise<Response> => {
+    return new Response(sseStream(sseBody), {
+      status: 200,
+      headers: { "Content-Type": "text/event-stream" },
+    })
+  }
+}
+
+/* ------------------------------------------------------------------ */
+/*  13. Streaming: text-only content                                   */
+/* ------------------------------------------------------------------ */
+
+test("streaming query accumulates text deltas and calls onTextDelta", async () => {
+  const sseBody = [
+    'data: {"choices":[{"delta":{"role":"assistant","content":"Hello"},"index":0}]}',
+    'data: {"choices":[{"delta":{"content":" world"},"index":0}]}',
+    'data: {"choices":[{"delta":{"content":"!"},"index":0}]}',
+    "data: [DONE]",
+  ]
+
+  const originalFetch = globalThis.fetch
+  globalThis.fetch = fakeStreamingFetch(sseBody)
+  try {
+    const deltas: Array<{ messageId: string; delta: string }> = []
+    const adapter = new OpenAiCompatibleAdapter({
+      baseUrl: "https://api.example.com/v1",
+      apiKey: "test-key",
+      model: "gpt-4o",
+    })
+
+    const result = await adapter.query({
+      messages: [{ id: "u1", role: "user", content: "hi", createdAt: 0 }],
+      tools: [],
+      callbacks: {
+        onTextDelta(messageId, delta) {
+          deltas.push({ messageId, delta })
+        },
+      },
+    })
+
+    assert.equal(result.role, "assistant")
+    assert.equal(result.content, "Hello world!")
+    assert.equal(result.actions, undefined)
+    assert.ok(result.id, "message id must be set")
+    assert.ok(result.extra?.streaming === true, "must be marked as streaming")
+
+    // All deltas must share the same messageId
+    const ids = new Set(deltas.map((d) => d.messageId))
+    assert.equal(ids.size, 1, "all deltas must share the same messageId")
+    assert.equal(ids.has(result.id), true, "delta messageId must match result id")
+
+    // Content deltas should have been called
+    assert.ok(deltas.length >= 2, "expected at least 2 content deltas")
+    // First delta may include "Hello" (with the role delta), second " world", third "!"
+    const fullDelta = deltas.map((d) => d.delta).join("")
+    assert.equal(fullDelta, "Hello world!")
+  } finally {
+    globalThis.fetch = originalFetch
+  }
+})
+
+/* ------------------------------------------------------------------ */
+/*  14. Streaming: tool_calls accumulation                             */
+/* ------------------------------------------------------------------ */
+
+test("streaming query accumulates tool_call deltas", async () => {
+  // Build SSE data as an array of objects that we serialize ourselves
+  // to avoid template-literal escaping issues
+  const sseChunks: Array<Record<string, unknown>> = [
+    { choices: [{ delta: { role: "assistant", content: "" }, index: 0 }] },
+    { choices: [{ delta: { tool_calls: [{ index: 0, id: "call_abc", type: "function", function: { name: "shell_run", arguments: "" } }] }, index: 0 }] },
+  ]
+  // Second tool_call delta: partial arguments - opening brace + key
+  sseChunks.push({ choices: [{ delta: { tool_calls: [{ index: 0, function: { arguments: '{"command": ' } }] }, index: 0 }] })
+  // Third tool_call delta: rest of arguments - value + closing brace
+  sseChunks.push({ choices: [{ delta: { tool_calls: [{ index: 0, function: { arguments: '"echo hi"}' } }] }, index: 0 }] })
+  const sseBody = [
+    ...sseChunks.map((c) => `data: ${JSON.stringify(c)}`),
+    "data: [DONE]",
+  ]
+
+  const originalFetch = globalThis.fetch
+  globalThis.fetch = fakeStreamingFetch(sseBody)
+  try {
+    const adapter = new OpenAiCompatibleAdapter({
+      baseUrl: "https://api.example.com/v1",
+      apiKey: "test-key",
+      model: "gpt-4o",
+    })
+
+    const result = await adapter.query({
+      messages: [{ id: "u1", role: "user", content: "run echo", createdAt: 0 }],
+      tools: [
+        {
+          name: "shell.run",
+          description: "Run shell command",
+          inputSchema: {},
+          permission: "shell",
+        },
+      ],
+      callbacks: { onTextDelta() {} },
+    })
+
+    assert.equal(result.role, "assistant")
+    assert.ok(result.actions, "must have actions")
+    assert.equal(result.actions!.length, 1)
+
+    const action = result.actions![0]
+    assert.equal(action.tool, "shell.run")
+    assert.equal(action.providerToolCallId, "call_abc")
+    assert.deepEqual(action.args, { command: "echo hi" })
+    assert.equal(action.source, "llm")
+  } finally {
+    globalThis.fetch = originalFetch
+  }
+})
+
+/* ------------------------------------------------------------------ */
+/*  15. Streaming: network error returns errorMessage                  */
+/* ------------------------------------------------------------------ */
+
+test("streaming query: network error returns errorMessage without leaking key", async () => {
+  const originalFetch = globalThis.fetch
+  globalThis.fetch = async () => {
+    throw new Error("fetch failed: ENOTFOUND")
+  }
+  try {
+    const adapter = new OpenAiCompatibleAdapter({
+      baseUrl: "https://api.example.com/v1",
+      apiKey: "sk-super-secret",
+      model: "gpt-4o",
+    })
+
+    const result = await adapter.query({
+      messages: [{ id: "u1", role: "user", content: "hi", createdAt: 0 }],
+      tools: [],
+      callbacks: { onTextDelta() {} },
+    })
+
+    assert.equal(result.role, "assistant")
+    assert.equal(typeof result.content, "string")
+    assert.ok((result.content as string).includes("Network error"))
+    assert.ok(!(result.content as string).includes("sk-super-secret"), "must not leak API key")
+  } finally {
+    globalThis.fetch = originalFetch
+  }
+})
+
+/* ------------------------------------------------------------------ */
+/*  16. Streaming: HTTP error returns errorMessage                     */
+/* ------------------------------------------------------------------ */
+
+test("streaming query: HTTP 500 returns errorMessage without leaking key", async () => {
+  const originalFetch = globalThis.fetch
+  globalThis.fetch = async () => {
+    return new Response("Internal Server Error", { status: 500, statusText: "Internal Server Error" })
+  }
+  try {
+    const adapter = new OpenAiCompatibleAdapter({
+      baseUrl: "https://api.example.com/v1",
+      apiKey: "sk-super-secret",
+      model: "gpt-4o",
+    })
+
+    const result = await adapter.query({
+      messages: [{ id: "u1", role: "user", content: "hi", createdAt: 0 }],
+      tools: [],
+      callbacks: { onTextDelta() {} },
+    })
+
+    assert.equal(result.role, "assistant")
+    assert.equal(typeof result.content, "string")
+    assert.ok((result.content as string).includes("500"))
+    assert.ok(!(result.content as string).includes("sk-super-secret"), "must not leak API key")
+  } finally {
+    globalThis.fetch = originalFetch
+  }
+})
+
+/* ------------------------------------------------------------------ */
+/*  17. Streaming: no body returns errorMessage                        */
+/* ------------------------------------------------------------------ */
+
+test("streaming query: response with no body returns errorMessage", async () => {
+  const originalFetch = globalThis.fetch
+  globalThis.fetch = async () => {
+    return new Response(null, { status: 200 })
+  }
+  try {
+    const adapter = new OpenAiCompatibleAdapter({
+      baseUrl: "https://api.example.com/v1",
+      apiKey: "test-key",
+      model: "gpt-4o",
+    })
+
+    const result = await adapter.query({
+      messages: [{ id: "u1", role: "user", content: "hi", createdAt: 0 }],
+      tools: [],
+      callbacks: { onTextDelta() {} },
+    })
+
+    assert.equal(result.role, "assistant")
+    assert.equal(typeof result.content, "string")
+    assert.ok((result.content as string).includes("no body"))
+  } finally {
+    globalThis.fetch = originalFetch
+  }
+})
+
+/* ------------------------------------------------------------------ */
+/*  18. Without callbacks, query still works (non-streaming)           */
+/* ------------------------------------------------------------------ */
+
+test("query without callbacks uses non-streaming path", async () => {
+  const originalFetch = globalThis.fetch
+  globalThis.fetch = async (_url, init) => {
+    // Verify that stream:true is NOT in the body
+    const body = JSON.parse(init?.body as string)
+    assert.equal(body.stream, undefined, "non-streaming path must not set stream:true")
+    return new Response(
+      JSON.stringify({
+        choices: [{ message: { role: "assistant", content: "non-streaming reply" } }],
+      }),
+      { status: 200, headers: { "Content-Type": "application/json" } },
+    )
+  }
+  try {
+    const adapter = new OpenAiCompatibleAdapter({
+      baseUrl: "https://api.example.com/v1",
+      apiKey: "test-key",
+      model: "gpt-4o",
+    })
+
+    const result = await adapter.query({
+      messages: [{ id: "u1", role: "user", content: "hi", createdAt: 0 }],
+      tools: [],
+    })
+
+    assert.equal(result.content, "non-streaming reply")
+    assert.equal(result.extra?.streaming, undefined, "must not be marked as streaming")
+  } finally {
+    globalThis.fetch = originalFetch
+  }
+})
+
+/* ------------------------------------------------------------------ */
+/*  19. Streaming: stream:true is set in the request body              */
+/* ------------------------------------------------------------------ */
+
+test("streaming query sets stream:true in request body", async () => {
+  const originalFetch = globalThis.fetch
+  globalThis.fetch = async (_url, init) => {
+    const body = JSON.parse(init?.body as string)
+    assert.equal(body.stream, true, "streaming path must set stream:true")
+
+    return new Response(sseStream(["data: [DONE]"]), {
+      status: 200,
+      headers: { "Content-Type": "text/event-stream" },
+    })
+  }
+  try {
+    const adapter = new OpenAiCompatibleAdapter({
+      baseUrl: "https://api.example.com/v1",
+      apiKey: "test-key",
+      model: "gpt-4o",
+    })
+
+    await adapter.query({
+      messages: [{ id: "u1", role: "user", content: "hi", createdAt: 0 }],
+      tools: [],
+      callbacks: { onTextDelta() {} },
+    })
+  } finally {
+    globalThis.fetch = originalFetch
+  }
+})
+
+/* ------------------------------------------------------------------ */
+/*  20. Streaming: malformed SSE lines are skipped gracefully          */
+/* ------------------------------------------------------------------ */
+
+test("streaming query skips malformed SSE lines gracefully", async () => {
+  const sseBody = [
+    "data: {invalid json",
+    'data: {"choices":[{"delta":{"content":"ok"},"index":0}]}',
+    "data: [DONE]",
+  ]
+
+  const originalFetch = globalThis.fetch
+  globalThis.fetch = fakeStreamingFetch(sseBody)
+  try {
+    const deltas: string[] = []
+    const adapter = new OpenAiCompatibleAdapter({
+      baseUrl: "https://api.example.com/v1",
+      apiKey: "test-key",
+      model: "gpt-4o",
+    })
+
+    const result = await adapter.query({
+      messages: [{ id: "u1", role: "user", content: "hi", createdAt: 0 }],
+      tools: [],
+      callbacks: {
+        onTextDelta(_id, delta) { deltas.push(delta) },
+      },
+    })
+
+    assert.equal(result.content, "ok")
+    assert.deepEqual(deltas, ["ok"])
+  } finally {
+    globalThis.fetch = originalFetch
+  }
+})

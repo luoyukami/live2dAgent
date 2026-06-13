@@ -29,6 +29,7 @@ export interface SettingsForm {
   apiKey: string
   workspaceDir: string
   live2dModelPath: string
+  streamingEnabled: boolean
   permissionMode: PublicSettings["permissions"]["mode"]
   windowWidth: string
   windowHeight: string
@@ -125,6 +126,7 @@ export function defaultForm(): SettingsForm {
     apiKey: "",
     workspaceDir: "",
     live2dModelPath: "",
+    streamingEnabled: true,
     permissionMode: "permissive",
     windowWidth: "360",
     windowHeight: "720",

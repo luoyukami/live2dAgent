@@ -61,6 +61,7 @@ export const DEFAULT_UI_SETTINGS: UiSettings = {
 export const DEFAULT_AGENT_SETTINGS: AgentSettings = {
   maxSteps: 20,
   runtimeMode: "ws",
+  streamingEnabled: true,
 }
 
 export const DEFAULT_PERMISSION_SETTINGS: PermissionSettings = {
@@ -876,6 +877,10 @@ function validatePublicSettingsPatch(patch: unknown): AppSettingsPublicPatch {
     const patch: Partial<AgentSettings> = {}
     const maxSteps = integerInRange(ag.maxSteps, "agent.maxSteps", 1, 100)
     if (maxSteps !== undefined) patch.maxSteps = maxSteps
+    if (ag.streamingEnabled !== undefined) {
+      if (typeof ag.streamingEnabled !== "boolean") throw new Error("agent.streamingEnabled must be a boolean")
+      patch.streamingEnabled = ag.streamingEnabled
+    }
     if (Object.keys(patch).length > 0) output.agent = patch
   }
 

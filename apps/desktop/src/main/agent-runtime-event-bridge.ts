@@ -24,6 +24,8 @@ import type {
 /* ------------------------------------------------------------------ */
 
 export class AgentRuntimeEventBridge {
+  constructor(private streamingEnabled = true) {}
+
   /**
    * Pending messages keyed by messageId.
    * Accumulates deltas from `message.delta` events and emits a single
@@ -52,6 +54,10 @@ export class AgentRuntimeEventBridge {
     return () => {
       this.listeners.delete(callback)
     }
+  }
+
+  setStreamingEnabled(enabled: boolean): void {
+    this.streamingEnabled = enabled
   }
 
   /** Clear all state and listeners (teardown). */
@@ -123,14 +129,16 @@ export class AgentRuntimeEventBridge {
             messageId: event.messageId,
             content: "",
           })
-          this.emit({
-            type: "message.created",
-            message: {
-              id: event.messageId,
-              role: "assistant",
-              createdAt: Date.now(),
-            },
-          })
+          if (this.streamingEnabled) {
+            this.emit({
+              type: "message.created",
+              message: {
+                id: event.messageId,
+                role: "assistant",
+                createdAt: Date.now(),
+              },
+            })
+          }
         }
         break
 
@@ -140,11 +148,13 @@ export class AgentRuntimeEventBridge {
           if (pending) {
             pending.content += event.delta
           }
-          this.emit({
-            type: "message.delta",
-            messageId: event.messageId,
-            delta: event.delta,
-          })
+          if (this.streamingEnabled) {
+            this.emit({
+              type: "message.delta",
+              messageId: event.messageId,
+              delta: event.delta,
+            })
+          }
         }
         break
 
@@ -153,7 +163,9 @@ export class AgentRuntimeEventBridge {
           const pending = this.pendingMessages.get(event.messageId)
           if (pending) {
             this.pendingMessages.delete(event.messageId)
-            this.emit({ type: "message.completed", messageId: event.messageId })
+            if (this.streamingEnabled) {
+              this.emit({ type: "message.completed", messageId: event.messageId })
+            }
             // Backward compat: keep emitting message.added for existing UI
             this.emit({
               type: "message.added",
@@ -166,7 +178,9 @@ export class AgentRuntimeEventBridge {
             })
           } else {
             // unknown messageId — emit completed anyway (no content to add)
-            this.emit({ type: "message.completed", messageId: event.messageId })
+            if (this.streamingEnabled) {
+              this.emit({ type: "message.completed", messageId: event.messageId })
+            }
           }
         }
         break

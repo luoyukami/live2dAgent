@@ -11,6 +11,7 @@ import type {
 } from "./types.js"
 import type { EmotionSettings } from "@live2d-agent/shared"
 import type { ModelAdapter } from "./model-adapter.js"
+import type { StreamingCallbacks } from "./model-adapter.js"
 import type { ToolRegistry } from "./tool-registry.js"
 import { EventBus } from "./events.js"
 import { parseEmotionTag } from "./emotion-parser.js"
@@ -51,6 +52,17 @@ export interface AgentSessionOptions {
    * disabled (no parsing, no events).
    */
   emotion?: EmotionSettings
+  /**
+   * When true the session passes streaming callbacks to `ModelAdapter.query()`
+   * and emits `message.created` / `message.delta` / `message.completed` events
+   * as text arrives. The final processed message is still added via
+   * `addMessage()` so that `message.added` events fire for backward
+   * compatibility (TTS, UI, etc.).
+   *
+   * When false (the default), the adapter is called without streaming
+   * callbacks and behaviour is identical to previous versions.
+   */
+  streamingEnabled?: boolean
 }
 
 /* ------------------------------------------------------------------ */
@@ -70,6 +82,7 @@ export class AgentSession {
   messages: AgentMessage[] = []
   private readonly maxSteps: number
   private readonly emotion: EmotionSettings
+  private readonly streamingEnabled: boolean
 
   constructor(
     private model: ModelAdapter,
@@ -81,6 +94,7 @@ export class AgentSession {
     options: AgentSessionOptions = {},
   ) {
     this.maxSteps = options.maxSteps ?? 20
+    this.streamingEnabled = options.streamingEnabled ?? false
     // Default to "system disabled" — safer for callers that don't pass
     // emotion settings (the system is opt-in from the host's perspective).
     this.emotion = options.emotion ?? {
@@ -125,10 +139,18 @@ export class AgentSession {
     for (let step = 1; step <= this.maxSteps; step += 1) {
       this.emit({ type: "agent.thinking" })
 
+      const streamingCallbacks = this.buildStreamingCallbacks()
       const assistantMessage = await this.model.query({
         messages: this.messages,
         tools: this.tools.getDefinitions(),
+        ...(streamingCallbacks ? { callbacks: streamingCallbacks } : {}),
       })
+
+      // If streaming was active, emit message.completed now that the full
+      // response has been received from the adapter.
+      if (streamingCallbacks) {
+        this.emit({ type: "message.completed", messageId: assistantMessage.id })
+      }
 
       // Parse the trailing <emotion /> tag (if any) BEFORE the message enters
       // the conversation history. This guarantees:
@@ -227,10 +249,15 @@ export class AgentSession {
     }
 
     this.emit({ type: "agent.thinking" })
+    const streamingCallbacks = this.buildStreamingCallbacks()
     const assistantMessage = await this.model.query({
       messages: [...this.messages, transientUserMessage],
       tools: [],
+      ...(streamingCallbacks ? { callbacks: streamingCallbacks } : {}),
     })
+    if (streamingCallbacks) {
+      this.emit({ type: "message.completed", messageId: assistantMessage.id })
+    }
     const processed = this.applyEmotionToAssistantMessage(assistantMessage)
     this.addMessage(processed)
     this.maybeEmitEmotion(processed)
@@ -238,6 +265,31 @@ export class AgentSession {
   }
 
   /* ---- internal helpers ---- */
+
+  /**
+   * Build streaming callbacks when streaming is enabled.
+   * Returns `undefined` when streaming is disabled so callers can skip.
+   *
+   * The returned `onTextDelta` callback:
+   *  - On the first delta, emits `message.created` with the adapter's id.
+   *  - On every delta (including the first), emits `message.delta`.
+   */
+  private buildStreamingCallbacks(): StreamingCallbacks | undefined {
+    if (!this.streamingEnabled) return undefined
+    let created = false
+    return {
+      onTextDelta: (messageId: string, delta: string) => {
+        if (!created) {
+          created = true
+          this.emit({
+            type: "message.created",
+            message: { id: messageId, role: "assistant", createdAt: Date.now() },
+          })
+        }
+        this.emit({ type: "message.delta", messageId, delta })
+      },
+    }
+  }
 
   private addMessage(message: AgentMessage): void {
     this.messages.push(message)
